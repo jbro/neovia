@@ -9,14 +9,15 @@ neovia is a Neovim configuration for an AI-driven coding environment.
 - Use Neovim default keybindings. Only override on conflict (log the resolution). Only add new bindings where no default exists.
 - Prefer fewer, thinner plugins. Prefer native Neovim or OpenCode over adding a plugin.
 - Vimscript plugins are fine when battle-tested with no better Lua equivalent.
+- Keep config (`lua/plugins/`) declarative. Non-reusable glue code can stay inline; reusable logic and feature implementations belong in the module (`lua/neovia/`).
 - Use TDD for the module (`lua/neovia/`). Write tests first or alongside code, run them before considering a task done.
 
 ### Repo structure: config vs module
 
 This repo has two distinct parts:
 
-- **Config** (`lua/plugins/`, `init.lua`) -- lazy.nvim plugin specs, keybindings, options. No tests needed.
-- **Module** (`lua/neovia/`) -- custom Lua code that behaves like a plugin.
+- **Config** (`lua/plugins/`, `init.lua`) -- lazy.nvim plugin specs, keybindings, options.
+- **Module** (`lua/neovia/`) -- all custom Lua code lives here.
 
 ### Testing
 
