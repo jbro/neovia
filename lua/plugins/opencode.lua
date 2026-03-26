@@ -19,6 +19,14 @@ return {
       require("opencode").setup({
         preferred_picker = "fzf",
         preferred_completion = "vim_complete",
+        hooks = {
+          on_done_thinking = function()
+            require("neovia.worktree").set_status(vim.fn.getcwd(), "idle")
+          end,
+          on_permission_requested = function()
+            require("neovia.worktree").set_status(vim.fn.getcwd(), "needs_attention")
+          end,
+        },
       })
     end,
   },

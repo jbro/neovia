@@ -12,6 +12,7 @@ return {
       { "<leader>fd", function() require("fzf-lua").diagnostics_document() end, desc = "Diagnostics" },
       { "<leader>fs", function() require("fzf-lua").lsp_document_symbols() end, desc = "Document symbols" },
       { "<leader>fw", function() require("fzf-lua").lsp_workspace_symbols() end, desc = "Workspace symbols" },
+      { "<leader>wt", function() require("neovia.worktree").pick() end, desc = "Worktrees" },
     },
     opts = {},
   },
