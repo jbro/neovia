@@ -37,3 +37,4 @@ These must be installed separately:
 - [ripgrep](https://github.com/BurntSushi/ripgrep)
 - [fd](https://github.com/sharkdp/fd)
 - [git](https://git-scm.com)
+- [tree-sitter-cli](https://github.com/tree-sitter/tree-sitter/tree/master/cli)
