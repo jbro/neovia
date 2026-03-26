@@ -1,0 +1,2 @@
+# neovia state files (lazy.nvim, treesitter, etc. live in ~/.local/share/neovia/)
+# Only lazy-lock.json belongs in the repo.
