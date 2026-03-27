@@ -82,6 +82,12 @@ require("lazy").setup("plugins", {
 })
 
 ------------------------------------------------------------------------
+-- Read-only mode
+------------------------------------------------------------------------
+require("neovia.mode").setup({ auto_relock = true })
+vim.keymap.set("n", "<leader>u", function() require("neovia.mode").toggle() end, { desc = "Unlock/lock buffer" })
+
+------------------------------------------------------------------------
 -- LSP configuration (native 0.11+)
 ------------------------------------------------------------------------
 vim.lsp.config("ts_ls", {

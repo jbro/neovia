@@ -20,7 +20,9 @@ return {
         globalstatus = true,
       },
       sections = {
-        lualine_a = { "mode" },
+        lualine_a = {
+          { function() return require("neovia.mode").lualine_mode() end },
+        },
         lualine_b = { "branch", "diff", "diagnostics" },
         lualine_c = { "filename" },
         lualine_x = {
@@ -48,7 +50,18 @@ return {
   {
     "folke/which-key.nvim",
     event = "VeryLazy",
-    opts = {},
+    opts = {
+      triggers = {
+        { "<leader>", mode = { "n", "v" } },
+      },
+      spec = {
+        { "<leader>f", group = "Find" },
+        { "<leader>s", group = "Search" },
+        { "<leader>g", group = "Git" },
+        { "<leader>o", group = "OpenCode" },
+        { "<leader>w", group = "Worktree" },
+      },
+    },
   },
 
   -- Indent guides

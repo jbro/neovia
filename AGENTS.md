@@ -68,3 +68,11 @@ real-time status tracking. Status states: idle, responding, needs_attention.
 
 Tests live at `lua/neovia/tests/` next to the code they test, run via
 `nvim -l` (Neovim 0.11+ script mode).
+
+### 0005 - Read-only mode and curated leader keymap (2026-03-27)
+
+Buffers open read-only (modifiable=false, readonly=true) by default.
+`<leader>u` toggles edit mode; BufLeave auto-relocks (configurable).
+Special buffers (terminal, help, quickfix, gitcommit, fugitive, neo-tree,
+etc.) are excluded. Which-key only triggers on `<leader>` with curated
+groups: Find (f), Search (s), Git (g), OpenCode (o), Worktree (w).

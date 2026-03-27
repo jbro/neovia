@@ -15,12 +15,3 @@ Neovim's terminal buffer? Focus on layout, reflows, and interaction quality.
 Motivation: the tool output in the current OpenCode framework (SSE/buffer
 approach) is mediocre. An embedded TUI might give a better experience if
 rendering works well.
-
-### Strip keybindings to view-only defaults
-
-Unbind all Neovim and plugin keybindings, then selectively add back only what
-supports a **view-only** workflow: navigation and window management.
-
-This aligns with decision 0002 (user orchestrates, OpenCode writes). Most
-editing bindings are dead weight and add cognitive noise. A minimal keymap
-makes the read/navigate/direct loop faster.
