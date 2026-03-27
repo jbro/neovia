@@ -97,6 +97,18 @@ end, { desc = "Lazy" })
 vim.keymap.set("n", "<leader>q", "<cmd>qa<cr>", { desc = "Quit all" })
 
 ------------------------------------------------------------------------
+-- Open OpenCode on launch (input focused, insert mode)
+------------------------------------------------------------------------
+vim.api.nvim_create_autocmd("VimEnter", {
+  callback = function()
+    -- Defer so the UI is fully drawn before splitting
+    vim.schedule(function()
+      require("opencode.api").open_input()
+    end)
+  end,
+})
+
+------------------------------------------------------------------------
 -- LSP configuration (native 0.11+)
 ------------------------------------------------------------------------
 vim.lsp.config("ts_ls", {
