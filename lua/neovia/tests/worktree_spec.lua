@@ -388,12 +388,20 @@ describe("lualine_current", function()
     assert.equals("", wt.lualine_current())
   end)
 
-  it("returns empty when idle", function()
+  it("returns [idle] when idle", function()
     local cwd = vim.fn.getcwd()
     I.set_state({
       [cwd] = I.make_entry({ status = "idle" }),
     })
-    assert.equals("", wt.lualine_current())
+    assert.equals("[idle]", wt.lualine_current())
+  end)
+
+  it("returns [idle] when unknown (pre-connection)", function()
+    local cwd = vim.fn.getcwd()
+    I.set_state({
+      [cwd] = I.make_entry({ status = "unknown" }),
+    })
+    assert.equals("[idle]", wt.lualine_current())
   end)
 
   it("returns [working] when responding", function()

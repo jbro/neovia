@@ -103,10 +103,10 @@ local ansi_reset = "\27[0m"
 --- Status icons (text, no emoji per AGENTS.md).
 --- @type table<string, string>
 local status_icon = {
-  idle = "",
+  idle = "[idle]",
   responding = "[working]",
   needs_attention = "[needs you]",
-  unknown = "",
+  unknown = "[idle]",
 }
 
 --- Highlight groups used by lualine components.
@@ -455,11 +455,7 @@ function M.lualine_current()
   if not entry then return "" end
 
   local s = entry.status
-  if s == "idle" or s == "unknown" then
-    return ""
-  end
-
-  return status_icon[s] or ""
+  return status_icon[s] or status_icon.idle
 end
 
 --- Colour callback for lualine_current.
