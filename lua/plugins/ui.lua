@@ -59,9 +59,18 @@ return {
         { "<leader>s", group = "Search" },
         { "<leader>g", group = "Git" },
         { "<leader>o", group = "OpenCode" },
+        { "<leader>p", group = "Plugins" },
         { "<leader>w", group = "Worktree" },
       },
     },
+  },
+
+  -- Completion
+  {
+    "saghen/blink.cmp",
+    version = "*",
+    event = { "InsertEnter", "CmdlineEnter" },
+    opts = {},
   },
 
   -- Indent guides

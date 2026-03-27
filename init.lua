@@ -86,6 +86,15 @@ require("lazy").setup("plugins", {
 ------------------------------------------------------------------------
 require("neovia.mode").setup({ auto_relock = true })
 vim.keymap.set("n", "<leader>u", function() require("neovia.mode").toggle() end, { desc = "Unlock/lock buffer" })
+vim.keymap.set("n", "<leader>pp", function()
+  local view = require("lazy.view")
+  if view.visible() then
+    view.view:close()
+  else
+    view.show()
+  end
+end, { desc = "Lazy" })
+vim.keymap.set("n", "<leader>q", "<cmd>qa<cr>", { desc = "Quit all" })
 
 ------------------------------------------------------------------------
 -- LSP configuration (native 0.11+)
@@ -104,9 +113,3 @@ vim.lsp.config("gopls", {
 
 vim.lsp.enable({ "ts_ls", "gopls" })
 
--- Enable built-in LSP completion for all LSP-attached buffers
-vim.api.nvim_create_autocmd("LspAttach", {
-  callback = function(args)
-    vim.lsp.completion.enable(true, args.data.client_id, args.buf)
-  end,
-})

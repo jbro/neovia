@@ -18,7 +18,11 @@ return {
     config = function()
       require("opencode").setup({
         preferred_picker = "fzf",
-        preferred_completion = "vim_complete",
+        ui = {
+          input = {
+            text = { wrap = true },
+          },
+        },
         hooks = {
           on_done_thinking = function()
             require("neovia.worktree").set_status(vim.fn.getcwd(), "idle")
