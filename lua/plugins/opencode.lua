@@ -19,6 +19,7 @@ return {
       require("opencode").setup({
         preferred_picker = "fzf",
         ui = {
+          window_width = 0.50,
           input = {
             text = { wrap = true },
           },
