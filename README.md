@@ -15,7 +15,8 @@ git clone https://github.com/jbr/neovia ~/.config/neovia
 Add to your `.zshrc`:
 
 ```sh
-source ~/.config/neovia/neovia.zsh
+fpath=(~/.config/neovia $fpath)
+autoload -Uz neovia
 ```
 
 Then open a project:
