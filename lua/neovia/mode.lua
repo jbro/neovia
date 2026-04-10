@@ -71,9 +71,14 @@ local function unlock_buf(buf)
   unlocked[buf] = true
 end
 
---- Toggle lock state on a buffer.
+--- Toggle lock state on a buffer. No-op for special buffers.
 --- @param buf integer
 local function toggle(buf)
+  local info = {
+    buftype = vim.bo[buf].buftype,
+    filetype = vim.bo[buf].filetype,
+  }
+  if not should_lock(info) then return end
   if vim.bo[buf].readonly then
     unlock_buf(buf)
   else
@@ -139,6 +144,12 @@ function M.setup(user_opts)
     group = group,
     callback = function(ev) relock_buf(ev.buf) end,
   })
+
+  -- Clean up tracking state when buffers are deleted
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = group,
+    callback = function(ev) unlocked[ev.buf] = nil end,
+  })
 end
 
 --- Toggle read-only mode on the current buffer.
@@ -178,9 +189,10 @@ local vim_mode_map = {
 --- Lualine mode component: shows READ-ONLY when buffer is read-only,
 --- otherwise falls back to the standard vim mode label.
 --- Replaces lualine's built-in "mode" in lualine_a.
+--- @param buf? integer  Buffer handle (defaults to current buffer).
 --- @return string
-function M.lualine_mode()
-  local buf = vim.api.nvim_get_current_buf()
+function M.lualine_mode(buf)
+  buf = buf or vim.api.nvim_get_current_buf()
   local info = {
     buftype = vim.bo[buf].buftype,
     filetype = vim.bo[buf].filetype,
@@ -214,20 +226,10 @@ M._internal = {
   --- @return boolean
   is_unlocked = function(buf) return unlocked[buf] == true end,
 
-  --- Lualine mode with explicit buffer (for testing).
+  --- Lualine mode with explicit buffer (delegates to M.lualine_mode).
   --- @param buf integer
   --- @return string
-  lualine_mode = function(buf)
-    local info = {
-      buftype = vim.bo[buf].buftype,
-      filetype = vim.bo[buf].filetype,
-    }
-    if should_lock(info) and vim.bo[buf].readonly then
-      return "READ-ONLY"
-    end
-    local m = vim.api.nvim_get_mode().mode
-    return vim_mode_map[m] or m:upper()
-  end,
+  lualine_mode = function(buf) return M.lualine_mode(buf) end,
 
   --- Get auto_relock setting.
   --- @return boolean

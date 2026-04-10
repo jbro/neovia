@@ -33,6 +33,10 @@ describe("should_lock", function()
     assert.is_false(I.should_lock({ buftype = "prompt", filetype = "" }))
   end)
 
+  it("returns false for acwrite buftype", function()
+    assert.is_false(I.should_lock({ buftype = "acwrite", filetype = "" }))
+  end)
+
   it("returns false for gitcommit filetype", function()
     assert.is_false(I.should_lock({ buftype = "", filetype = "gitcommit" }))
   end)
@@ -103,6 +107,22 @@ describe("toggle", function()
     I.toggle(buf)
 
     assert.is_true(I.is_unlocked(buf))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("is a no-op for special buffers", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].modifiable = true
+    vim.bo[buf].readonly = false
+
+    I.toggle(buf)
+
+    -- Should remain unchanged
+    assert.is_true(vim.bo[buf].modifiable)
+    assert.is_false(vim.bo[buf].readonly)
+    assert.is_false(I.is_unlocked(buf))
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)

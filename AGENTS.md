@@ -23,6 +23,7 @@ This repo has two distinct parts:
 
 - Tests live in `lua/neovia/tests/*_spec.lua`, run via `nvim -l lua/neovia/tests/run.lua`.
 - Extract pure/testable logic from side-effectful code. Expose internals via `M._internal` for test access without polluting the public API.
+- After implementation, review code against the spec (this file + decision log). Verify every stated behaviour has a corresponding test and every code path honours the spec. Check all public API functions have test coverage.
 
 ### Maintaining this file
 

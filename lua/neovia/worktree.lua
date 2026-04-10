@@ -22,6 +22,10 @@ local state = {}
 --- Whether setup() has been called.
 local initialised = false
 
+--- Timer handle for DirChanged debounce (nil = no pending call).
+--- @type uv_timer_t|nil
+local dir_timer = nil
+
 --- The git common dir for the repo we're tracking (nil = not yet resolved).
 --- @type string|nil
 local git_common_dir = nil
@@ -285,10 +289,19 @@ function M.setup()
     desc = "neovia: clean up worktree SSE subscriptions",
   })
 
-  -- Refresh worktree list on directory change
+  -- Refresh worktree list on directory change (debounced)
   vim.api.nvim_create_autocmd("DirChanged", {
     callback = function()
-      vim.defer_fn(function() ensure_subscriptions() end, 500)
+      if dir_timer then
+        dir_timer:stop()
+        dir_timer:close()
+      end
+      dir_timer = vim.uv.new_timer()
+      dir_timer:start(500, 0, vim.schedule_wrap(function()
+        dir_timer:close()
+        dir_timer = nil
+        ensure_subscriptions()
+      end))
     end,
     desc = "neovia: refresh worktree subscriptions on tcd",
   })
@@ -327,7 +340,7 @@ function M.set_status(dir, new_status)
   if new_status == "idle" then
     state[dir].pending_permissions = {}
   end
-  vim.schedule(function() vim.cmd.redrawstatus() end)
+  vim.cmd.redrawstatus()
 end
 
 ------------------------------------------------------------------------
@@ -351,8 +364,9 @@ function M.pick()
 
   local cwd = vim.fn.getcwd()
 
-  -- Build entries
+  -- Build entries and a lookup from display line to worktree path
   local entries = {} --- @type string[]
+  local line_to_path = {} --- @type table<string, string>
   for _, wt in ipairs(worktrees) do
     local entry = state[wt.path] or { status = "unknown" }
     local colour = status_ansi[entry.status] or status_ansi.unknown
@@ -370,6 +384,7 @@ function M.pick()
       ""
     )
     table.insert(entries, line)
+    line_to_path[line] = wt.path
   end
 
   fzf.fzf_exec(entries, {
@@ -387,16 +402,8 @@ function M.pick()
         local query = selected[1] or ""
         local match = selected[2]
 
-        -- Try to find the worktree that matches
-        local target = nil
-        if match then
-          for _, wt in ipairs(worktrees) do
-            if match:find(wt.branch, 1, true) or match:find(wt.path, 1, true) then
-              target = wt.path
-              break
-            end
-          end
-        end
+        -- Resolve worktree path via lookup table
+        local target = match and line_to_path[match] or nil
 
         if target then
           -- Switch to existing worktree
@@ -433,14 +440,23 @@ end
 -- Lualine components
 ------------------------------------------------------------------------
 
---- Define highlight groups (called lazily).
-local hl_defined = false
-local function ensure_highlights()
-  if hl_defined then return end
-  hl_defined = true
+--- Define highlight groups.
+local function define_highlights()
   for name, hl in pairs(status_hl) do
     vim.api.nvim_set_hl(0, "NeoviaWt_" .. name, hl)
   end
+end
+
+--- Set up highlights lazily, re-apply on colorscheme change.
+local hl_initialised = false
+local function ensure_highlights()
+  if hl_initialised then return end
+  hl_initialised = true
+  define_highlights()
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    callback = define_highlights,
+    desc = "neovia: reapply worktree status highlights",
+  })
 end
 
 --- Lualine component: current worktree status.
@@ -467,19 +483,15 @@ function M.lualine_current_color()
   return { fg = (status_hl[entry.status] or {}).fg }
 end
 
---- Lualine component: aggregate status across all worktrees.
---- @return string
-function M.lualine_aggregate()
-  ensure_highlights()
-  M.setup()
-
-  local worst = "idle" --- @type string
-  local count = vim.tbl_count(state)
-
-  -- Don't show anything if there's only one worktree or all idle
-  if count <= 1 then return "" end
-
+--- Compute the worst status across all worktrees.
+--- Priority: needs_attention > responding > idle.
+--- @return string worst  One of "idle", "responding", "needs_attention".
+--- @return integer count  Number of tracked worktrees.
+local function get_worst_status()
+  local worst = "idle"
+  local count = 0
   for _, entry in pairs(state) do
+    count = count + 1
     if entry.status == "needs_attention" then
       worst = "needs_attention"
       break -- can't get worse
@@ -487,8 +499,19 @@ function M.lualine_aggregate()
       worst = "responding"
     end
   end
+  return worst, count
+end
 
-  if worst == "idle" then return "" end
+--- Lualine component: aggregate status across all worktrees.
+--- @return string
+function M.lualine_aggregate()
+  ensure_highlights()
+  M.setup()
+
+  local worst, count = get_worst_status()
+
+  -- Don't show anything if there's only one worktree or all idle
+  if count <= 1 or worst == "idle" then return "" end
 
   if worst == "needs_attention" then
     return "[wt: needs you]"
@@ -502,16 +525,8 @@ end
 --- Colour callback for lualine_aggregate.
 --- @return table|nil
 function M.lualine_aggregate_color()
-  local worst = "idle"
-  for _, entry in pairs(state) do
-    if entry.status == "needs_attention" then
-      worst = "needs_attention"
-      break
-    elseif entry.status == "responding" then
-      worst = "responding"
-    end
-  end
-  if worst == "idle" then return nil end
+  local worst, count = get_worst_status()
+  if count <= 1 or worst == "idle" then return nil end
   return { fg = (status_hl[worst] or {}).fg }
 end
 
@@ -523,6 +538,7 @@ end
 M._internal = {
   parse_worktree_porcelain = parse_worktree_porcelain,
   apply_event = apply_event,
+  get_worst_status = get_worst_status,
   status_icon = status_icon,
   status_hl = status_hl,
 
@@ -539,7 +555,13 @@ M._internal = {
     unsubscribe_all()
     state = {}
     initialised = false
+    hl_initialised = false
     git_common_dir = nil
+    if dir_timer then
+      dir_timer:stop()
+      dir_timer:close()
+      dir_timer = nil
+    end
   end,
 
   --- Create a fresh WorktreeState entry.

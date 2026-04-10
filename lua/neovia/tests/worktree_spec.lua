@@ -422,6 +422,109 @@ describe("lualine_current", function()
 end)
 
 ------------------------------------------------------------------------
+-- lualine_current_color
+------------------------------------------------------------------------
+
+describe("lualine_current_color", function()
+  local orig_setup
+
+  before_each(function()
+    orig_setup = wt.setup
+    wt.setup = function() end
+    vim.cmd.redrawstatus = function() end
+  end)
+
+  after_each(function()
+    wt.setup = orig_setup
+    I.reset()
+  end)
+
+  it("returns nil when cwd has no state entry", function()
+    I.set_state({})
+    assert.is_nil(wt.lualine_current_color())
+  end)
+
+  it("returns green fg for idle", function()
+    local cwd = vim.fn.getcwd()
+    I.set_state({
+      [cwd] = I.make_entry({ status = "idle" }),
+    })
+    assert.same({ fg = I.status_hl.idle.fg }, wt.lualine_current_color())
+  end)
+
+  it("returns yellow fg for responding", function()
+    local cwd = vim.fn.getcwd()
+    I.set_state({
+      [cwd] = I.make_entry({ status = "responding" }),
+    })
+    assert.same({ fg = I.status_hl.responding.fg }, wt.lualine_current_color())
+  end)
+
+  it("returns red fg for needs_attention", function()
+    local cwd = vim.fn.getcwd()
+    I.set_state({
+      [cwd] = I.make_entry({ status = "needs_attention" }),
+    })
+    assert.same({ fg = I.status_hl.needs_attention.fg }, wt.lualine_current_color())
+  end)
+end)
+
+------------------------------------------------------------------------
+-- lualine_aggregate_color
+------------------------------------------------------------------------
+
+describe("lualine_aggregate_color", function()
+  local orig_setup
+
+  before_each(function()
+    orig_setup = wt.setup
+    wt.setup = function() end
+    vim.cmd.redrawstatus = function() end
+  end)
+
+  after_each(function()
+    wt.setup = orig_setup
+    I.reset()
+  end)
+
+  it("returns nil with zero worktrees", function()
+    I.set_state({})
+    assert.is_nil(wt.lualine_aggregate_color())
+  end)
+
+  it("returns nil with one worktree", function()
+    I.set_state({
+      ["/a"] = I.make_entry({ status = "responding" }),
+    })
+    assert.is_nil(wt.lualine_aggregate_color())
+  end)
+
+  it("returns nil when all idle", function()
+    I.set_state({
+      ["/a"] = I.make_entry({ status = "idle" }),
+      ["/b"] = I.make_entry({ status = "idle" }),
+    })
+    assert.is_nil(wt.lualine_aggregate_color())
+  end)
+
+  it("returns yellow fg when any is responding", function()
+    I.set_state({
+      ["/a"] = I.make_entry({ status = "idle" }),
+      ["/b"] = I.make_entry({ status = "responding" }),
+    })
+    assert.same({ fg = I.status_hl.responding.fg }, wt.lualine_aggregate_color())
+  end)
+
+  it("returns red fg when any needs attention", function()
+    I.set_state({
+      ["/a"] = I.make_entry({ status = "responding" }),
+      ["/b"] = I.make_entry({ status = "needs_attention" }),
+    })
+    assert.same({ fg = I.status_hl.needs_attention.fg }, wt.lualine_aggregate_color())
+  end)
+end)
+
+------------------------------------------------------------------------
 -- Full event sequence scenario
 ------------------------------------------------------------------------
 
