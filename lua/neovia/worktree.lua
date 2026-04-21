@@ -283,14 +283,18 @@ function M.setup()
   git_common_dir = resolve_git_common_dir()
   if not git_common_dir then return end
 
+  local group = vim.api.nvim_create_augroup("neovia_worktree", { clear = true })
+
   -- Clean up subscriptions on exit
   vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
     callback = function() unsubscribe_all() end,
     desc = "neovia: clean up worktree SSE subscriptions",
   })
 
   -- Refresh worktree list on directory change (debounced)
   vim.api.nvim_create_autocmd("DirChanged", {
+    group = group,
     callback = function()
       if dir_timer then
         dir_timer:stop()
@@ -309,6 +313,7 @@ function M.setup()
   -- Defer initial subscription until opencode server is ready.
   -- Listen for the server_ready custom event.
   vim.api.nvim_create_autocmd("User", {
+    group = group,
     pattern = "OpencodeEvent:server.connected",
     once = true,
     callback = function()
@@ -453,7 +458,9 @@ local function ensure_highlights()
   if hl_initialised then return end
   hl_initialised = true
   define_highlights()
+  local hl_group = vim.api.nvim_create_augroup("neovia_worktree_hl", { clear = true })
   vim.api.nvim_create_autocmd("ColorScheme", {
+    group = hl_group,
     callback = define_highlights,
     desc = "neovia: reapply worktree status highlights",
   })
@@ -561,6 +568,8 @@ M._internal = {
       dir_timer:close()
       dir_timer = nil
     end
+    pcall(vim.api.nvim_del_augroup_by_name, "neovia_worktree")
+    pcall(vim.api.nvim_del_augroup_by_name, "neovia_worktree_hl")
   end,
 
   --- Create a fresh WorktreeState entry.

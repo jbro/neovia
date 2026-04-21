@@ -11,6 +11,16 @@ neovia is a Neovim configuration for an AI-driven coding environment.
 - Vimscript plugins are fine when battle-tested with no better Lua equivalent.
 - Keep config (`lua/plugins/`) declarative. Non-reusable glue code can stay inline; reusable logic and feature implementations belong in the module (`lua/neovia/`).
 - Use red-green-refactor TDD for the module (`lua/neovia/`). Write a failing test first, then write the minimal code to make it pass, then refactor. Run tests before considering a task done.
+- All code must be safe to reload via `<leader>pr` (re-source `init.lua` after resetting modules). Follow the reload contract below.
+
+### Reload contract
+
+`<leader>pr` clears `package.loaded` for all `neovia.*` modules, calls
+`_internal.reset()` on each, then re-sources `init.lua`. For this to work:
+
+- **Modules (`lua/neovia/`):** use an `initialised` guard in `setup()`. Provide `_internal.reset()` that tears down all state (tables, flags, timers). All autocmds must use a **named augroup** (with `clear = true` on create) so they are replaced, not duplicated, on reload.
+- **`init.lua`:** one-time side effects (like `lazy.setup()` and `env.setup()`) must be guarded with a `vim.g` flag so they are skipped on re-source. Autocmds must use named augroups.
+- **Plugin specs (`lua/plugins/`):** not reloaded -- use `:Lazy sync` for that. Keep keymaps set via plugin specs idempotent (lazy.nvim handles this).
 
 ### Repo structure: config vs module
 
@@ -85,3 +95,12 @@ groups: Find (f), Search (s), Git (g), OpenCode (o), Worktree (w).
 `exec` for running any command (table = direct, string = via shell).
 File-based caching is opt-in per entry via explicit `cache` path + `ttl`.
 No password-manager-specific assumptions.
+
+### 0007 - Config reload from leader menu (2026-04-21)
+
+`<leader>pr` reloads all `neovia.*` modules and re-sources `init.lua`.
+Each module must provide `_internal.reset()` to tear down state, use named
+augroups for autocmds, and guard `setup()` with an `initialised` flag.
+`init.lua` guards one-time side effects (`lazy.setup`, `env.setup`) with
+`vim.g` flags. Plugin specs are not reloaded (use `:Lazy sync`).
+See the reload contract in the rules section above.

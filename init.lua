@@ -77,18 +77,25 @@ vim.keymap.set("n", "<Esc>", "<cmd>nohlsearch<CR>")
 ------------------------------------------------------------------------
 -- Environment (must run before plugins so subprocesses inherit the env)
 -- Machine-specific config lives in .env.lua (gitignored).
+-- Guarded: env vars persist in the process, skip on re-source.
 ------------------------------------------------------------------------
-local env_specs = loadfile(vim.fn.stdpath("config") .. "/.env.lua")
-if env_specs then
-  require("neovia.env").setup(env_specs())
+if not vim.g.neovia_env_loaded then
+  vim.g.neovia_env_loaded = true
+  local env_specs = loadfile(vim.fn.stdpath("config") .. "/.env.lua")
+  if env_specs then
+    require("neovia.env").setup(env_specs())
+  end
 end
 
 ------------------------------------------------------------------------
--- Load plugins
+-- Load plugins (skip on re-source; use :Lazy sync to update plugins)
 ------------------------------------------------------------------------
-require("lazy").setup("plugins", {
-  change_detection = { notify = false },
-})
+if not vim.g.neovia_lazy_loaded then
+  vim.g.neovia_lazy_loaded = true
+  require("lazy").setup("plugins", {
+    change_detection = { notify = false },
+  })
+end
 
 ------------------------------------------------------------------------
 -- Read-only mode
@@ -103,12 +110,16 @@ vim.keymap.set("n", "<leader>pp", function()
     view.show()
   end
 end, { desc = "Lazy" })
+vim.keymap.set("n", "<leader>pr", function() require("neovia.reload").reload() end, { desc = "Reload config" })
 vim.keymap.set("n", "<leader>q", "<cmd>qa<cr>", { desc = "Quit all" })
 
 ------------------------------------------------------------------------
 -- Open OpenCode on launch (input focused, insert mode)
+-- Named augroup so re-sourcing init.lua doesn't duplicate the autocmd.
 ------------------------------------------------------------------------
+local oc_launch_group = vim.api.nvim_create_augroup("neovia_opencode_launch", { clear = true })
 vim.api.nvim_create_autocmd("VimEnter", {
+  group = oc_launch_group,
   callback = function()
     -- Defer so the UI is fully drawn before splitting
     vim.schedule(function()
