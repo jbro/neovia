@@ -494,8 +494,7 @@ local function get_worst_status()
     count = count + 1
     if entry.status == "needs_attention" then
       worst = "needs_attention"
-      break -- can't get worse
-    elseif entry.status == "responding" then
+    elseif entry.status == "responding" and worst ~= "needs_attention" then
       worst = "responding"
     end
   end
