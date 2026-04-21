@@ -33,6 +33,16 @@ return {
           end,
         },
       })
+
+      -- gf in opencode output: open file in the code window (left pane)
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = "opencode_output",
+        callback = function(ev)
+          vim.keymap.set("n", "gf", function()
+            require("neovia.navigate").open()
+          end, { buffer = ev.buf, desc = "Open file in code window" })
+        end,
+      })
     end,
   },
 }
