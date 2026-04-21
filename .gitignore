@@ -2,3 +2,4 @@
 # Only lazy-lock.json belongs in the repo.
 .tmp
 .env.lua
+.worktrees/
