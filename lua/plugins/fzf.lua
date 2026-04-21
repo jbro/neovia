@@ -15,6 +15,7 @@ return {
       { "<leader>ww", function() require("neovia.worktree").pick() end, desc = "Worktrees" },
       { "<leader>wc", function() require("neovia.worktree").create() end, desc = "Create worktree" },
       { "<leader>wd", function() require("neovia.worktree").delete() end, desc = "Delete worktree" },
+      { "<leader>wq", function() require("neovia.worktree").close(vim.fn.getcwd()) end, desc = "Close worktree" },
     },
     opts = {},
   },

@@ -1,5 +1,6 @@
 -- neovia worktree module
--- Worktree picker, status tracking via SSE, lualine components.
+-- Worktree lifecycle (create/switch/close/delete), status tracking via SSE,
+-- tabline rendering, and picker.
 
 local M = {}
 
@@ -14,14 +15,12 @@ local M = {}
 --- @field branch string
 --- @field subscription table|nil  curl job handle from subscribe_to_events
 --- @field pending_permissions table<string, boolean>  permission IDs awaiting reply
+--- @field buffer_paths string[]  saved file paths (for switch restore)
+--- @field open boolean  whether this worktree is actively tracked (vs closed)
 
 --- Per-directory state. Keyed by absolute path.
 --- @type table<string, neovia.WorktreeState>
 local state = {}
-
---- Tab-to-directory mapping. Keyed by tab page handle.
---- @type table<integer, string>
-local tab_map = {}
 
 --- Whether setup() has been called.
 local initialised = false
@@ -30,15 +29,90 @@ local initialised = false
 --- @type uv_timer_t|nil
 local dir_timer = nil
 
---- The git common dir for the repo we're tracking (nil = not yet resolved).
---- @type string|nil
-local git_common_dir = nil
+--- Whether we've confirmed we're inside a git repo.
+local in_git_repo = false
 
 -- Forward declarations
-local ensure_subscriptions, list_worktrees, unsubscribe_all
+local ensure_subscriptions, list_worktrees, unsubscribe_all, start_spinner, ensure_highlights
 
 ------------------------------------------------------------------------
--- Helpers
+-- Buffer helpers
+------------------------------------------------------------------------
+
+--- Collect file paths of all listed, normal file buffers.
+--- @return string[]
+local function collect_file_buffers()
+  local paths = {}
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf)
+      and vim.bo[buf].buflisted
+      and vim.bo[buf].buftype == ""
+    then
+      local name = vim.api.nvim_buf_get_name(buf)
+      if name ~= "" then
+        table.insert(paths, name)
+      end
+    end
+  end
+  return paths
+end
+
+--- Unlist all listed file buffers (buftype="" and buflisted).
+local function unlist_file_buffers()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf)
+      and vim.bo[buf].buflisted
+      and vim.bo[buf].buftype == ""
+    then
+      local name = vim.api.nvim_buf_get_name(buf)
+      if name ~= "" then
+        vim.bo[buf].buflisted = false
+      end
+    end
+  end
+end
+
+--- Re-list buffers by path. If a buffer for the path already exists
+--- (unlisted), re-list it. Otherwise create a new buffer.
+--- @param paths string[]
+--- @return integer[] bufs  Buffer handles of restored buffers.
+local function relist_buffers(paths)
+  local bufs = {}
+  for _, path in ipairs(paths) do
+    -- Check if a buffer with this name already exists
+    local existing = vim.fn.bufnr(path)
+    if existing ~= -1 and vim.api.nvim_buf_is_valid(existing) then
+      vim.bo[existing].buflisted = true
+      table.insert(bufs, existing)
+    else
+      -- Create a new buffer for this path
+      local buf = vim.fn.bufadd(path)
+      vim.bo[buf].buflisted = true
+      table.insert(bufs, buf)
+    end
+  end
+  return bufs
+end
+
+--- Wipeout all unlisted buffers matching saved paths for a directory.
+--- Also clears buffer_paths from state.
+--- @param dir string
+local function wipeout_buffers_for_dir(dir)
+  local entry = state[dir]
+  if not entry then return end
+
+  for _, path in ipairs(entry.buffer_paths) do
+    local bufnr = vim.fn.bufnr(path)
+    if bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end
+  end
+
+  entry.buffer_paths = {}
+end
+
+------------------------------------------------------------------------
+-- Git helpers
 ------------------------------------------------------------------------
 
 --- Resolve the git common dir (shared across all worktrees).
@@ -108,6 +182,62 @@ local status_ansi = {
 }
 local ansi_reset = "\27[0m"
 
+--- Derive the worktree directory path for a new branch.
+--- Convention:
+---   - If all linked worktrees are siblings of the main worktree → sibling.
+---   - Otherwise (or no linked worktrees) → <main>/.worktrees/<branch>.
+--- Branch slashes are replaced with dashes.
+--- @param worktrees neovia.WorktreeEntry[]  Output of list_worktrees()
+--- @param branch string  The new branch name
+--- @return string path  Absolute path for the new worktree
+local function derive_worktree_path(worktrees, branch)
+  local safe_branch = branch:gsub("/", "-")
+
+  -- Find the main worktree (first non-bare entry)
+  local main_path = nil
+  for _, wt in ipairs(worktrees) do
+    if not wt.bare then
+      main_path = wt.path
+      break
+    end
+  end
+  if not main_path then return ".worktrees/" .. safe_branch end
+
+  -- Normalise: strip trailing slash
+  main_path = main_path:gsub("/$", "")
+
+  -- Collect linked worktrees (all non-bare entries after the first)
+  local linked = {}
+  for i = 2, #worktrees do
+    if not worktrees[i].bare then
+      table.insert(linked, worktrees[i].path)
+    end
+  end
+
+  -- If no linked worktrees, default to .worktrees/
+  if #linked == 0 then
+    return main_path .. "/.worktrees/" .. safe_branch
+  end
+
+  -- Check if all linked worktrees are siblings (same parent dir as main)
+  local main_parent = vim.fn.fnamemodify(main_path, ":h")
+  local all_siblings = true
+  for _, p in ipairs(linked) do
+    local parent = vim.fn.fnamemodify(p, ":h")
+    if parent ~= main_parent then
+      all_siblings = false
+      break
+    end
+  end
+
+  if all_siblings then
+    return main_parent .. "/" .. safe_branch
+  end
+
+  -- Mixed or nested: fall back to .worktrees/
+  return main_path .. "/.worktrees/" .. safe_branch
+end
+
 --- Status icons (text, no emoji per AGENTS.md).
 --- @type table<string, string>
 local status_icon = {
@@ -125,158 +255,6 @@ local status_hl = {
   needs_attention = { fg = "#f7768e" }, -- tokyonight red
   unknown = { fg = "#565f89" },         -- tokyonight comment
 }
-
-------------------------------------------------------------------------
--- Tab tracking
-------------------------------------------------------------------------
-
---- Register a tab as associated with a worktree directory.
---- @param tab_id integer  Tab page handle
---- @param dir string  Absolute worktree path
-local function register_tab(tab_id, dir)
-  tab_map[tab_id] = dir
-end
-
---- Get the directory associated with a tab.
---- @param tab_id integer
---- @return string|nil
-local function get_tab_dir(tab_id)
-  return tab_map[tab_id]
-end
-
---- Find the tab associated with a directory.
---- @param dir string
---- @return integer|nil
-local function find_tab_for_dir(dir)
-  for tab_id, tab_dir in pairs(tab_map) do
-    if tab_dir == dir then return tab_id end
-  end
-  return nil
-end
-
---- Remove a tab from the mapping.
---- @param tab_id integer
-local function unregister_tab(tab_id)
-  tab_map[tab_id] = nil
-end
-
-------------------------------------------------------------------------
--- Worktree path derivation
-------------------------------------------------------------------------
-
---- Derive the path for a new worktree based on existing worktree layout.
---- Pure function: takes parsed worktree entries, returns a path string.
----
---- Convention detection:
---- 1. If all linked worktrees share a common parent dir, use that dir.
---- 2. Otherwise (no linked worktrees, or mixed), use sibling of main.
----
---- @param branch string  Branch name for the new worktree
---- @param worktrees neovia.WorktreeEntry[]  Parsed worktree list (non-bare)
---- @return string path  Absolute path for the new worktree
-local function derive_worktree_path(branch, worktrees)
-  if #worktrees == 0 then return branch end
-
-  local main_path = worktrees[1].path
-
-  -- Collect linked worktree paths (everything after the first/main entry)
-  local linked = {} --- @type string[]
-  for i = 2, #worktrees do
-    table.insert(linked, worktrees[i].path)
-  end
-
-  -- If there are linked worktrees, check if they share a common parent
-  if #linked > 0 then
-    local common_parent = vim.fn.fnamemodify(linked[1], ":h")
-    local all_same = true
-    for i = 2, #linked do
-      if vim.fn.fnamemodify(linked[i], ":h") ~= common_parent then
-        all_same = false
-        break
-      end
-    end
-    if all_same then
-      return common_parent .. "/" .. branch
-    end
-  end
-
-  -- Default: sibling of main worktree
-  local parent = vim.fn.fnamemodify(main_path, ":h")
-  return parent .. "/" .. branch
-end
-
-------------------------------------------------------------------------
--- Worktree creation result parsing
-------------------------------------------------------------------------
-
---- @class neovia.CreateResult
---- @field status "ok"|"branch_exists"|"error"
---- @field existing_worktree string|nil  Path if a worktree already exists for the branch
---- @field message string|nil  Error message for "error" status
-
---- Parse the result of `git worktree add -b`.
---- Pure function: takes exit code, stderr, branch name, and worktree list.
---- @param code integer  Exit code
---- @param stderr string  Standard error output
---- @param branch string  Branch name attempted
---- @param worktrees neovia.WorktreeEntry[]  Current worktree list
---- @return neovia.CreateResult
-local function parse_create_result(code, stderr, branch, worktrees)
-  if code == 0 then
-    return { status = "ok" }
-  end
-
-  -- Check for "branch already exists" error
-  if stderr:match("already exists") then
-    -- Check if a worktree already exists for this branch
-    local existing = nil
-    for _, wt in ipairs(worktrees) do
-      if wt.branch == branch then
-        existing = wt.path
-        break
-      end
-    end
-    return { status = "branch_exists", existing_worktree = existing }
-  end
-
-  return { status = "error", message = stderr }
-end
-
-------------------------------------------------------------------------
--- Worktree deletion result parsing
-------------------------------------------------------------------------
-
---- @class neovia.DeleteResult
---- @field status "ok"|"dirty"|"error"
---- @field message string|nil
-
---- Parse the result of `git worktree remove`.
---- @param code integer
---- @param stderr string
---- @return neovia.DeleteResult
-local function parse_delete_result(code, stderr)
-  if code == 0 then return { status = "ok" } end
-  if stderr:match("modified or untracked") or stderr:match("use %-%-force") then
-    return { status = "dirty" }
-  end
-  return { status = "error", message = stderr }
-end
-
---- @class neovia.BranchDeleteResult
---- @field status "ok"|"not_merged"|"error"
---- @field message string|nil
-
---- Parse the result of `git branch -d`.
---- @param code integer
---- @param stderr string
---- @return neovia.BranchDeleteResult
-local function parse_branch_delete_result(code, stderr)
-  if code == 0 then return { status = "ok" } end
-  if stderr:match("not fully merged") then
-    return { status = "not_merged" }
-  end
-  return { status = "error", message = stderr }
-end
 
 ------------------------------------------------------------------------
 -- SSE event processing
@@ -345,6 +323,11 @@ local function process_event(dir, event)
 
   if apply_event(entry, event) then
     vim.cmd.redrawstatus()
+    vim.cmd.redrawtabline()
+    -- Start spinner if any worktree just entered responding
+    if entry.status == "responding" then
+      start_spinner()
+    end
   end
 end
 
@@ -385,30 +368,35 @@ ensure_subscriptions = function()
         status = "unknown",
         branch = wt.branch,
         pending_permissions = {},
+        buffer_paths = {},
+        open = true,
       }
     else
       -- Update branch in case it changed
       state[wt.path].branch = wt.branch
     end
 
-    -- Subscribe if not already subscribed (or if subscription died)
+    -- Subscribe if open and not already subscribed (or if subscription died)
     local entry = state[wt.path]
-    local alive = entry.subscription
-      and type(entry.subscription.is_running) == "function"
-      and entry.subscription.is_running()
-    if not alive then
-      -- Clean up dead handle
-      if entry.subscription and type(entry.subscription.shutdown) == "function" then
-        pcall(entry.subscription.shutdown)
+    if entry.open then
+      local alive = entry.subscription
+        and type(entry.subscription.is_running) == "function"
+        and entry.subscription.is_running()
+      if not alive then
+        -- Clean up dead handle
+        if entry.subscription and type(entry.subscription.shutdown) == "function" then
+          pcall(entry.subscription.shutdown)
+        end
+        entry.subscription = nil
+        subscribe_one(wt.path)
       end
-      entry.subscription = nil
-      subscribe_one(wt.path)
     end
   end
 
-  -- Remove state for worktrees that no longer exist
+  -- Remove state for worktrees that no longer exist on disk
+  -- (but keep closed worktrees -- they are intentionally retained)
   for dir, entry in pairs(state) do
-    if not valid[dir] then
+    if not valid[dir] and entry.open then
       if entry.subscription and type(entry.subscription.shutdown) == "function" then
         pcall(entry.subscription.shutdown)
       end
@@ -436,36 +424,18 @@ function M.setup()
   if initialised then return end
   initialised = true
 
-  git_common_dir = resolve_git_common_dir()
-  if not git_common_dir then return end
+  if not resolve_git_common_dir() then return end
+  in_git_repo = true
 
-  -- Register the initial tab for the current worktree
-  local initial_tab = vim.api.nvim_get_current_tabpage()
-  register_tab(initial_tab, vim.fn.getcwd())
-
-  -- Set custom tabline showing branch names
-  vim.o.showtabline = 2  -- always show tabline
-  vim.o.tabline = "%!v:lua.require('neovia.worktree').tabline()"
+  -- Set up tabline and highlights
+  ensure_highlights()
+  _G.neovia_tabline = function()
+    return render_tabline(build_tabline_entries())
+  end
+  vim.o.showtabline = 2 -- always show
+  vim.o.tabline = "%!v:lua.neovia_tabline()"
 
   local group = vim.api.nvim_create_augroup("neovia_worktree", { clear = true })
-
-  -- Clean up tab mapping when tabs are closed
-  vim.api.nvim_create_autocmd("TabClosed", {
-    group = group,
-    callback = function()
-      -- Remove stale tab entries (tabs that no longer exist)
-      local valid_tabs = {} --- @type table<integer, boolean>
-      for _, tp in ipairs(vim.api.nvim_list_tabpages()) do
-        valid_tabs[tp] = true
-      end
-      for tab_id in pairs(tab_map) do
-        if not valid_tabs[tab_id] then
-          unregister_tab(tab_id)
-        end
-      end
-    end,
-    desc = "neovia: clean up tab map on tab close",
-  })
 
   -- Clean up subscriptions on exit
   vim.api.nvim_create_autocmd("VimLeavePre", {
@@ -487,6 +457,7 @@ function M.setup()
         dir_timer:close()
         dir_timer = nil
         ensure_subscriptions()
+        vim.cmd.redrawtabline()
       end))
     end,
     desc = "neovia: refresh worktree subscriptions on tcd",
@@ -528,305 +499,313 @@ function M.set_status(dir, new_status)
     state[dir].pending_permissions = {}
   end
   vim.cmd.redrawstatus()
-end
-
-------------------------------------------------------------------------
--- Tab + session helpers
-------------------------------------------------------------------------
-
---- Open a worktree directory in a new tab with opencode.
---- @param dir string  Absolute worktree path
-local function open_in_new_tab(dir)
-  vim.cmd.tabnew()
-  vim.cmd.tcd(dir)
-  local tab_id = vim.api.nvim_get_current_tabpage()
-  register_tab(tab_id, dir)
-
-  -- Auto-open opencode input in the new tab (deferred to let tcd settle)
-  vim.defer_fn(function()
-    local ok, opencode = pcall(require, "opencode")
-    if ok and opencode.api then
-      opencode.api.open_input()
-    end
-  end, 100)
-end
-
---- Prompt user to fork or create blank session, then open a worktree
---- in a new tab with opencode.
---- @param dir string  Absolute worktree path
-local function prompt_session_and_open_tab(dir)
-  local fzf = require("fzf-lua")
-
-  -- Check if there's a current active session worth forking
-  local oc_state = package.loaded["opencode.state"]
-  local active_session = oc_state and oc_state.session and oc_state.session.get_active()
-
-  if not active_session then
-    -- No active session to fork -- go straight to new tab
-    open_in_new_tab(dir)
-    return
+  vim.cmd.redrawtabline()
+  if new_status == "responding" then
+    start_spinner()
   end
-
-  fzf.fzf_exec({ "Blank session", "Fork current session" }, {
-    prompt = "Session> ",
-    fzf_opts = {
-      ["--no-multi"] = "",
-    },
-    actions = {
-      ["default"] = function(selected)
-        if not selected or #selected == 0 then return end
-        local choice = selected[1]
-
-        if choice == "Fork current session" then
-          local api_client = oc_state.api_client
-          if api_client then
-            api_client:fork_session(active_session.id, nil, dir):next(function(forked)
-              vim.schedule(function()
-                open_in_new_tab(dir)
-              end)
-            end, function(err)
-              vim.schedule(function()
-                vim.notify("Fork failed: " .. tostring(err) .. " -- opening blank session", vim.log.levels.WARN)
-                open_in_new_tab(dir)
-              end)
-            end)
-          else
-            open_in_new_tab(dir)
-          end
-        else
-          open_in_new_tab(dir)
-        end
-      end,
-    },
-  })
 end
 
 ------------------------------------------------------------------------
--- Worktree creation
+-- Public API: worktree lifecycle
 ------------------------------------------------------------------------
 
---- Create a new worktree and open it in a new tab.
---- Prompts for branch name, derives path, runs git worktree add,
---- handles errors, and offers session fork/blank choice.
-function M.create()
+--- Switch to a worktree directory.
+--- Saves current file buffer paths (unlist), tcd to target,
+--- restores saved buffers (relist) or opens netrw on first visit.
+--- If the target is closed, reopens it (re-subscribes SSE).
+--- @param dir string  Absolute path to the target worktree.
+function M.switch_to(dir)
   M.setup()
 
-  local worktrees = list_worktrees()
+  local cwd = vim.fn.getcwd()
+  if cwd == dir then return end
 
-  vim.ui.input({ prompt = "Branch name: " }, function(branch)
+  -- Save current buffers
+  local current_entry = state[cwd]
+  if current_entry then
+    current_entry.buffer_paths = collect_file_buffers()
+  end
+
+  -- Unlist current file buffers
+  unlist_file_buffers()
+
+  -- tcd to target
+  vim.cmd.tcd(dir)
+
+  -- Ensure target has a state entry
+  if not state[dir] then
+    state[dir] = {
+      status = "unknown",
+      branch = "",
+      pending_permissions = {},
+      buffer_paths = {},
+      open = true,
+    }
+  end
+
+  local target = state[dir]
+
+  -- Reopen if closed
+  if not target.open then
+    target.open = true
+    subscribe_one(dir)
+  end
+
+  -- Restore saved buffers or open netrw
+  if #target.buffer_paths > 0 then
+    local bufs = relist_buffers(target.buffer_paths)
+    -- Open the first restored buffer in the code window
+    if #bufs > 0 then
+      local navigate = require("neovia.navigate")
+      local win = navigate.find_code_win()
+      if win then
+        vim.api.nvim_set_current_win(win)
+        vim.api.nvim_win_set_buf(win, bufs[1])
+      end
+    end
+  else
+    -- First visit: open netrw in the code window
+    local navigate = require("neovia.navigate")
+    navigate.open_dir(dir)
+  end
+
+  vim.notify("Switched to " .. dir, vim.log.levels.INFO)
+end
+
+--- Close a worktree: wipeout its buffers, tear down SSE, mark closed.
+--- The git worktree stays on disk. Sessions are untouched.
+--- @param dir string  Absolute path to the worktree.
+function M.close(dir)
+  M.setup()
+
+  local entry = state[dir]
+  if not entry then return end
+
+  -- If this is the current worktree, switch to main first
+  local cwd = vim.fn.getcwd()
+  if cwd == dir then
+    local worktrees = list_worktrees()
+    local main_path = nil
+    for _, wt in ipairs(worktrees) do
+      if wt.path ~= dir and not wt.bare then
+        main_path = wt.path
+        break
+      end
+    end
+    if main_path then
+      M.switch_to(main_path)
+    else
+      vim.notify("Cannot close the only worktree", vim.log.levels.WARN)
+      return
+    end
+  end
+
+  -- Wipeout saved buffers
+  wipeout_buffers_for_dir(dir)
+
+  -- Tear down SSE subscription
+  if entry.subscription and type(entry.subscription.shutdown) == "function" then
+    pcall(entry.subscription.shutdown)
+  end
+  entry.subscription = nil
+
+  -- Mark closed
+  entry.open = false
+  entry.status = "unknown"
+
+  vim.notify("Closed worktree " .. (entry.branch ~= "" and entry.branch or dir), vim.log.levels.INFO)
+end
+
+------------------------------------------------------------------------
+-- Public API: worktree create / delete
+------------------------------------------------------------------------
+
+--- Create a new worktree.
+--- @param opts? { fork?: boolean }
+function M.create(opts)
+  M.setup()
+  opts = opts or {}
+
+  -- Step 1: prompt for branch name
+  vim.ui.input({ prompt = "New branch name: " }, function(branch)
     if not branch or branch == "" then return end
 
-    local path = derive_worktree_path(branch, worktrees)
-
-    -- Try creating with -b (new branch)
-    local result = vim.system(
-      { "git", "worktree", "add", "-b", branch, path },
-      { text = true }
-    ):wait()
-
-    local parsed = parse_create_result(result.code, result.stderr or "", branch, worktrees)
-
-    if parsed.status == "ok" then
-      vim.notify("Created worktree: " .. path, vim.log.levels.INFO)
-      prompt_session_and_open_tab(path)
-
-    elseif parsed.status == "branch_exists" then
-      if parsed.existing_worktree then
-        -- Worktree already exists for this branch -- offer to switch
-        vim.notify("Worktree already exists for '" .. branch .. "' -- switching", vim.log.levels.INFO)
-        local existing_tab = find_tab_for_dir(parsed.existing_worktree)
-        if existing_tab then
-          vim.api.nvim_set_current_tabpage(existing_tab)
-        else
-          prompt_session_and_open_tab(parsed.existing_worktree)
-        end
-      else
-        -- Branch exists but no worktree -- create worktree without -b
-        local retry = vim.system(
-          { "git", "worktree", "add", path, branch },
-          { text = true }
-        ):wait()
-        if retry.code == 0 then
-          vim.notify("Created worktree from existing branch: " .. path, vim.log.levels.INFO)
-          prompt_session_and_open_tab(path)
-        else
-          vim.notify("Failed to create worktree: " .. (retry.stderr or ""), vim.log.levels.ERROR)
-        end
-      end
-
+    -- Step 2: ask fork-or-fresh (before git add, so user can cancel)
+    local do_fork = false
+    if opts.fork ~= nil then
+      do_fork = opts.fork
+      M._create_continue(branch, do_fork)
     else
-      vim.notify("Failed to create worktree: " .. (parsed.message or "unknown error"), vim.log.levels.ERROR)
+      vim.ui.select({ "Fork current session", "Fresh session" }, {
+        prompt = "Session for new worktree:",
+      }, function(choice)
+        if not choice then return end
+        do_fork = choice == "Fork current session"
+        M._create_continue(branch, do_fork)
+      end)
     end
   end)
 end
 
-------------------------------------------------------------------------
--- Worktree deletion
-------------------------------------------------------------------------
-
---- Clean up tab and state for a deleted worktree directory.
---- @param dir string
-local function cleanup_deleted_worktree(dir)
-  -- Close the tab if one exists
-  local tab_id = find_tab_for_dir(dir)
-  if tab_id then
-    -- Switch away first if we're on the tab being closed
-    local current_tab = vim.api.nvim_get_current_tabpage()
-    if tab_id == current_tab then
-      local tabs = vim.api.nvim_list_tabpages()
-      for _, tp in ipairs(tabs) do
-        if tp ~= tab_id then
-          vim.api.nvim_set_current_tabpage(tp)
-          break
-        end
-      end
-    end
-    pcall(vim.api.nvim_command, "tabclose " .. vim.fn.tabpagenr("#"))
-    -- Use a more reliable approach: find the tab's window and close it
-    local ok, wins = pcall(vim.api.nvim_tabpage_list_wins, tab_id)
-    if ok then
-      for _, win in ipairs(wins) do
-        pcall(vim.api.nvim_win_close, win, true)
-      end
-    end
-    unregister_tab(tab_id)
-  end
-
-  -- Clean up SSE subscription and state
-  local entry = state[dir]
-  if entry then
-    if entry.subscription and type(entry.subscription.shutdown) == "function" then
-      pcall(entry.subscription.shutdown)
-    end
-    state[dir] = nil
-  end
-end
-
---- Delete a git branch, offering force if not fully merged.
+--- Internal: continue worktree creation after prompts.
 --- @param branch string
-local function delete_branch(branch)
+--- @param do_fork boolean
+function M._create_continue(branch, do_fork)
+  local worktrees = list_worktrees()
+  local path = derive_worktree_path(worktrees, branch)
+
+  -- Step 3: git worktree add
   local result = vim.system(
-    { "git", "branch", "-d", branch },
+    { "git", "worktree", "add", "-b", branch, path },
     { text = true }
   ):wait()
 
-  local parsed = parse_branch_delete_result(result.code, result.stderr or "")
-
-  if parsed.status == "ok" then
-    vim.notify("Deleted worktree and branch '" .. branch .. "'", vim.log.levels.INFO)
-    ensure_subscriptions()
-  elseif parsed.status == "not_merged" then
-    vim.ui.input({
-      prompt = "Branch '" .. branch .. "' is not fully merged. Force delete? [y/N]: ",
-    }, function(answer)
-      if not answer or answer:lower() ~= "y" then
-        vim.notify("Worktree removed, branch kept", vim.log.levels.INFO)
-        ensure_subscriptions()
-        return
-      end
-      local force_result = vim.system(
-        { "git", "branch", "-D", branch },
-        { text = true }
-      ):wait()
-      if force_result.code == 0 then
-        vim.notify("Deleted worktree and branch '" .. branch .. "' (force)", vim.log.levels.INFO)
-      else
-        vim.notify("Failed to delete branch: " .. (force_result.stderr or ""), vim.log.levels.ERROR)
-      end
-      ensure_subscriptions()
-    end)
-  else
-    vim.notify("Worktree removed. Branch delete failed: " .. (parsed.message or ""), vim.log.levels.WARN)
-    ensure_subscriptions()
-  end
-end
-
---- Delete a worktree and its branch.
---- Opens a picker to select the worktree, then removes it and the branch.
---- Offers force options if the worktree is dirty or the branch is not merged.
-function M.delete()
-  M.setup()
-
-  local fzf = require("fzf-lua")
-  local worktrees = list_worktrees()
-  local cwd = vim.fn.getcwd()
-
-  -- Filter out the current worktree (can't delete what you're standing on)
-  local deletable = {} --- @type neovia.WorktreeEntry[]
-  for _, wt in ipairs(worktrees) do
-    if wt.path ~= cwd then
-      table.insert(deletable, wt)
-    end
-  end
-
-  if #deletable == 0 then
-    vim.notify("No worktrees to delete (can't delete the current one)", vim.log.levels.WARN)
+  if result.code ~= 0 then
+    vim.notify("Failed to create worktree: " .. (result.stderr or ""), vim.log.levels.ERROR)
     return
   end
 
-  -- Build entries and lookup
-  local entries = {} --- @type string[]
-  local line_to_entry = {} --- @type table<string, neovia.WorktreeEntry>
-  for _, wt in ipairs(deletable) do
-    local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
-    local line = string.format("%-20s  %s", wt.branch, display_path)
-    table.insert(entries, line)
-    line_to_entry[line] = wt
+  -- Step 4: fork session if requested
+  if do_fork then
+    local oc_state = package.loaded["opencode.state"]
+    if oc_state and oc_state.api_client and oc_state.active_session then
+      local session_id = oc_state.active_session.id
+      local msg_id = oc_state.last_user_message
+        and oc_state.last_user_message.info
+        and oc_state.last_user_message.info.id
+      oc_state.api_client
+        :fork_session(session_id, msg_id and { messageID = msg_id } or nil, path)
+        :and_then(function(response)
+          vim.schedule(function()
+            if response and response.id then
+              vim.notify("Session forked for " .. branch, vim.log.levels.INFO)
+            end
+          end)
+        end)
+        :catch(function(err)
+          vim.schedule(function()
+            vim.notify("Session fork failed: " .. vim.inspect(err), vim.log.levels.WARN)
+          end)
+        end)
+    end
   end
 
-  fzf.fzf_exec(entries, {
+  -- Step 5: switch to the new worktree
+  M.switch_to(path)
+end
+
+--- Delete a worktree.
+--- Shows a picker to select which worktree to delete.
+function M.delete()
+  M.setup()
+
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("worktree.delete: fzf-lua not available", vim.log.levels.ERROR)
+    return
+  end
+  local worktrees = list_worktrees()
+  local cwd = vim.fn.getcwd()
+
+  -- Filter out the main worktree (first entry) and current
+  local candidates = {}
+  local line_to_wt = {}
+  for i, wt in ipairs(worktrees) do
+    if i > 1 and not wt.bare then -- skip main worktree
+      local marker = wt.path == cwd and " (current)" or ""
+      local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
+      local line = string.format("%s  %s%s", wt.branch, display_path, marker)
+      table.insert(candidates, line)
+      line_to_wt[line] = wt
+    end
+  end
+
+  if #candidates == 0 then
+    vim.notify("No linked worktrees to delete", vim.log.levels.WARN)
+    return
+  end
+
+  fzf.fzf_exec(candidates, {
     prompt = "Delete worktree> ",
-    fzf_opts = {
-      ["--no-multi"] = "",
-    },
+    fzf_opts = { ["--no-multi"] = "" },
     actions = {
       ["default"] = function(selected)
         if not selected or #selected == 0 then return end
-        local wt = line_to_entry[selected[1]]
+        local wt = line_to_wt[selected[1]]
         if not wt then return end
 
-        -- Step 1: Remove the worktree
-        local rm_result = vim.system(
-          { "git", "worktree", "remove", wt.path },
-          { text = true }
-        ):wait()
-
-        local rm_parsed = parse_delete_result(rm_result.code, rm_result.stderr or "")
-
-        if rm_parsed.status == "dirty" then
-          -- Offer force
-          vim.ui.input({
-            prompt = "Worktree has modifications. Force delete? [y/N]: ",
-          }, function(answer)
-            if not answer or answer:lower() ~= "y" then
-              vim.notify("Aborted", vim.log.levels.INFO)
-              return
-            end
-            local force_result = vim.system(
-              { "git", "worktree", "remove", "--force", wt.path },
-              { text = true }
-            ):wait()
-            if force_result.code ~= 0 then
-              vim.notify("Force delete failed: " .. (force_result.stderr or ""), vim.log.levels.ERROR)
-              return
-            end
-            cleanup_deleted_worktree(wt.path)
-            delete_branch(wt.branch)
-          end)
-          return
-        elseif rm_parsed.status == "error" then
-          vim.notify("Failed to remove worktree: " .. (rm_parsed.message or ""), vim.log.levels.ERROR)
-          return
-        end
-
-        -- Worktree removed successfully
-        cleanup_deleted_worktree(wt.path)
-
-        -- Step 2: Delete the branch
-        delete_branch(wt.branch)
+        vim.ui.select({ "Yes", "No" }, {
+          prompt = string.format("Delete worktree '%s' at %s?", wt.branch, wt.path),
+        }, function(confirm)
+          if confirm ~= "Yes" then return end
+          M._delete_continue(wt)
+        end)
       end,
     },
   })
+end
+
+--- Internal: continue worktree deletion after confirmation.
+--- @param wt neovia.WorktreeEntry
+function M._delete_continue(wt)
+  -- Create tombstone session (emulates /new) so the path is left clean
+  local oc_state = package.loaded["opencode.state"]
+  if oc_state and oc_state.api_client then
+    oc_state.api_client:create_session(false, wt.path)
+      :catch(function() end) -- best-effort
+  end
+
+  -- Close the worktree (switch away if current, wipeout buffers, tear down SSE)
+  local entry = state[wt.path]
+  if entry and entry.open then
+    M.close(wt.path)
+  end
+
+  -- git worktree remove
+  local rm_result = vim.system(
+    { "git", "worktree", "remove", wt.path },
+    { text = true }
+  ):wait()
+
+  if rm_result.code ~= 0 then
+    vim.notify("Failed to remove worktree: " .. (rm_result.stderr or ""), vim.log.levels.ERROR)
+    return
+  end
+
+  -- git branch -d (safe delete)
+  if wt.branch ~= "" and wt.branch ~= "(detached)" then
+    local br_result = vim.system(
+      { "git", "branch", "-d", wt.branch },
+      { text = true }
+    ):wait()
+
+    if br_result.code ~= 0 then
+      -- Branch not fully merged -- ask about force delete
+      vim.ui.select({ "Force delete (-D)", "Keep branch" }, {
+        prompt = string.format("Branch '%s' is not fully merged:", wt.branch),
+      }, function(choice)
+        if choice == "Force delete (-D)" then
+          local force = vim.system(
+            { "git", "branch", "-D", wt.branch },
+            { text = true }
+          ):wait()
+          if force.code ~= 0 then
+            vim.notify("Failed to delete branch: " .. (force.stderr or ""), vim.log.levels.ERROR)
+          else
+            vim.notify("Branch '" .. wt.branch .. "' force-deleted", vim.log.levels.INFO)
+          end
+        end
+      end)
+    end
+  end
+
+  -- Clean up state
+  state[wt.path] = nil
+
+  -- Refresh subscriptions
+  ensure_subscriptions()
+
+  vim.notify("Deleted worktree " .. wt.branch, vim.log.levels.INFO)
 end
 
 ------------------------------------------------------------------------
@@ -834,13 +813,19 @@ end
 ------------------------------------------------------------------------
 
 --- Open the worktree picker.
+--- Shows all worktrees (open and closed). Closed worktrees are dimmed.
+--- Selecting a worktree switches to it (reopening if closed).
 function M.pick()
   M.setup()
 
   -- Refresh worktree list and subscriptions
   ensure_subscriptions()
 
-  local fzf = require("fzf-lua")
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("worktree.pick: fzf-lua not available", vim.log.levels.ERROR)
+    return
+  end
   local worktrees = list_worktrees()
 
   if #worktrees == 0 then
@@ -849,14 +834,16 @@ function M.pick()
   end
 
   local cwd = vim.fn.getcwd()
+  local dim = "\27[90m" -- ANSI dim grey for closed worktrees
 
   -- Build entries and a lookup from display line to worktree path
   local entries = {} --- @type string[]
   local line_to_path = {} --- @type table<string, string>
   for _, wt in ipairs(worktrees) do
-    local entry = state[wt.path] or { status = "unknown" }
-    local colour = status_ansi[entry.status] or status_ansi.unknown
-    local icon = status_icon[entry.status] or ""
+    local entry = state[wt.path] or { status = "unknown", open = true }
+    local is_open = entry.open ~= false
+    local colour = is_open and (status_ansi[entry.status] or status_ansi.unknown) or dim
+    local icon = is_open and (status_icon[entry.status] or "") or "[closed]"
     local marker = wt.path == cwd and " *" or ""
 
     -- Show path relative to home for readability
@@ -865,7 +852,8 @@ function M.pick()
     local line = string.format(
       "%s%-20s%s  %s%s%s%s",
       colour, wt.branch, ansi_reset,
-      display_path, marker,
+      is_open and display_path or (dim .. display_path .. ansi_reset),
+      marker,
       icon ~= "" and ("  " .. colour .. icon .. ansi_reset) or "",
       ""
     )
@@ -882,19 +870,9 @@ function M.pick()
     actions = {
       ["default"] = function(selected)
         if not selected or #selected == 0 then return end
-
-        local match = selected[1]
-        local target = match and line_to_path[match] or nil
-        if not target then return end
-
-        -- Check if a tab already exists for this worktree
-        local existing_tab = find_tab_for_dir(target)
-        if existing_tab then
-          vim.api.nvim_set_current_tabpage(existing_tab)
-          vim.notify("Switched to tab: " .. target, vim.log.levels.INFO)
-        else
-          -- Open in new tab; prompt for session fork/blank if no session exists
-          prompt_session_and_open_tab(target)
+        local target = line_to_path[selected[1]]
+        if target then
+          M.switch_to(target)
         end
       end,
     },
@@ -910,11 +888,13 @@ local function define_highlights()
   for name, hl in pairs(status_hl) do
     vim.api.nvim_set_hl(0, "NeoviaWt_" .. name, hl)
   end
+  -- Closed worktree: dim/comment colour
+  vim.api.nvim_set_hl(0, "NeoviaWtClosed", { fg = "#565f89", italic = true })
 end
 
 --- Set up highlights lazily, re-apply on colorscheme change.
 local hl_initialised = false
-local function ensure_highlights()
+ensure_highlights = function()
   if hl_initialised then return end
   hl_initialised = true
   define_highlights()
@@ -926,133 +906,121 @@ local function ensure_highlights()
   })
 end
 
---- Lualine component: current worktree status.
---- Returns a table suitable for use as a lualine component function.
---- @return string
-function M.lualine_current()
-  ensure_highlights()
-  M.setup()
-
-  local dir = vim.fn.getcwd()
-  local entry = state[dir]
-  if not entry then return "" end
-
-  local s = entry.status
-  return status_icon[s] or status_icon.idle
-end
-
---- Colour callback for lualine_current.
---- @return table|nil
-function M.lualine_current_color()
-  local dir = vim.fn.getcwd()
-  local entry = state[dir]
-  if not entry then return nil end
-  return { fg = (status_hl[entry.status] or {}).fg }
-end
-
---- Compute the worst status across all worktrees.
---- Priority: needs_attention > responding > idle.
---- @return string worst  One of "idle", "responding", "needs_attention".
---- @return integer count  Number of tracked worktrees.
-local function get_worst_status()
-  local worst = "idle"
-  local count = 0
-  for _, entry in pairs(state) do
-    count = count + 1
-    if entry.status == "needs_attention" then
-      worst = "needs_attention"
-    elseif entry.status == "responding" and worst ~= "needs_attention" then
-      worst = "responding"
-    end
-  end
-  return worst, count
-end
-
---- Lualine component: aggregate status across all worktrees.
---- @return string
-function M.lualine_aggregate()
-  ensure_highlights()
-  M.setup()
-
-  local worst, count = get_worst_status()
-
-  -- Don't show anything if there's only one worktree or all idle
-  if count <= 1 or worst == "idle" then return "" end
-
-  if worst == "needs_attention" then
-    return "[wt: needs you]"
-  elseif worst == "responding" then
-    return "[wt: working]"
-  end
-
-  return ""
-end
-
---- Colour callback for lualine_aggregate.
---- @return table|nil
-function M.lualine_aggregate_color()
-  local worst, count = get_worst_status()
-  if count <= 1 or worst == "idle" then return nil end
-  return { fg = (status_hl[worst] or {}).fg }
-end
-
 ------------------------------------------------------------------------
 -- Tabline
 ------------------------------------------------------------------------
 
---- Status indicator characters for tabline.
---- @type table<string, string>
-local status_char = {
-  idle = "",
-  responding = "~",
-  needs_attention = "!",
-  unknown = "?",
-}
+--- Spinner frames for "responding" status.
+local spinner_frames = { "|", "/", "-", "\\" }
 
---- Build a tabline string showing branch names and status for each tab.
---- Uses tab_map for tracked tabs, falls back to directory basename.
---- Status is shown on all tabs via colored indicator characters.
+--- Spinner state: advances each time status_char is called for responding.
+local spinner_idx = 0
+
+--- Timer for spinning the tabline spinner.
+--- @type uv_timer_t|nil
+local spinner_timer = nil
+
+--- Return a single-character status indicator.
+--- @param s string  One of "idle", "responding", "needs_attention", "unknown".
 --- @return string
-function M.tabline()
-  ensure_highlights()
-  local parts = {} --- @type string[]
-  local current_tab = vim.api.nvim_get_current_tabpage()
+local function status_char(s)
+  if s == "needs_attention" then return "!" end
+  if s == "responding" then
+    spinner_idx = (spinner_idx % #spinner_frames) + 1
+    return spinner_frames[spinner_idx]
+  end
+  if s == "unknown" then return "?" end
+  return "" -- idle: no indicator
+end
 
-  for i, tp in ipairs(vim.api.nvim_list_tabpages()) do
-    local is_current = (tp == current_tab)
-    local hl = is_current and "%#TabLineSel#" or "%#TabLine#"
+--- @class neovia.TablineEntry
+--- @field branch string
+--- @field status string
+--- @field current boolean
+--- @field open boolean
 
-    -- Get branch name from tab_map, or fall back to directory basename
-    local label
-    local dir = tab_map[tp]
-    if dir then
-      local entry = state[dir]
-      if entry and entry.branch and entry.branch ~= "" then
-        label = entry.branch
-      else
-        label = vim.fn.fnamemodify(dir, ":t")
-      end
+--- Render the tabline string from a list of entries (pure).
+--- Returns "" if there are 0 or 1 entries (tabline not useful).
+--- @param entries neovia.TablineEntry[]
+--- @return string
+local function render_tabline(entries)
+  if #entries <= 1 then return "" end
+
+  local parts = {}
+  for _, e in ipairs(entries) do
+    local char = status_char(e.status)
+    local suffix = char ~= "" and (" " .. char) or ""
+
+    if e.current then
+      table.insert(parts, "%#TabLineSel# " .. e.branch .. suffix .. " ")
+    elseif not e.open then
+      table.insert(parts, "%#NeoviaWtClosed# " .. e.branch .. suffix .. " ")
     else
-      local tab_cwd = vim.fn.getcwd(-1, i)
-      label = vim.fn.fnamemodify(tab_cwd, ":t")
-    end
-
-    -- Status indicator with highlight color on all tabs
-    local indicator = ""
-    if dir and state[dir] then
-      local s = state[dir].status
-      local ch = status_char[s] or ""
-      if ch ~= "" then
-        local hl_name = "NeoviaWt_" .. s
-        indicator = " %#" .. hl_name .. "#" .. ch .. hl
+      -- Use status-coloured highlight for the indicator character
+      local hl = "TabLine"
+      if e.status == "needs_attention" then
+        hl = "NeoviaWt_needs_attention"
+      elseif e.status == "responding" then
+        hl = "NeoviaWt_responding"
+      end
+      if char ~= "" then
+        table.insert(parts, "%#TabLine# " .. e.branch .. " %#" .. hl .. "#" .. char .. " ")
+      else
+        table.insert(parts, "%#TabLine# " .. e.branch .. " ")
       end
     end
-
-    table.insert(parts, hl .. " " .. label .. indicator .. " ")
   end
 
-  table.insert(parts, "%#TabLineFill#")
-  return table.concat(parts)
+  return table.concat(parts) .. "%#TabLineFill#"
+end
+
+--- Build tabline entries from current state + worktree list.
+--- @return neovia.TablineEntry[]
+local function build_tabline_entries()
+  local worktrees = list_worktrees()
+  local cwd = vim.fn.getcwd()
+  local entries = {} --- @type neovia.TablineEntry[]
+
+  for _, wt in ipairs(worktrees) do
+    local entry = state[wt.path]
+    table.insert(entries, {
+      branch = wt.branch,
+      status = entry and entry.status or "unknown",
+      current = wt.path == cwd,
+      open = entry and entry.open ~= false or true,
+    })
+  end
+
+  return entries
+end
+
+-- _G.neovia_tabline is set in setup() so it survives reload.
+
+--- Start the spinner timer (redraws tabline periodically when any worktree is responding).
+start_spinner = function()
+  if spinner_timer then return end
+  spinner_timer = vim.uv.new_timer()
+  spinner_timer:start(200, 200, vim.schedule_wrap(function()
+    -- Check if any worktree is still responding
+    local any_responding = false
+    for _, entry in pairs(state) do
+      if entry.status == "responding" then
+        any_responding = true
+        break
+      end
+    end
+    if any_responding then
+      vim.cmd.redrawtabline()
+    else
+      -- Stop spinner when nothing is responding
+      if spinner_timer then
+        spinner_timer:stop()
+        spinner_timer:close()
+        spinner_timer = nil
+      end
+      vim.cmd.redrawtabline()
+    end
+  end))
 end
 
 ------------------------------------------------------------------------
@@ -1064,18 +1032,22 @@ M._internal = {
   parse_worktree_porcelain = parse_worktree_porcelain,
   apply_event = apply_event,
   derive_worktree_path = derive_worktree_path,
-  parse_create_result = parse_create_result,
-  parse_delete_result = parse_delete_result,
-  parse_branch_delete_result = parse_branch_delete_result,
-  delete_branch = delete_branch,
-  register_tab = register_tab,
-  get_tab_dir = get_tab_dir,
-  find_tab_for_dir = find_tab_for_dir,
-  unregister_tab = unregister_tab,
-  open_in_new_tab = open_in_new_tab,
-  get_worst_status = get_worst_status,
+  collect_file_buffers = collect_file_buffers,
+  unlist_file_buffers = unlist_file_buffers,
+  relist_buffers = relist_buffers,
+  wipeout_buffers_for_dir = wipeout_buffers_for_dir,
+  status_char = status_char,
+  render_tabline = render_tabline,
+  build_tabline_entries = build_tabline_entries,
   status_icon = status_icon,
   status_hl = status_hl,
+  process_event = process_event,
+  subscribe_one = subscribe_one,
+  ensure_subscriptions = ensure_subscriptions,
+  unsubscribe_all = unsubscribe_all,
+  start_spinner = start_spinner,
+  resolve_git_common_dir = resolve_git_common_dir,
+  list_worktrees = list_worktrees,
 
   --- Get the raw state table (for assertions).
   --- @return table<string, neovia.WorktreeState>
@@ -1085,23 +1057,30 @@ M._internal = {
   --- @param new_state table<string, neovia.WorktreeState>
   set_state = function(new_state) state = new_state end,
 
+  --- Mark the module as initialised (for tests that bypass setup).
+  set_initialised = function(val) initialised = val end,
+
   --- Reset module to uninitialised state (for test isolation).
   reset = function()
     unsubscribe_all()
     state = {}
-    tab_map = {}
     initialised = false
     hl_initialised = false
-    git_common_dir = nil
+    in_git_repo = false
     if dir_timer then
       dir_timer:stop()
       dir_timer:close()
       dir_timer = nil
     end
+    if spinner_timer then
+      spinner_timer:stop()
+      spinner_timer:close()
+      spinner_timer = nil
+    end
+    spinner_idx = 0
+    _G.neovia_tabline = nil
     pcall(vim.api.nvim_del_augroup_by_name, "neovia_worktree")
     pcall(vim.api.nvim_del_augroup_by_name, "neovia_worktree_hl")
-    vim.o.showtabline = 1  -- restore default
-    vim.o.tabline = ""
   end,
 
   --- Create a fresh WorktreeState entry.
@@ -1112,6 +1091,8 @@ M._internal = {
       status = "unknown",
       branch = "main",
       pending_permissions = {},
+      buffer_paths = {},
+      open = true,
     }, overrides or {})
   end,
 }
