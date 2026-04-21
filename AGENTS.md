@@ -5,12 +5,13 @@ neovia is a Neovim configuration for an AI-driven coding environment.
 ## How to Work on This Project
 
 - Target Neovim >= 0.11
-- Use native APIs over plugins where Neovim has built-in support (e.g. `vim.lsp.config`/`vim.lsp.enable`, `vim.lsp.completion.enable()`)
+- Use native APIs over plugins where Neovim has built-in support (e.g. `vim.lsp.config`/`vim.lsp.enable`)
 - Use Neovim default keybindings. Only override on conflict (log the resolution). Only add new bindings where no default exists.
 - Prefer fewer, thinner plugins. Prefer native Neovim or OpenCode over adding a plugin.
 - Vimscript plugins are fine when battle-tested with no better Lua equivalent.
 - Keep config (`lua/plugins/`) declarative. Non-reusable glue code can stay inline; reusable logic and feature implementations belong in the module (`lua/neovia/`).
 - Use red-green-refactor TDD for the module (`lua/neovia/`). Write a failing test first, then write the minimal code to make it pass, then refactor. Run tests before considering a task done.
+- Guard `require()` calls for plugins in module code with `pcall` -- modules may run before plugins are loaded (e.g. VimEnter, user commands).
 - All code must be safe to reload via `<leader>pr` (re-source `init.lua` after resetting modules). Follow the reload contract below.
 
 ### Reload contract
@@ -48,8 +49,10 @@ These rules define what neovia is. They guide design and implementation decision
 
 - Optimized for an AI-driven coding workflow: OpenCode writes project code, the user reviews, navigates, and orchestrates. Plugin choices follow from this.
 - One OpenCode process per git worktree. Worktree switching uses `tcd` to scope all plugins to that directory.
-- Each worktree gets its own tab. The tabline shows branch names with status indicators (`~` responding, `!` needs attention, `?` unknown). Only the visible tab's opencode session is active in the UI; background sessions keep running server-side.
-- Worktree lifecycle is managed via `<leader>wc` (create), `<leader>ww` (switch), `<leader>wd` (delete). Session forking bridges context across worktrees.
+- Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. opencode.nvim detects the directory change and swaps sessions automatically. Background sessions keep running server-side.
+- Worktree lifecycle is managed via `<leader>wc` (create), `<leader>ww` (switch), `<leader>wd` (delete), `<leader>wq` (close). Session forking bridges context across worktrees.
+- Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, and relists saved buffers (or opens netrw on first visit). Closing wipes buffers and tears down SSE but keeps the git worktree on disk. Deleting creates a tombstone session (so reused paths start clean), then removes the worktree and branch.
+- Tabline (`%!v:lua.neovia_tabline()`) shows all worktree branches with status indicators. Current branch highlighted, closed worktrees dimmed.
 
 ## Decision Log
 
@@ -61,8 +64,9 @@ Superseded entries should be removed to keep context lean.
 
 ### 0001 - Target modern Neovim (2026-03-26)
 
-Neovim 0.11+ has native LSP config, completion, and diagnostics built in.
-Use these instead of the plugin equivalents (lspconfig, blink.cmp, etc.).
+Neovim 0.11+ has native LSP config and diagnostics built in.
+Use these instead of the plugin equivalents (lspconfig, etc.).
+Exception: blink.cmp is kept for completion (richer UX than native).
 This reduces the plugin surface and keeps the config closer to upstream.
 
 ### 0002 - OpenCode writes code, user orchestrates (2026-03-26)
@@ -88,7 +92,8 @@ Buffers open read-only (modifiable=false, readonly=true) by default.
 `<leader>u` toggles edit mode; BufLeave auto-relocks (configurable).
 Special buffers (terminal, help, quickfix, gitcommit, fugitive, neo-tree,
 etc.) are excluded. Which-key only triggers on `<leader>` with curated
-groups: Find (f), Search (s), Git (g), OpenCode (o), Worktree (w).
+groups: Find (f), Search (s), Git (g), OpenCode (o), Worktree (w),
+Plugins (p).
 
 ### 0006 - Env module sets variables before plugin load (2026-04-21)
 
@@ -107,12 +112,8 @@ augroups for autocmds, and guard `setup()` with an `initialised` flag.
 `vim.g` flags. Plugin specs are not reloaded (use `:Lazy sync`).
 See the reload contract in the rules section above.
 
-### 0008 - Worktree lifecycle via tabs (2026-04-21)
+### 0008 - Worktree lifecycle via tcd (2026-04-21)
 
-Each worktree gets its own tab (`tcd`-scoped). opencode.nvim has a
-single global UI, so only the visible tab's session is active; background
-sessions keep running server-side. Cross-directory session forking
-(`POST /session/{id}/fork?directory=`) bridges context when branching.
-Worktree path auto-derived from repo convention (`.worktrees/`, sibling,
-or fallback). Tabline replaces lualine for per-worktree status display.
-
+`tcd` switches worktrees in place; opencode.nvim detects `DirChanged` and
+swaps sessions automatically. Sessions are never deleted -- on worktree
+delete a tombstone session is created so reused paths start clean.
