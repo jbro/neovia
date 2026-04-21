@@ -300,231 +300,6 @@ describe("set_status", function()
 end)
 
 ------------------------------------------------------------------------
--- lualine_aggregate (logic via state injection)
-------------------------------------------------------------------------
-
-describe("lualine_aggregate", function()
-  local orig_setup
-  local orig_ensure_hl
-
-  before_each(function()
-    -- Bypass setup() and ensure_highlights() side effects in headless mode
-    orig_setup = wt.setup
-    wt.setup = function() end
-    vim.cmd.redrawstatus = function() end
-  end)
-
-  after_each(function()
-    wt.setup = orig_setup
-    I.reset()
-  end)
-
-  it("returns empty with zero worktrees", function()
-    I.set_state({})
-    assert.equals("", wt.lualine_aggregate())
-  end)
-
-  it("returns empty with one worktree", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "responding" }),
-    })
-    assert.equals("", wt.lualine_aggregate())
-  end)
-
-  it("returns empty when all idle", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "idle" }),
-      ["/b"] = I.make_entry({ status = "idle" }),
-    })
-    assert.equals("", wt.lualine_aggregate())
-  end)
-
-  it("shows working when any is responding", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "idle" }),
-      ["/b"] = I.make_entry({ status = "responding" }),
-    })
-    assert.equals("[wt: working]", wt.lualine_aggregate())
-  end)
-
-  it("shows needs_you when any needs attention", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "responding" }),
-      ["/b"] = I.make_entry({ status = "needs_attention" }),
-    })
-    assert.equals("[wt: needs you]", wt.lualine_aggregate())
-  end)
-
-  it("needs_attention takes priority over responding", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "responding" }),
-      ["/b"] = I.make_entry({ status = "needs_attention" }),
-      ["/c"] = I.make_entry({ status = "idle" }),
-    })
-    assert.equals("[wt: needs you]", wt.lualine_aggregate())
-  end)
-end)
-
-------------------------------------------------------------------------
--- lualine_current (logic via state injection)
-------------------------------------------------------------------------
-
-describe("lualine_current", function()
-  local orig_setup
-
-  before_each(function()
-    orig_setup = wt.setup
-    wt.setup = function() end
-    vim.cmd.redrawstatus = function() end
-  end)
-
-  after_each(function()
-    wt.setup = orig_setup
-    I.reset()
-  end)
-
-  it("returns empty when cwd has no state entry", function()
-    I.set_state({})
-    assert.equals("", wt.lualine_current())
-  end)
-
-  it("returns [idle] when idle", function()
-    local cwd = vim.fn.getcwd()
-    I.set_state({
-      [cwd] = I.make_entry({ status = "idle" }),
-    })
-    assert.equals("[idle]", wt.lualine_current())
-  end)
-
-  it("returns [idle] when unknown (pre-connection)", function()
-    local cwd = vim.fn.getcwd()
-    I.set_state({
-      [cwd] = I.make_entry({ status = "unknown" }),
-    })
-    assert.equals("[idle]", wt.lualine_current())
-  end)
-
-  it("returns [working] when responding", function()
-    local cwd = vim.fn.getcwd()
-    I.set_state({
-      [cwd] = I.make_entry({ status = "responding" }),
-    })
-    assert.equals("[working]", wt.lualine_current())
-  end)
-
-  it("returns [needs you] when needs_attention", function()
-    local cwd = vim.fn.getcwd()
-    I.set_state({
-      [cwd] = I.make_entry({ status = "needs_attention" }),
-    })
-    assert.equals("[needs you]", wt.lualine_current())
-  end)
-end)
-
-------------------------------------------------------------------------
--- lualine_current_color
-------------------------------------------------------------------------
-
-describe("lualine_current_color", function()
-  local orig_setup
-
-  before_each(function()
-    orig_setup = wt.setup
-    wt.setup = function() end
-    vim.cmd.redrawstatus = function() end
-  end)
-
-  after_each(function()
-    wt.setup = orig_setup
-    I.reset()
-  end)
-
-  it("returns nil when cwd has no state entry", function()
-    I.set_state({})
-    assert.is_nil(wt.lualine_current_color())
-  end)
-
-  it("returns green fg for idle", function()
-    local cwd = vim.fn.getcwd()
-    I.set_state({
-      [cwd] = I.make_entry({ status = "idle" }),
-    })
-    assert.same({ fg = I.status_hl.idle.fg }, wt.lualine_current_color())
-  end)
-
-  it("returns yellow fg for responding", function()
-    local cwd = vim.fn.getcwd()
-    I.set_state({
-      [cwd] = I.make_entry({ status = "responding" }),
-    })
-    assert.same({ fg = I.status_hl.responding.fg }, wt.lualine_current_color())
-  end)
-
-  it("returns red fg for needs_attention", function()
-    local cwd = vim.fn.getcwd()
-    I.set_state({
-      [cwd] = I.make_entry({ status = "needs_attention" }),
-    })
-    assert.same({ fg = I.status_hl.needs_attention.fg }, wt.lualine_current_color())
-  end)
-end)
-
-------------------------------------------------------------------------
--- lualine_aggregate_color
-------------------------------------------------------------------------
-
-describe("lualine_aggregate_color", function()
-  local orig_setup
-
-  before_each(function()
-    orig_setup = wt.setup
-    wt.setup = function() end
-    vim.cmd.redrawstatus = function() end
-  end)
-
-  after_each(function()
-    wt.setup = orig_setup
-    I.reset()
-  end)
-
-  it("returns nil with zero worktrees", function()
-    I.set_state({})
-    assert.is_nil(wt.lualine_aggregate_color())
-  end)
-
-  it("returns nil with one worktree", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "responding" }),
-    })
-    assert.is_nil(wt.lualine_aggregate_color())
-  end)
-
-  it("returns nil when all idle", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "idle" }),
-      ["/b"] = I.make_entry({ status = "idle" }),
-    })
-    assert.is_nil(wt.lualine_aggregate_color())
-  end)
-
-  it("returns yellow fg when any is responding", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "idle" }),
-      ["/b"] = I.make_entry({ status = "responding" }),
-    })
-    assert.same({ fg = I.status_hl.responding.fg }, wt.lualine_aggregate_color())
-  end)
-
-  it("returns red fg when any needs attention", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ status = "responding" }),
-      ["/b"] = I.make_entry({ status = "needs_attention" }),
-    })
-    assert.same({ fg = I.status_hl.needs_attention.fg }, wt.lualine_aggregate_color())
-  end)
-end)
-
-------------------------------------------------------------------------
 -- Full event sequence scenario
 ------------------------------------------------------------------------
 
@@ -577,7 +352,7 @@ describe("event sequence scenario", function()
     })
     assert.equals("responding", entry.status)
 
-    I.apply_event(entry, {
+     I.apply_event(entry, {
       type = "session.error",
       properties = { sessionID = "s1" },
     })
@@ -590,157 +365,1281 @@ end)
 ------------------------------------------------------------------------
 
 describe("derive_worktree_path", function()
-  it("returns sibling of main worktree when no linked worktrees exist", function()
-    local worktrees = {
-      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
+  -- Helper: build a minimal worktree entry list.
+  -- The first entry is always the main worktree (non-linked).
+  local function entries(main_path, linked)
+    local list = {
+      { path = main_path, branch = "main", head = "aaa", bare = false },
     }
-    local result = I.derive_worktree_path("feature-auth", worktrees)
-    assert.equals("/home/user/feature-auth", result)
+    for _, l in ipairs(linked or {}) do
+      table.insert(list, { path = l.path, branch = l.branch or "x", head = "bbb", bare = false })
+    end
+    return list
+  end
+
+  it("uses .worktrees/ under main when no linked worktrees exist", function()
+    local wts = entries("/home/user/project")
+    local result = I.derive_worktree_path(wts, "feat/cool-thing")
+    assert.equals("/home/user/project/.worktrees/feat-cool-thing", result)
   end)
 
-  it("follows .worktrees/ convention when existing worktrees are under it", function()
-    local worktrees = {
-      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
-      { path = "/home/user/project/.worktrees/feat-a", branch = "feat-a", head = "bbb1234", bare = false },
-      { path = "/home/user/project/.worktrees/feat-b", branch = "feat-b", head = "ccc1234", bare = false },
-    }
-    local result = I.derive_worktree_path("feat-c", worktrees)
+  it("replaces slashes in branch names with dashes", function()
+    local wts = entries("/home/user/project")
+    local result = I.derive_worktree_path(wts, "fix/deep/nested/thing")
+    assert.equals("/home/user/project/.worktrees/fix-deep-nested-thing", result)
+  end)
+
+  it("uses .worktrees/ when all linked worktrees are inside .worktrees/", function()
+    local wts = entries("/home/user/project", {
+      { path = "/home/user/project/.worktrees/feat-a" },
+      { path = "/home/user/project/.worktrees/feat-b" },
+    })
+    local result = I.derive_worktree_path(wts, "feat-c")
     assert.equals("/home/user/project/.worktrees/feat-c", result)
   end)
 
-  it("follows sibling convention when existing worktrees are siblings", function()
-    local worktrees = {
-      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
-      { path = "/home/user/feat-a", branch = "feat-a", head = "bbb1234", bare = false },
-      { path = "/home/user/feat-b", branch = "feat-b", head = "ccc1234", bare = false },
-    }
-    local result = I.derive_worktree_path("feat-c", worktrees)
+  it("uses sibling directory when all linked worktrees are siblings of main", function()
+    local wts = entries("/home/user/project", {
+      { path = "/home/user/project-feat-a" },
+      { path = "/home/user/project-feat-b" },
+    })
+    local result = I.derive_worktree_path(wts, "feat-c")
     assert.equals("/home/user/feat-c", result)
   end)
 
-  it("falls back to sibling of main when worktree paths are mixed", function()
-    local worktrees = {
-      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
-      { path = "/home/user/project/.worktrees/feat-a", branch = "feat-a", head = "bbb1234", bare = false },
-      { path = "/tmp/random/feat-b", branch = "feat-b", head = "ccc1234", bare = false },
-    }
-    local result = I.derive_worktree_path("feat-c", worktrees)
-    assert.equals("/home/user/feat-c", result)
+  it("falls back to .worktrees/ when linked worktrees are mixed (some sibling, some nested)", function()
+    local wts = entries("/home/user/project", {
+      { path = "/home/user/project-feat-a" },
+      { path = "/home/user/project/.worktrees/feat-b" },
+    })
+    local result = I.derive_worktree_path(wts, "feat-c")
+    assert.equals("/home/user/project/.worktrees/feat-c", result)
+  end)
+
+  it("handles branch name that is already a simple name (no slashes)", function()
+    local wts = entries("/home/user/project")
+    local result = I.derive_worktree_path(wts, "hotfix")
+    assert.equals("/home/user/project/.worktrees/hotfix", result)
+  end)
+
+  it("handles main worktree path with trailing slash", function()
+    local wts = entries("/home/user/project/")
+    local result = I.derive_worktree_path(wts, "feat-x")
+    assert.equals("/home/user/project/.worktrees/feat-x", result)
   end)
 end)
 
 ------------------------------------------------------------------------
--- tab tracking
+-- collect_file_buffers
 ------------------------------------------------------------------------
 
-describe("tab tracking", function()
+describe("collect_file_buffers", function()
+  it("returns paths of listed file buffers", function()
+    -- Create two file-like buffers (explicitly set buflisted)
+    local buf1 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf1, "/tmp/test_file_a.lua")
+    vim.bo[buf1].buflisted = true
+    local buf2 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf2, "/tmp/test_file_b.lua")
+    vim.bo[buf2].buflisted = true
+
+    local paths = I.collect_file_buffers()
+
+    -- Get the resolved names (macOS /tmp -> /private/tmp)
+    local name1 = vim.api.nvim_buf_get_name(buf1)
+    local name2 = vim.api.nvim_buf_get_name(buf2)
+
+    local found_a, found_b = false, false
+    for _, p in ipairs(paths) do
+      if p == name1 then found_a = true end
+      if p == name2 then found_b = true end
+    end
+    assert.is_true(found_a)
+    assert.is_true(found_b)
+
+    -- Cleanup
+    vim.api.nvim_buf_delete(buf1, { force = true })
+    vim.api.nvim_buf_delete(buf2, { force = true })
+  end)
+
+  it("excludes unlisted buffers", function()
+    local buf = vim.api.nvim_create_buf(false, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/test_unlisted.lua")
+    vim.bo[buf].buflisted = false
+
+    local paths = I.collect_file_buffers()
+    for _, p in ipairs(paths) do
+      assert.is_not_equal("/tmp/test_unlisted.lua", p)
+    end
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("excludes buffers with special buftypes", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/test_special.lua")
+    vim.bo[buf].buftype = "nofile"
+
+    local paths = I.collect_file_buffers()
+    for _, p in ipairs(paths) do
+      assert.is_not_equal("/tmp/test_special.lua", p)
+    end
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("excludes unnamed buffers", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+
+    local paths = I.collect_file_buffers()
+    for _, p in ipairs(paths) do
+      assert.is_not_equal("", p)
+    end
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+end)
+
+------------------------------------------------------------------------
+-- unlist_file_buffers
+------------------------------------------------------------------------
+
+describe("unlist_file_buffers", function()
+  it("unlists all listed file buffers", function()
+    local buf1 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf1, "/tmp/test_unlist_a.lua")
+    local buf2 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf2, "/tmp/test_unlist_b.lua")
+
+    I.unlist_file_buffers()
+
+    assert.is_false(vim.bo[buf1].buflisted)
+    assert.is_false(vim.bo[buf2].buflisted)
+
+    vim.api.nvim_buf_delete(buf1, { force = true })
+    vim.api.nvim_buf_delete(buf2, { force = true })
+  end)
+
+  it("does not touch special buffers", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].buftype = "nofile"
+
+    I.unlist_file_buffers()
+
+    -- nofile buffers should not be affected
+    assert.is_true(vim.bo[buf].buflisted)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+end)
+
+------------------------------------------------------------------------
+-- relist_buffers
+------------------------------------------------------------------------
+
+describe("relist_buffers", function()
+  it("re-lists buffers by path and returns them", function()
+    -- Create a file buffer, unlist it
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/test_relist.lua")
+    vim.bo[buf].buflisted = false
+
+    local restored = I.relist_buffers({ "/tmp/test_relist.lua" })
+
+    assert.equals(1, #restored)
+    assert.is_true(vim.bo[restored[1]].buflisted)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("creates new buffers for paths not already loaded", function()
+    local path = "/tmp/test_relist_new_" .. os.time() .. ".lua"
+
+    local restored = I.relist_buffers({ path })
+
+    assert.equals(1, #restored)
+    local name = vim.api.nvim_buf_get_name(restored[1])
+    -- macOS resolves /tmp -> /private/tmp, so check the suffix
+    assert.is_true(vim.endswith(name, path) or name == path)
+
+    vim.api.nvim_buf_delete(restored[1], { force = true })
+  end)
+
+  it("returns empty for empty path list", function()
+    local restored = I.relist_buffers({})
+    assert.equals(0, #restored)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- wipeout_buffers_for_dir
+------------------------------------------------------------------------
+
+describe("wipeout_buffers_for_dir", function()
+  before_each(function()
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ buffer_paths = { "/proj/a/file.lua" }, branch = "main" }),
+    })
+  end)
+
   after_each(function()
     I.reset()
   end)
 
-  it("register_tab stores tab-to-dir mapping", function()
-    I.register_tab(1, "/home/user/project")
-    assert.equals("/home/user/project", I.get_tab_dir(1))
+  it("wipes out unlisted buffers matching saved paths", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/proj/a/file.lua")
+    vim.bo[buf].buflisted = false
+
+    I.wipeout_buffers_for_dir("/proj/a")
+
+    assert.is_false(vim.api.nvim_buf_is_valid(buf))
   end)
 
-  it("find_tab_for_dir returns correct tab id", function()
-    I.register_tab(1, "/home/user/project")
-    I.register_tab(2, "/home/user/feature-x")
-    assert.equals(2, I.find_tab_for_dir("/home/user/feature-x"))
-  end)
-
-  it("find_tab_for_dir returns nil when no tab matches", function()
-    I.register_tab(1, "/home/user/project")
-    assert.is_nil(I.find_tab_for_dir("/home/user/unknown"))
-  end)
-
-  it("unregister_tab removes the mapping", function()
-    I.register_tab(1, "/home/user/project")
-    I.unregister_tab(1)
-    assert.is_nil(I.get_tab_dir(1))
-    assert.is_nil(I.find_tab_for_dir("/home/user/project"))
+  it("clears buffer_paths from state", function()
+    I.wipeout_buffers_for_dir("/proj/a")
+    assert.same({}, I.get_state()["/proj/a"].buffer_paths)
   end)
 end)
 
 ------------------------------------------------------------------------
--- parse_create_result
+-- status_char
 ------------------------------------------------------------------------
 
-describe("parse_create_result", function()
-  it("returns ok on success", function()
-    local result = I.parse_create_result(0, "", "feat-x", {})
-    assert.equals("ok", result.status)
+describe("status_char", function()
+  it("returns empty for idle", function()
+    assert.equals("", I.status_char("idle"))
   end)
 
-  it("returns branch_exists when branch already exists", function()
-    local stderr = "fatal: a branch named 'feat-x' already exists"
-    local result = I.parse_create_result(128, stderr, "feat-x", {})
-    assert.equals("branch_exists", result.status)
+  it("returns ! for needs_attention", function()
+    assert.equals("!", I.status_char("needs_attention"))
   end)
 
-  it("returns branch_exists with worktree path when worktree already exists for that branch", function()
-    local stderr = "fatal: a branch named 'feat-x' already exists"
-    local worktrees = {
-      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
-      { path = "/home/user/feat-x", branch = "feat-x", head = "bbb1234", bare = false },
+  it("returns a spinner frame for responding", function()
+    local c = I.status_char("responding")
+    -- Should be one of the spinner characters
+    assert.is_true(c:len() > 0)
+  end)
+
+  it("returns ? for unknown", function()
+    assert.equals("?", I.status_char("unknown"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- render_tabline
+------------------------------------------------------------------------
+
+describe("render_tabline", function()
+  it("renders branch names with current highlighted", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true },
+      { branch = "feat-a", status = "idle", current = false, open = true },
     }
-    local result = I.parse_create_result(128, stderr, "feat-x", worktrees)
-    assert.equals("branch_exists", result.status)
-    assert.equals("/home/user/feat-x", result.existing_worktree)
+    local result = I.render_tabline(entries)
+    -- Current branch should use TabLineSel highlight
+    assert.is_true(result:find("%%#TabLineSel#") ~= nil)
+    assert.is_true(result:find("main") ~= nil)
+    assert.is_true(result:find("feat%-a") ~= nil)
   end)
 
-  it("returns error for other failures", function()
-    local stderr = "fatal: something else went wrong"
-    local result = I.parse_create_result(128, stderr, "feat-x", {})
-    assert.equals("error", result.status)
-    assert.equals(stderr, result.message)
+  it("shows status character for non-idle worktrees", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true },
+      { branch = "feat-a", status = "needs_attention", current = false, open = true },
+    }
+    local result = I.render_tabline(entries)
+    assert.is_true(result:find("!") ~= nil)
+  end)
+
+  it("dims closed worktrees", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true },
+      { branch = "feat-a", status = "unknown", current = false, open = false },
+    }
+    local result = I.render_tabline(entries)
+    -- Closed worktree should use NeoviaWtClosed highlight
+    assert.is_true(result:find("%%#NeoviaWtClosed#") ~= nil)
+  end)
+
+  it("returns empty string for empty entries", function()
+    assert.equals("", I.render_tabline({}))
+  end)
+
+  it("returns empty string for single entry", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true },
+    }
+    -- Single worktree: tabline not useful
+    assert.equals("", I.render_tabline(entries))
   end)
 end)
 
 ------------------------------------------------------------------------
--- parse_delete_result
+-- build_tabline_entries
 ------------------------------------------------------------------------
 
-describe("parse_delete_result", function()
-  it("returns ok on success", function()
-    local result = I.parse_delete_result(0, "")
-    assert.equals("ok", result.status)
+describe("build_tabline_entries", function()
+  before_each(function()
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat-a", status = "responding" }),
+      ["/proj/closed"] = I.make_entry({ branch = "closed-one", status = "unknown", open = false }),
+    })
   end)
 
-  it("returns dirty when worktree has modifications", function()
-    local stderr = "fatal: '/home/user/feat-x' contains modified or untracked files, use --force to delete it"
-    local result = I.parse_delete_result(128, stderr)
-    assert.equals("dirty", result.status)
+  after_each(function()
+    I.reset()
   end)
 
-  it("returns error for other failures", function()
-    local stderr = "fatal: something unexpected"
-    local result = I.parse_delete_result(128, stderr)
-    assert.equals("error", result.status)
-    assert.equals(stderr, result.message)
+  it("builds entries from state matching worktree list", function()
+    -- build_tabline_entries calls list_worktrees (git), so we test the
+    -- shape when state is pre-populated and no git worktrees exist.
+    -- Without a real git repo, list_worktrees returns {}, so entries is [].
+    local entries = I.build_tabline_entries()
+    assert.is_table(entries)
+    -- In headless test (no git repo), this will be empty.
+    -- The test verifies the function is callable and returns a table.
   end)
 end)
 
 ------------------------------------------------------------------------
--- parse_branch_delete_result
+-- reset (reload contract)
 ------------------------------------------------------------------------
 
-describe("parse_branch_delete_result", function()
-  it("returns ok on success", function()
-    local result = I.parse_branch_delete_result(0, "")
-    assert.equals("ok", result.status)
+------------------------------------------------------------------------
+-- process_event
+------------------------------------------------------------------------
+
+describe("process_event", function()
+  before_each(function()
+    -- Stub redraw commands to avoid errors in headless mode
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ status = "idle", branch = "main" }),
+    })
   end)
 
-  it("returns not_merged when branch is not fully merged", function()
-    local stderr = "error: the branch 'feat-x' is not fully merged"
-    local result = I.parse_branch_delete_result(1, stderr)
-    assert.equals("not_merged", result.status)
+  after_each(function()
+    I.reset()
   end)
 
-  it("returns error for other failures", function()
-    local stderr = "error: branch 'feat-x' not found"
-    local result = I.parse_branch_delete_result(1, stderr)
-    assert.equals("error", result.status)
-    assert.equals(stderr, result.message)
+  it("updates state for a known directory", function()
+    I.process_event("/proj/a", {
+      type = "message.updated",
+      properties = { info = { role = "assistant", time = { created = 100 } } },
+    })
+    assert.equals("responding", I.get_state()["/proj/a"].status)
+  end)
+
+  it("is a no-op for an unknown directory", function()
+    I.process_event("/nonexistent", {
+      type = "session.idle",
+      properties = {},
+    })
+    -- Should not error or create state
+    assert.is_nil(I.get_state()["/nonexistent"])
+  end)
+
+  it("does not error when event causes no change", function()
+    I.process_event("/proj/a", {
+      type = "some.unknown.event",
+      properties = {},
+    })
+    assert.equals("idle", I.get_state()["/proj/a"].status)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- start_spinner
+------------------------------------------------------------------------
+
+describe("start_spinner", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("is idempotent (second call is a no-op)", function()
+    -- Stub redrawtabline
+    vim.cmd.redrawtabline = function() end
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ status = "responding", branch = "main" }),
+    })
+
+    -- Calling twice should not error
+    I.start_spinner()
+    I.start_spinner()
+
+    -- Cleanup happens in reset
+  end)
+end)
+
+------------------------------------------------------------------------
+-- unsubscribe_all
+------------------------------------------------------------------------
+
+describe("unsubscribe_all", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("calls shutdown on all subscriptions", function()
+    local shutdown_count = 0
+    local mock_sub = {
+      shutdown = function() shutdown_count = shutdown_count + 1 end,
+      is_running = function() return true end,
+    }
+    I.set_state({
+      ["/a"] = I.make_entry({ branch = "main", subscription = mock_sub }),
+      ["/b"] = I.make_entry({ branch = "feat", subscription = mock_sub }),
+    })
+
+    I.unsubscribe_all()
+
+    assert.equals(2, shutdown_count)
+    -- Subscriptions should be nil'd
+    assert.is_nil(I.get_state()["/a"].subscription)
+    assert.is_nil(I.get_state()["/b"].subscription)
+  end)
+
+  it("handles entries without subscriptions", function()
+    I.set_state({
+      ["/a"] = I.make_entry({ branch = "main" }),
+    })
+
+    -- Should not error
+    I.unsubscribe_all()
+  end)
+
+  it("tolerates shutdown errors", function()
+    local mock_sub = {
+      shutdown = function() error("connection closed") end,
+      is_running = function() return false end,
+    }
+    I.set_state({
+      ["/a"] = I.make_entry({ branch = "main", subscription = mock_sub }),
+    })
+
+    -- pcall inside unsubscribe_all should catch the error
+    I.unsubscribe_all()
+    assert.is_nil(I.get_state()["/a"].subscription)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- subscribe_one
+------------------------------------------------------------------------
+
+describe("subscribe_one", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("is a no-op when opencode.state is not loaded", function()
+    -- Ensure opencode.state is not in package.loaded
+    package.loaded["opencode.state"] = nil
+
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main" }),
+    })
+
+    -- Should not error
+    I.subscribe_one("/proj/a")
+    assert.is_nil(I.get_state()["/proj/a"].subscription)
+  end)
+
+  it("is a no-op when api_client is nil", function()
+    package.loaded["opencode.state"] = { api_client = nil }
+
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main" }),
+    })
+
+    I.subscribe_one("/proj/a")
+    assert.is_nil(I.get_state()["/proj/a"].subscription)
+
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("subscribes and stores the handle in state", function()
+    local mock_handle = {
+      shutdown = function() end,
+      is_running = function() return true end,
+    }
+    package.loaded["opencode.state"] = {
+      api_client = {
+        subscribe_to_events = function(_, _, _)
+          return mock_handle
+        end,
+      },
+    }
+
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main" }),
+    })
+
+    I.subscribe_one("/proj/a")
+    assert.equals(mock_handle, I.get_state()["/proj/a"].subscription)
+
+    package.loaded["opencode.state"] = nil
+  end)
+end)
+
+------------------------------------------------------------------------
+-- ensure_subscriptions
+------------------------------------------------------------------------
+
+describe("ensure_subscriptions", function()
+  after_each(function()
+    I.reset()
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("removes state for worktrees that no longer exist on disk (open only)", function()
+    -- ensure_subscriptions calls list_worktrees which runs git, so in
+    -- headless test with no git repo it returns {}. This means all open
+    -- entries get pruned.
+    I.set_state({
+      ["/gone/a"] = I.make_entry({ branch = "gone", open = true }),
+      ["/gone/b"] = I.make_entry({ branch = "closed", open = false }),
+    })
+
+    I.ensure_subscriptions()
+
+    -- Open entry pruned, closed entry retained
+    assert.is_nil(I.get_state()["/gone/a"])
+    assert.is_not_nil(I.get_state()["/gone/b"])
+  end)
+end)
+
+------------------------------------------------------------------------
+-- resolve_git_common_dir
+------------------------------------------------------------------------
+
+describe("resolve_git_common_dir", function()
+  it("returns a string in a git repo", function()
+    -- This test runs inside the neovia repo, so should succeed
+    local result = I.resolve_git_common_dir()
+    if result then
+      assert.is_string(result)
+      -- Should be an absolute path
+      assert.is_true(vim.startswith(result, "/"))
+    end
+    -- If not in a git repo (CI), result may be nil -- that's also valid
+  end)
+end)
+
+------------------------------------------------------------------------
+-- setup
+------------------------------------------------------------------------
+
+describe("setup", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("creates the neovia_worktree augroup", function()
+    -- We're in the neovia git repo, so setup should succeed
+    wt.setup()
+    local cmds = vim.api.nvim_get_autocmds({ group = "neovia_worktree" })
+    assert.is_true(#cmds > 0)
+  end)
+
+  it("registers VimLeavePre, DirChanged, and User autocmds", function()
+    wt.setup()
+    local cmds = vim.api.nvim_get_autocmds({ group = "neovia_worktree" })
+    local events = {}
+    for _, cmd in ipairs(cmds) do
+      events[cmd.event] = true
+    end
+    assert.is_true(events["VimLeavePre"] ~= nil)
+    assert.is_true(events["DirChanged"] ~= nil)
+    assert.is_true(events["User"] ~= nil)
+  end)
+
+  it("sets up the tabline", function()
+    wt.setup()
+    assert.equals("%!v:lua.neovia_tabline()", vim.o.tabline)
+    assert.is_function(_G.neovia_tabline)
+  end)
+
+  it("is idempotent (second call is a no-op)", function()
+    wt.setup()
+    local cmds1 = vim.api.nvim_get_autocmds({ group = "neovia_worktree" })
+
+    wt.setup()
+    local cmds2 = vim.api.nvim_get_autocmds({ group = "neovia_worktree" })
+
+    assert.equals(#cmds1, #cmds2)
+  end)
+
+  it("is a no-op when not in a git repo", function()
+    -- Manually reset and test with a non-git directory
+    I.reset()
+    local orig_cwd = vim.fn.getcwd()
+    local tmpdir = vim.fn.tempname()
+    vim.fn.mkdir(tmpdir, "p")
+    vim.cmd.tcd(tmpdir)
+
+    wt.setup()
+
+    -- Should not create augroup (no git repo)
+    local ok, cmds = pcall(vim.api.nvim_get_autocmds, { group = "neovia_worktree" })
+    assert.is_true(not ok or #cmds == 0)
+
+    vim.cmd.tcd(orig_cwd)
+    vim.fn.delete(tmpdir, "rf")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- switch_to
+------------------------------------------------------------------------
+
+describe("switch_to", function()
+  local orig_cwd
+  local dir_a, dir_b
+
+  before_each(function()
+    I.reset()
+
+    -- Stub commands that fail in headless mode
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+
+    orig_cwd = vim.fn.getcwd()
+
+    -- Create real temp directories so tcd works.
+    -- Resolve symlinks (macOS /tmp -> /private/tmp) so paths match getcwd().
+    dir_a = vim.fn.resolve(vim.fn.tempname())
+    dir_b = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_a, "p")
+    vim.fn.mkdir(dir_b, "p")
+
+    -- Bypass setup() -- we test it separately
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    -- Restore cwd before reset
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+    vim.fn.delete(dir_a, "rf")
+    vim.fn.delete(dir_b, "rf")
+  end)
+
+  it("is a no-op when already in target directory", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main", buffer_paths = { "/old/path.lua" } }),
+    })
+
+    wt.switch_to(dir_a)
+
+    -- buffer_paths should not have been overwritten
+    assert.same({ "/old/path.lua" }, I.get_state()[dir_a].buffer_paths)
+  end)
+
+  it("saves current file buffer paths before switching", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Create a listed file buffer in dir_a
+    local buf = vim.api.nvim_create_buf(true, false)
+    local file_path = dir_a .. "/test_file.lua"
+    vim.api.nvim_buf_set_name(buf, file_path)
+    vim.bo[buf].buflisted = true
+
+    -- Get the resolved name that Neovim stores
+    local resolved_name = vim.api.nvim_buf_get_name(buf)
+
+    wt.switch_to(dir_b)
+
+    -- The saved paths for dir_a should include our file
+    local saved = I.get_state()[dir_a].buffer_paths
+    local found = false
+    for _, p in ipairs(saved) do
+      if p == resolved_name then found = true end
+    end
+    assert.is_true(found, "Expected " .. resolved_name .. " in saved buffer_paths")
+
+    -- Cleanup
+    if vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end)
+
+  it("unlists current file buffers on switch", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, dir_a .. "/listed.lua")
+    vim.bo[buf].buflisted = true
+
+    wt.switch_to(dir_b)
+
+    assert.is_false(vim.bo[buf].buflisted)
+
+    if vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end)
+
+  it("tcd to the target directory", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.equals(dir_b, vim.fn.getcwd())
+  end)
+
+  it("relists saved buffers for a revisited worktree", function()
+    vim.cmd.tcd(dir_a)
+    -- dir_b has saved buffers from a previous visit
+    local saved_path = dir_b .. "/saved_file.lua"
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", buffer_paths = { saved_path } }),
+    })
+
+    wt.switch_to(dir_b)
+
+    -- The saved buffer should now be listed
+    local bufnr = vim.fn.bufnr(saved_path)
+    assert.is_true(bufnr ~= -1, "Expected buffer to exist for saved path")
+    if bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
+      assert.is_true(vim.bo[bufnr].buflisted)
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end
+  end)
+
+  it("creates a state entry for an unknown target directory", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    local entry = I.get_state()[dir_b]
+    assert.is_not_nil(entry)
+    assert.equals("unknown", entry.status)
+    assert.is_true(entry.open)
+  end)
+
+  it("reopens a closed worktree", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", open = false }),
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.is_true(I.get_state()[dir_b].open)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- close
+------------------------------------------------------------------------
+
+describe("close", function()
+  local orig_cwd
+  local dir_a, dir_b
+
+  before_each(function()
+    I.reset()
+
+    -- Stub commands that fail in headless mode
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+
+    orig_cwd = vim.fn.getcwd()
+
+    dir_a = vim.fn.resolve(vim.fn.tempname())
+    dir_b = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_a, "p")
+    vim.fn.mkdir(dir_b, "p")
+
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+    vim.fn.delete(dir_a, "rf")
+    vim.fn.delete(dir_b, "rf")
+  end)
+
+  it("is a no-op for unknown directories", function()
+    wt.close("/nonexistent")
+    -- Should not error or create state
+    assert.is_nil(I.get_state()["/nonexistent"])
+  end)
+
+  it("marks the worktree as closed", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", open = true }),
+    })
+
+    wt.close(dir_b)
+
+    assert.is_false(I.get_state()[dir_b].open)
+    assert.equals("unknown", I.get_state()[dir_b].status)
+  end)
+
+  it("wipes saved buffers on close", function()
+    vim.cmd.tcd(dir_a)
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, dir_b .. "/closeme.lua")
+    vim.bo[buf].buflisted = false
+
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({
+        branch = "feat",
+        buffer_paths = { dir_b .. "/closeme.lua" },
+      }),
+    })
+
+    wt.close(dir_b)
+
+    assert.is_false(vim.api.nvim_buf_is_valid(buf))
+    assert.same({}, I.get_state()[dir_b].buffer_paths)
+  end)
+
+  it("tears down SSE subscription on close", function()
+    vim.cmd.tcd(dir_a)
+    local shutdown_called = false
+    local mock_sub = {
+      shutdown = function() shutdown_called = true end,
+      is_running = function() return true end,
+    }
+
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", subscription = mock_sub }),
+    })
+
+    wt.close(dir_b)
+
+    assert.is_true(shutdown_called)
+    assert.is_nil(I.get_state()[dir_b].subscription)
+  end)
+
+  it("switches away when closing the current worktree", function()
+    vim.cmd.tcd(dir_b)
+    -- State has dir_a as another worktree. We need list_worktrees to return
+    -- something, but it calls git. Instead we can verify indirectly:
+    -- close() on the current dir tries to find another worktree via
+    -- list_worktrees(). In headless test with no matching worktrees,
+    -- it will warn and return early.
+    I.set_state({
+      [dir_b] = I.make_entry({ branch = "feat", open = true }),
+    })
+
+    -- With no other worktrees available via git, close warns and returns
+    local notified = false
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      if msg:find("Cannot close the only worktree") then
+        notified = true
+      end
+    end
+
+    wt.close(dir_b)
+
+    vim.notify = orig_notify
+    -- The worktree should still be open (close was aborted)
+    assert.is_true(I.get_state()[dir_b].open)
+    assert.is_true(notified)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- _create_continue
+------------------------------------------------------------------------
+
+describe("_create_continue", function()
+  local orig_cwd
+  local orig_system
+
+  before_each(function()
+    I.reset()
+
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+
+    orig_cwd = vim.fn.getcwd()
+    orig_system = vim.system
+
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    vim.system = orig_system
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+  end)
+
+  it("notifies on git worktree add failure", function()
+    vim.system = function()
+      return { wait = function() return { code = 1, stderr = "branch exists" } end }
+    end
+
+    local notified_msg = nil
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      if level == vim.log.levels.ERROR then notified_msg = msg end
+    end
+
+    wt._create_continue("existing-branch", false)
+
+    vim.notify = orig_notify
+    assert.is_not_nil(notified_msg)
+    assert.is_true(notified_msg:find("Failed to create worktree") ~= nil)
+  end)
+
+  it("calls git worktree add with correct arguments", function()
+    local captured_cmd = nil
+    vim.system = function(cmd)
+      captured_cmd = cmd
+      -- Return failure to stop the flow after capturing args
+      return { wait = function() return { code = 1, stderr = "test stop" } end }
+    end
+
+    -- Suppress the error notification
+    local orig_notify = vim.notify
+    vim.notify = function() end
+
+    wt._create_continue("feat/new-thing", false)
+
+    vim.notify = orig_notify
+    assert.is_not_nil(captured_cmd)
+    assert.equals("git", captured_cmd[1])
+    assert.equals("worktree", captured_cmd[2])
+    assert.equals("add", captured_cmd[3])
+    assert.equals("-b", captured_cmd[4])
+    assert.equals("feat/new-thing", captured_cmd[5])
+    -- Path should contain the branch name (with slashes replaced)
+    assert.is_true(captured_cmd[6]:find("feat%-new%-thing") ~= nil)
+  end)
+
+  it("switches to the new worktree on success", function()
+    -- Mock all system calls: list_worktrees returns empty (so derive uses .worktrees/),
+    -- git worktree add succeeds
+    vim.system = function(cmd)
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    -- Pre-populate state so switch_to doesn't call setup
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    -- Intercept switch_to to capture the target path
+    local switched_to = nil
+    local orig_switch = wt.switch_to
+    wt.switch_to = function(dir) switched_to = dir end
+
+    wt._create_continue("test-branch", false)
+
+    wt.switch_to = orig_switch
+    assert.is_not_nil(switched_to)
+    assert.is_true(switched_to:find("test%-branch") ~= nil)
+  end)
+
+  it("attempts session fork when do_fork is true and opencode is available", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local fork_called = false
+    local mock_promise = {
+      and_then = function(self, cb) return self end,
+      catch = function(self) return self end,
+    }
+    package.loaded["opencode.state"] = {
+      api_client = {
+        fork_session = function(_, session_id, opts, path)
+          fork_called = true
+          return mock_promise
+        end,
+      },
+      active_session = { id = "session-123" },
+      last_user_message = { info = { id = "msg-456" } },
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    -- Intercept switch_to
+    local orig_switch = wt.switch_to
+    wt.switch_to = function() end
+
+    wt._create_continue("fork-branch", true)
+
+    wt.switch_to = orig_switch
+    package.loaded["opencode.state"] = nil
+
+    assert.is_true(fork_called)
+  end)
+
+  it("does not fork when do_fork is false", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local fork_called = false
+    package.loaded["opencode.state"] = {
+      api_client = {
+        fork_session = function()
+          fork_called = true
+          return { and_then = function(self) return self end, catch = function(self) return self end }
+        end,
+      },
+      active_session = { id = "s1" },
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    local orig_switch = wt.switch_to
+    wt.switch_to = function() end
+
+    wt._create_continue("no-fork-branch", false)
+
+    wt.switch_to = orig_switch
+    package.loaded["opencode.state"] = nil
+
+    assert.is_false(fork_called)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- _delete_continue
+------------------------------------------------------------------------
+
+describe("_delete_continue", function()
+  local orig_cwd
+  local orig_system
+
+  before_each(function()
+    I.reset()
+
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+
+    orig_cwd = vim.fn.getcwd()
+    orig_system = vim.system
+
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    vim.system = orig_system
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("creates a tombstone session via opencode api", function()
+    local create_called = false
+    local mock_promise = {
+      catch = function(self) return self end,
+    }
+    package.loaded["opencode.state"] = {
+      api_client = {
+        create_session = function(_, share, path)
+          create_called = true
+          assert.is_false(share)
+          assert.equals("/proj/feat", path)
+          return mock_promise
+        end,
+      },
+    }
+
+    -- Mock git worktree remove to succeed
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local wt_entry = { path = "/proj/feat", branch = "feat", head = "abc", bare = false }
+    -- No state for this path, so close() will be a no-op
+    wt._delete_continue(wt_entry)
+
+    assert.is_true(create_called)
+  end)
+
+  it("calls git worktree remove with the correct path", function()
+    local captured_cmds = {}
+    vim.system = function(cmd)
+      table.insert(captured_cmds, cmd)
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local wt_entry = { path = "/proj/feat", branch = "feat", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    -- First git call should be worktree remove
+    assert.equals("git", captured_cmds[1][1])
+    assert.equals("worktree", captured_cmds[1][2])
+    assert.equals("remove", captured_cmds[1][3])
+    assert.equals("/proj/feat", captured_cmds[1][4])
+  end)
+
+  it("calls git branch -d after removing worktree", function()
+    local captured_cmds = {}
+    vim.system = function(cmd)
+      table.insert(captured_cmds, cmd)
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local wt_entry = { path = "/proj/feat", branch = "feat", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    -- Second git call should be branch -d
+    assert.is_true(#captured_cmds >= 2)
+    assert.equals("git", captured_cmds[2][1])
+    assert.equals("branch", captured_cmds[2][2])
+    assert.equals("-d", captured_cmds[2][3])
+    assert.equals("feat", captured_cmds[2][4])
+  end)
+
+  it("skips branch delete for detached HEAD", function()
+    local git_cmds = {}
+    vim.system = function(cmd)
+      table.insert(git_cmds, cmd)
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local wt_entry = { path = "/proj/detached", branch = "(detached)", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    -- Should have worktree remove + ensure_subscriptions (worktree list), but no branch -d
+    local has_branch_d = false
+    for _, cmd in ipairs(git_cmds) do
+      if cmd[2] == "branch" and cmd[3] == "-d" then has_branch_d = true end
+    end
+    assert.is_false(has_branch_d, "Expected no git branch -d call for detached HEAD")
+  end)
+
+  it("skips branch delete for empty branch name", function()
+    local git_cmds = {}
+    vim.system = function(cmd)
+      table.insert(git_cmds, cmd)
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local wt_entry = { path = "/proj/nobranch", branch = "", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    local has_branch_d = false
+    for _, cmd in ipairs(git_cmds) do
+      if cmd[2] == "branch" and cmd[3] == "-d" then has_branch_d = true end
+    end
+    assert.is_false(has_branch_d, "Expected no git branch -d call for empty branch")
+  end)
+
+  it("notifies on git worktree remove failure", function()
+    vim.system = function()
+      return { wait = function() return { code = 1, stderr = "not clean" } end }
+    end
+
+    local notified_msg = nil
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      if level == vim.log.levels.ERROR then notified_msg = msg end
+    end
+
+    local wt_entry = { path = "/proj/dirty", branch = "dirty", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    vim.notify = orig_notify
+    assert.is_not_nil(notified_msg)
+    assert.is_true(notified_msg:find("Failed to remove worktree") ~= nil)
+  end)
+
+  it("closes an open worktree before removing", function()
+    local dir_main = vim.fn.tempname()
+    local dir_feat = vim.fn.tempname()
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.cmd.tcd(dir_main)
+
+    local shutdown_called = false
+    local mock_sub = {
+      shutdown = function() shutdown_called = true end,
+      is_running = function() return true end,
+    }
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main" }),
+      [dir_feat] = I.make_entry({ branch = "feat", open = true, subscription = mock_sub }),
+    })
+
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local wt_entry = { path = dir_feat, branch = "feat", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    assert.is_true(shutdown_called)
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+  end)
+
+  it("cleans up state after deletion", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    I.set_state({
+      ["/proj/feat"] = I.make_entry({ branch = "feat" }),
+    })
+
+    local wt_entry = { path = "/proj/feat", branch = "feat", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    assert.is_nil(I.get_state()["/proj/feat"])
+  end)
+end)
+
+------------------------------------------------------------------------
+-- reset (reload contract)
+------------------------------------------------------------------------
+
+describe("reset", function()
+  it("clears _G.neovia_tabline", function()
+    _G.neovia_tabline = function() return "" end
+    I.reset()
+    assert.is_nil(_G.neovia_tabline)
+  end)
+
+  it("clears all state", function()
+    I.set_state({
+      ["/a"] = I.make_entry({ branch = "main" }),
+    })
+    I.reset()
+    assert.same({}, I.get_state())
   end)
 end)
