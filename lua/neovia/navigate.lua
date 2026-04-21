@@ -1,5 +1,5 @@
 -- neovia navigate module
--- Open files from opencode_output in the code window (left pane).
+-- Open files and folders from opencode_output in the code window.
 
 local M = {}
 
@@ -93,6 +93,17 @@ local function create_code_win()
   return vim.api.nvim_get_current_win()
 end
 
+--- Open a directory in the code window (netrw).
+--- @param dir string  Absolute path to the directory.
+local function open_dir(dir)
+  local win = find_code_win()
+  if not win then
+    win = create_code_win()
+  end
+  vim.api.nvim_set_current_win(win)
+  vim.cmd("edit " .. vim.fn.fnameescape(dir))
+end
+
 ------------------------------------------------------------------------
 -- Public API
 ------------------------------------------------------------------------
@@ -108,6 +119,12 @@ function M.open()
 
   local path, line = parse_path(raw)
   local abs = resolve(path)
+
+  -- Directory: open in code window (netrw)
+  if vim.fn.isdirectory(abs) == 1 then
+    open_dir(abs)
+    return
+  end
 
   -- Verify the file exists
   if vim.fn.filereadable(abs) ~= 1 then
@@ -139,6 +156,7 @@ end
 
 M._internal = {
   parse_path = parse_path,
+  open_dir = open_dir,
   is_opencode_win = is_opencode_win,
   is_sidebar_win = is_sidebar_win,
   find_code_win = find_code_win,

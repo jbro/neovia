@@ -192,3 +192,52 @@ describe("find_code_win", function()
     vim.api.nvim_buf_delete(tree_buf, { force = true })
   end)
 end)
+
+------------------------------------------------------------------------
+-- open_dir
+------------------------------------------------------------------------
+
+describe("open_dir", function()
+  it("opens the directory in the code window", function()
+    -- Set up: code window with a normal buffer, plus an opencode window
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+    local code_win = vim.api.nvim_get_current_win()
+
+    vim.cmd("vsplit")
+    local oc_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_buf)
+
+    -- Use a real directory
+    local dir = vim.fn.stdpath("config")
+
+    I.open_dir(dir)
+
+    -- Should have switched to the code window
+    assert.equals(code_win, vim.api.nvim_get_current_win())
+
+    -- Cleanup
+    vim.cmd("only")
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+    vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+
+  it("creates a code window if none exists", function()
+    local oc_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_buf)
+
+    local dir = vim.fn.stdpath("config")
+    local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
+
+    I.open_dir(dir)
+
+    local win_count_after = #vim.api.nvim_tabpage_list_wins(0)
+    assert.is_true(win_count_after > win_count_before)
+
+    -- Cleanup
+    vim.cmd("only")
+    vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+end)
