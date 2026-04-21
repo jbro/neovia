@@ -14,6 +14,9 @@
 
 local M = {}
 
+--- Whether setup() has been called.
+local initialised = false
+
 --- @class neovia.env.Var
 --- @field name string        Environment variable name.
 --- @field value? string      Plain value (set directly).
@@ -109,6 +112,9 @@ end
 --- Configure and load environment variables.
 --- @param specs neovia.env.Var[]
 function M.setup(specs)
+  if initialised then return end
+  initialised = true
+
   for _, spec in ipairs(specs) do
     local ok, err = load_var(spec)
     if not ok then
@@ -120,6 +126,11 @@ end
 M._internal = {
   cache_fresh = cache_fresh,
   load_var = load_var,
+
+  --- Reset module state (for test isolation / reload contract).
+  reset = function()
+    initialised = false
+  end,
 }
 
 return M

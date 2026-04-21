@@ -5,6 +5,97 @@ local env = require("neovia.env")
 local I = env._internal
 
 ------------------------------------------------------------------------
+-- setup (direct tests)
+------------------------------------------------------------------------
+
+describe("setup", function()
+  before_each(function()
+    I.reset()
+    vim.env.TEST_SETUP_A = nil
+    vim.env.TEST_SETUP_B = nil
+  end)
+
+  after_each(function()
+    I.reset()
+    vim.env.TEST_SETUP_A = nil
+    vim.env.TEST_SETUP_B = nil
+  end)
+
+  it("sets multiple env vars from specs", function()
+    env.setup({
+      { name = "TEST_SETUP_A", value = "alpha" },
+      { name = "TEST_SETUP_B", value = "beta" },
+    })
+
+    assert.equals("alpha", vim.env.TEST_SETUP_A)
+    assert.equals("beta", vim.env.TEST_SETUP_B)
+  end)
+
+  it("calls vim.notify on failure", function()
+    local notified = {}
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notified, { msg = msg, level = level })
+    end
+
+    env.setup({
+      { name = "TEST_SETUP_A", exec = { "false" } },
+    })
+
+    vim.notify = orig_notify
+
+    assert.equals(1, #notified)
+    assert.equals(vim.log.levels.WARN, notified[1].level)
+    assert.is_true(notified[1].msg:find("TEST_SETUP_A") ~= nil)
+  end)
+
+  it("is idempotent (skips second call)", function()
+    env.setup({
+      { name = "TEST_SETUP_A", value = "first" },
+    })
+
+    -- Second call with different value should be skipped
+    env.setup({
+      { name = "TEST_SETUP_A", value = "second" },
+    })
+
+    assert.equals("first", vim.env.TEST_SETUP_A)
+  end)
+
+  it("runs again after reset()", function()
+    env.setup({
+      { name = "TEST_SETUP_A", value = "first" },
+    })
+    I.reset()
+
+    env.setup({
+      { name = "TEST_SETUP_A", value = "second" },
+    })
+
+    assert.equals("second", vim.env.TEST_SETUP_A)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- reset
+------------------------------------------------------------------------
+
+describe("reset", function()
+  it("clears the initialised flag", function()
+    env.setup({ { name = "TEST_SETUP_A", value = "x" } })
+    I.reset()
+
+    -- Should be able to run setup again
+    env.setup({ { name = "TEST_SETUP_A", value = "y" } })
+    assert.equals("y", vim.env.TEST_SETUP_A)
+
+    -- Cleanup
+    I.reset()
+    vim.env.TEST_SETUP_A = nil
+  end)
+end)
+
+------------------------------------------------------------------------
 -- cache_fresh
 ------------------------------------------------------------------------
 

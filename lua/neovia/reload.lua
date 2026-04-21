@@ -69,6 +69,9 @@ end
 M._internal = {
   find_module_keys = find_module_keys,
   reset_module = reset_module,
+
+  --- No-op reset (stateless module, satisfies reload contract).
+  reset = function() end,
 }
 
 return M

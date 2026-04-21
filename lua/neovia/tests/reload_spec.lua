@@ -78,3 +78,90 @@ describe("reset_modules", function()
     I.reset_module(fake_module)
   end)
 end)
+
+------------------------------------------------------------------------
+-- reload (integration)
+------------------------------------------------------------------------
+
+describe("reload", function()
+  it("resets modules, clears package.loaded, and re-sources init.lua", function()
+    -- Inject a fake module into package.loaded
+    local reset_called = false
+    package.loaded["neovia._test_fake"] = {
+      _internal = {
+        reset = function() reset_called = true end,
+      },
+    }
+
+    -- Stub dofile and vim.notify to avoid side effects
+    local orig_dofile = dofile
+    local dofile_called = false
+    local dofile_path = nil
+    -- Replace global dofile temporarily
+    rawset(_G, "dofile", function(path)
+      dofile_called = true
+      dofile_path = path
+    end)
+
+    local notified = {}
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notified, { msg = msg, level = level })
+    end
+
+    reload.reload()
+
+    -- Restore
+    rawset(_G, "dofile", orig_dofile)
+    vim.notify = orig_notify
+
+    -- Assert: reset was called on the fake module
+    assert.is_true(reset_called)
+
+    -- Assert: fake module was cleared from package.loaded
+    assert.is_nil(package.loaded["neovia._test_fake"])
+
+    -- Assert: dofile was called with init.lua path
+    assert.is_true(dofile_called)
+    assert.is_true(dofile_path:match("init%.lua$") ~= nil)
+
+    -- Assert: notification was sent
+    assert.is_true(#notified > 0)
+    assert.equals(vim.log.levels.INFO, notified[1].level)
+  end)
+
+  it("notifies on dofile failure", function()
+    -- Stub dofile to fail
+    local orig_dofile = dofile
+    rawset(_G, "dofile", function()
+      error("intentional test error")
+    end)
+
+    local notified = {}
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      table.insert(notified, { msg = msg, level = level })
+    end
+
+    reload.reload()
+
+    rawset(_G, "dofile", orig_dofile)
+    vim.notify = orig_notify
+
+    -- Should have notified with ERROR level
+    assert.is_true(#notified > 0)
+    assert.equals(vim.log.levels.ERROR, notified[1].level)
+    assert.is_true(notified[1].msg:find("reload failed") ~= nil)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- reset (reload contract)
+------------------------------------------------------------------------
+
+describe("reset", function()
+  it("exists and is callable", function()
+    assert.is_function(I.reset)
+    I.reset()
+  end)
+end)
