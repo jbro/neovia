@@ -108,6 +108,48 @@ end
 -- Public API
 ------------------------------------------------------------------------
 
+--- Find the best "code" window (non-opencode, non-sidebar, non-floating).
+--- Returns nil if none found.
+--- @return integer?
+function M.find_code_win()
+  return find_code_win()
+end
+
+--- Open a directory in the code window (netrw).
+--- @param dir string  Absolute path to the directory.
+function M.open_dir(dir)
+  open_dir(dir)
+end
+
+--- Open a file in the code window. Creates the window if needed.
+--- @param path string  Absolute path to the file.
+--- @param line? integer  Optional line number to jump to.
+--- @return boolean success
+function M.open_in_code_win(path, line)
+  local abs = resolve(path)
+
+  if vim.fn.filereadable(abs) ~= 1 then
+    vim.notify("open_in_code_win: file not found: " .. path, vim.log.levels.WARN)
+    return false
+  end
+
+  local win = find_code_win()
+  if not win then
+    win = create_code_win()
+  end
+
+  vim.api.nvim_set_current_win(win)
+  vim.cmd("edit " .. vim.fn.fnameescape(abs))
+
+  if line then
+    local total = vim.api.nvim_buf_line_count(0)
+    if line > total then line = total end
+    vim.api.nvim_win_set_cursor(win, { line, 0 })
+  end
+
+  return true
+end
+
 --- Open the file under the cursor in the code window.
 --- Designed to be called as a buffer-local gf mapping in opencode_output.
 function M.open()
@@ -126,27 +168,8 @@ function M.open()
     return
   end
 
-  -- Verify the file exists
-  if vim.fn.filereadable(abs) ~= 1 then
+  if not M.open_in_code_win(abs, line) then
     vim.notify("gf: file not found: " .. path, vim.log.levels.WARN)
-    return
-  end
-
-  -- Find or create the code window
-  local win = find_code_win()
-  if not win then
-    win = create_code_win()
-  end
-
-  -- Focus the code window and open the file
-  vim.api.nvim_set_current_win(win)
-  vim.cmd("edit " .. vim.fn.fnameescape(abs))
-
-  -- Jump to line if provided
-  if line then
-    local total = vim.api.nvim_buf_line_count(0)
-    if line > total then line = total end
-    vim.api.nvim_win_set_cursor(win, { line, 0 })
   end
 end
 
@@ -160,6 +183,11 @@ M._internal = {
   is_opencode_win = is_opencode_win,
   is_sidebar_win = is_sidebar_win,
   find_code_win = find_code_win,
+  cfile = cfile,
+  resolve = resolve,
+
+  --- No-op reset (stateless module, satisfies reload contract).
+  reset = function() end,
 }
 
 return M
