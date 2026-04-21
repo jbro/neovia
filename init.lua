@@ -123,7 +123,8 @@ vim.api.nvim_create_autocmd("VimEnter", {
   callback = function()
     -- Defer so the UI is fully drawn before splitting
     vim.schedule(function()
-      require("opencode.api").open_input()
+      local ok, api = pcall(require, "opencode.api")
+      if ok then api.open_input() end
     end)
   end,
 })

@@ -24,6 +24,19 @@ return {
             text = { wrap = true },
           },
         },
+        keymap = {
+          editor = {
+            -- Disable close; toggle_focus is sufficient for switching panes
+            ["<leader>oq"] = false,
+            ["<leader>og"] = { "toggle_focus", desc = "Toggle OpenCode focus" },
+          },
+          input_window = {
+            ["<esc>"] = false,
+          },
+          output_window = {
+            ["<esc>"] = false,
+          },
+        },
         hooks = {
           on_done_thinking = function()
             require("neovia.worktree").set_status(vim.fn.getcwd(), "idle")
@@ -35,7 +48,9 @@ return {
       })
 
       -- gf in opencode output: open file in the code window (left pane)
+      local gf_group = vim.api.nvim_create_augroup("neovia_opencode_gf", { clear = true })
       vim.api.nvim_create_autocmd("FileType", {
+        group = gf_group,
         pattern = "opencode_output",
         callback = function(ev)
           vim.keymap.set("n", "gf", function()
