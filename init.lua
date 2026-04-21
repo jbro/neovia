@@ -75,6 +75,15 @@ vim.keymap.set({ "n", "i" }, "<F1>", "<Nop>")
 vim.keymap.set("n", "<Esc>", "<cmd>nohlsearch<CR>")
 
 ------------------------------------------------------------------------
+-- Environment (must run before plugins so subprocesses inherit the env)
+-- Machine-specific config lives in .env.lua (gitignored).
+------------------------------------------------------------------------
+local env_specs = loadfile(vim.fn.stdpath("config") .. "/.env.lua")
+if env_specs then
+  require("neovia.env").setup(env_specs())
+end
+
+------------------------------------------------------------------------
 -- Load plugins
 ------------------------------------------------------------------------
 require("lazy").setup("plugins", {

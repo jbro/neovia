@@ -77,3 +77,11 @@ Buffers open read-only (modifiable=false, readonly=true) by default.
 Special buffers (terminal, help, quickfix, gitcommit, fugitive, neo-tree,
 etc.) are excluded. Which-key only triggers on `<leader>` with curated
 groups: Find (f), Search (s), Git (g), OpenCode (o), Worktree (w).
+
+### 0006 - Env module sets variables before plugin load (2026-04-21)
+
+`neovia.env` sets environment variables before `lazy.setup()` so subprocesses
+(like `opencode serve`) inherit them. Two modes: `value` for plain strings,
+`exec` for running any command (table = direct, string = via shell).
+File-based caching is opt-in per entry via explicit `cache` path + `ttl`.
+No password-manager-specific assumptions.

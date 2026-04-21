@@ -39,3 +39,23 @@ These must be installed separately:
 - [fd](https://github.com/sharkdp/fd)
 - [git](https://git-scm.com)
 - [tree-sitter-cli](https://github.com/tree-sitter/tree-sitter/tree/master/cli)
+
+## Environment Variables
+
+Create `.env.lua` in the neovia config directory (`~/.config/neovia/.env.lua`)
+to set environment variables before plugins load. This file is gitignored.
+
+```lua
+return {
+  { name = "MY_API_KEY", exec = { "prs", "show", "-p", "my-api-key" } },
+  { name = "FOO", value = "bar" },
+}
+```
+
+Each entry needs a `name` and either:
+
+- `value` -- a plain string, set directly
+- `exec` -- a command to run; table for direct execution, string for shell
+
+Optional file-based caching for `exec` entries: add `cache` (file path) and
+`ttl` (seconds) to avoid re-running the command on every startup.
