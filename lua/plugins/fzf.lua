@@ -13,6 +13,8 @@ return {
       { "<leader>sw", function() require("fzf-lua").lsp_workspace_symbols() end, desc = "Workspace symbols" },
       { "<leader>sh", function() require("fzf-lua").helptags() end, desc = "Help tags" },
       { "<leader>ww", function() require("neovia.worktree").pick() end, desc = "Worktrees" },
+      { "<leader>wc", function() require("neovia.worktree").create() end, desc = "Create worktree" },
+      { "<leader>wd", function() require("neovia.worktree").delete() end, desc = "Delete worktree" },
     },
     opts = {},
   },

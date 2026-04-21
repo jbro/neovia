@@ -48,6 +48,8 @@ These rules define what neovia is. They guide design and implementation decision
 
 - Optimized for an AI-driven coding workflow: OpenCode writes project code, the user reviews, navigates, and orchestrates. Plugin choices follow from this.
 - One OpenCode process per git worktree. Worktree switching uses `tcd` to scope all plugins to that directory.
+- Each worktree gets its own tab. The tabline shows branch names with status indicators (`~` responding, `!` needs attention, `?` unknown). Only the visible tab's opencode session is active in the UI; background sessions keep running server-side.
+- Worktree lifecycle is managed via `<leader>wc` (create), `<leader>ww` (switch), `<leader>wd` (delete). Session forking bridges context across worktrees.
 
 ## Decision Log
 
@@ -104,3 +106,13 @@ augroups for autocmds, and guard `setup()` with an `initialised` flag.
 `init.lua` guards one-time side effects (`lazy.setup`, `env.setup`) with
 `vim.g` flags. Plugin specs are not reloaded (use `:Lazy sync`).
 See the reload contract in the rules section above.
+
+### 0008 - Worktree lifecycle via tabs (2026-04-21)
+
+Each worktree gets its own tab (`tcd`-scoped). opencode.nvim has a
+single global UI, so only the visible tab's session is active; background
+sessions keep running server-side. Cross-directory session forking
+(`POST /session/{id}/fork?directory=`) bridges context when branching.
+Worktree path auto-derived from repo convention (`.worktrees/`, sibling,
+or fallback). Tabline replaces lualine for per-worktree status display.
+

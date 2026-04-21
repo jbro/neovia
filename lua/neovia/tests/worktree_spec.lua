@@ -584,3 +584,163 @@ describe("event sequence scenario", function()
     assert.equals("idle", entry.status)
   end)
 end)
+
+------------------------------------------------------------------------
+-- derive_worktree_path
+------------------------------------------------------------------------
+
+describe("derive_worktree_path", function()
+  it("returns sibling of main worktree when no linked worktrees exist", function()
+    local worktrees = {
+      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
+    }
+    local result = I.derive_worktree_path("feature-auth", worktrees)
+    assert.equals("/home/user/feature-auth", result)
+  end)
+
+  it("follows .worktrees/ convention when existing worktrees are under it", function()
+    local worktrees = {
+      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
+      { path = "/home/user/project/.worktrees/feat-a", branch = "feat-a", head = "bbb1234", bare = false },
+      { path = "/home/user/project/.worktrees/feat-b", branch = "feat-b", head = "ccc1234", bare = false },
+    }
+    local result = I.derive_worktree_path("feat-c", worktrees)
+    assert.equals("/home/user/project/.worktrees/feat-c", result)
+  end)
+
+  it("follows sibling convention when existing worktrees are siblings", function()
+    local worktrees = {
+      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
+      { path = "/home/user/feat-a", branch = "feat-a", head = "bbb1234", bare = false },
+      { path = "/home/user/feat-b", branch = "feat-b", head = "ccc1234", bare = false },
+    }
+    local result = I.derive_worktree_path("feat-c", worktrees)
+    assert.equals("/home/user/feat-c", result)
+  end)
+
+  it("falls back to sibling of main when worktree paths are mixed", function()
+    local worktrees = {
+      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
+      { path = "/home/user/project/.worktrees/feat-a", branch = "feat-a", head = "bbb1234", bare = false },
+      { path = "/tmp/random/feat-b", branch = "feat-b", head = "ccc1234", bare = false },
+    }
+    local result = I.derive_worktree_path("feat-c", worktrees)
+    assert.equals("/home/user/feat-c", result)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- tab tracking
+------------------------------------------------------------------------
+
+describe("tab tracking", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("register_tab stores tab-to-dir mapping", function()
+    I.register_tab(1, "/home/user/project")
+    assert.equals("/home/user/project", I.get_tab_dir(1))
+  end)
+
+  it("find_tab_for_dir returns correct tab id", function()
+    I.register_tab(1, "/home/user/project")
+    I.register_tab(2, "/home/user/feature-x")
+    assert.equals(2, I.find_tab_for_dir("/home/user/feature-x"))
+  end)
+
+  it("find_tab_for_dir returns nil when no tab matches", function()
+    I.register_tab(1, "/home/user/project")
+    assert.is_nil(I.find_tab_for_dir("/home/user/unknown"))
+  end)
+
+  it("unregister_tab removes the mapping", function()
+    I.register_tab(1, "/home/user/project")
+    I.unregister_tab(1)
+    assert.is_nil(I.get_tab_dir(1))
+    assert.is_nil(I.find_tab_for_dir("/home/user/project"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- parse_create_result
+------------------------------------------------------------------------
+
+describe("parse_create_result", function()
+  it("returns ok on success", function()
+    local result = I.parse_create_result(0, "", "feat-x", {})
+    assert.equals("ok", result.status)
+  end)
+
+  it("returns branch_exists when branch already exists", function()
+    local stderr = "fatal: a branch named 'feat-x' already exists"
+    local result = I.parse_create_result(128, stderr, "feat-x", {})
+    assert.equals("branch_exists", result.status)
+  end)
+
+  it("returns branch_exists with worktree path when worktree already exists for that branch", function()
+    local stderr = "fatal: a branch named 'feat-x' already exists"
+    local worktrees = {
+      { path = "/home/user/project", branch = "main", head = "abc1234", bare = false },
+      { path = "/home/user/feat-x", branch = "feat-x", head = "bbb1234", bare = false },
+    }
+    local result = I.parse_create_result(128, stderr, "feat-x", worktrees)
+    assert.equals("branch_exists", result.status)
+    assert.equals("/home/user/feat-x", result.existing_worktree)
+  end)
+
+  it("returns error for other failures", function()
+    local stderr = "fatal: something else went wrong"
+    local result = I.parse_create_result(128, stderr, "feat-x", {})
+    assert.equals("error", result.status)
+    assert.equals(stderr, result.message)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- parse_delete_result
+------------------------------------------------------------------------
+
+describe("parse_delete_result", function()
+  it("returns ok on success", function()
+    local result = I.parse_delete_result(0, "")
+    assert.equals("ok", result.status)
+  end)
+
+  it("returns dirty when worktree has modifications", function()
+    local stderr = "fatal: '/home/user/feat-x' contains modified or untracked files, use --force to delete it"
+    local result = I.parse_delete_result(128, stderr)
+    assert.equals("dirty", result.status)
+  end)
+
+  it("returns error for other failures", function()
+    local stderr = "fatal: something unexpected"
+    local result = I.parse_delete_result(128, stderr)
+    assert.equals("error", result.status)
+    assert.equals(stderr, result.message)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- parse_branch_delete_result
+------------------------------------------------------------------------
+
+describe("parse_branch_delete_result", function()
+  it("returns ok on success", function()
+    local result = I.parse_branch_delete_result(0, "")
+    assert.equals("ok", result.status)
+  end)
+
+  it("returns not_merged when branch is not fully merged", function()
+    local stderr = "error: the branch 'feat-x' is not fully merged"
+    local result = I.parse_branch_delete_result(1, stderr)
+    assert.equals("not_merged", result.status)
+  end)
+
+  it("returns error for other failures", function()
+    local stderr = "error: branch 'feat-x' not found"
+    local result = I.parse_branch_delete_result(1, stderr)
+    assert.equals("error", result.status)
+    assert.equals(stderr, result.message)
+  end)
+end)
