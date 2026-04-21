@@ -49,6 +49,10 @@ describe("should_lock", function()
     assert.is_false(I.should_lock({ buftype = "", filetype = "neo-tree" }))
   end)
 
+  it("returns false for opencode_input filetype", function()
+    assert.is_false(I.should_lock({ buftype = "", filetype = "opencode_input" }))
+  end)
+
   it("returns false for opencode_output filetype", function()
     assert.is_false(I.should_lock({ buftype = "", filetype = "opencode_output" }))
   end)
@@ -196,7 +200,7 @@ describe("lualine_mode", function()
     vim.bo[buf].modifiable = false
     vim.bo[buf].readonly = true
 
-    local result = I.lualine_mode(buf)
+    local result = mode.lualine_mode(buf)
     assert.equals("READ-ONLY", result)
 
     vim.api.nvim_buf_delete(buf, { force = true })
@@ -207,7 +211,7 @@ describe("lualine_mode", function()
     vim.bo[buf].modifiable = true
     vim.bo[buf].readonly = false
 
-    local result = I.lualine_mode(buf)
+    local result = mode.lualine_mode(buf)
     -- In test harness we're in normal mode
     assert.equals("NORMAL", result)
 
@@ -218,7 +222,7 @@ describe("lualine_mode", function()
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].buftype = "nofile"
 
-    local result = I.lualine_mode(buf)
+    local result = mode.lualine_mode(buf)
     assert.equals("NORMAL", result)
 
     vim.api.nvim_buf_delete(buf, { force = true })
@@ -309,6 +313,225 @@ describe("relock_buf", function()
     I.relock_buf(buf)
 
     -- State unchanged (was never tracked as unlocked)
+    assert.is_true(vim.bo[buf].modifiable)
+    assert.is_false(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+end)
+
+------------------------------------------------------------------------
+-- apply_lock (autocmd callback path)
+------------------------------------------------------------------------
+
+describe("apply_lock", function()
+  before_each(function()
+    I.reset()
+    I.setup({ auto_relock = true })
+  end)
+
+  it("locks a normal buffer", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].modifiable = true
+    vim.bo[buf].readonly = false
+
+    I.apply_lock(buf)
+
+    assert.is_false(vim.bo[buf].modifiable)
+    assert.is_true(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("does not lock special buftype buffers", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].modifiable = true
+    vim.bo[buf].readonly = false
+
+    I.apply_lock(buf)
+
+    assert.is_true(vim.bo[buf].modifiable)
+    assert.is_false(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("does not lock special filetype buffers", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].filetype = "opencode_output"
+    vim.bo[buf].modifiable = true
+    vim.bo[buf].readonly = false
+
+    I.apply_lock(buf)
+
+    assert.is_true(vim.bo[buf].modifiable)
+    assert.is_false(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("does not re-lock a buffer the user has unlocked", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].readonly = true
+
+    -- User unlocks the buffer
+    I.toggle(buf)
+    assert.is_true(I.is_unlocked(buf))
+
+    -- apply_lock should respect the unlocked tracking
+    I.apply_lock(buf)
+
+    assert.is_true(vim.bo[buf].modifiable)
+    assert.is_false(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("ignores invalid buffers", function()
+    -- Should not error on an invalid buffer
+    I.apply_lock(99999)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- M.setup() autocmd wiring
+------------------------------------------------------------------------
+
+describe("setup autocmds", function()
+  before_each(function()
+    I.reset()
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("creates the neovia_mode augroup", function()
+    mode.setup({ auto_relock = true })
+    -- nvim_get_autocmds will error if the group doesn't exist
+    local cmds = vim.api.nvim_get_autocmds({ group = "neovia_mode" })
+    assert.is_true(#cmds > 0)
+  end)
+
+  it("registers BufReadPost and BufNewFile autocmds that lock normal buffers", function()
+    mode.setup({ auto_relock = true })
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/mode_setup_test_" .. os.time() .. ".lua")
+
+    -- Fire BufReadPost
+    vim.api.nvim_exec_autocmds("BufReadPost", { buffer = buf })
+
+    assert.is_false(vim.bo[buf].modifiable)
+    assert.is_true(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("registers BufReadPost autocmd that skips special buffers", function()
+    mode.setup({ auto_relock = true })
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].modifiable = true
+    vim.bo[buf].readonly = false
+
+    vim.api.nvim_exec_autocmds("BufReadPost", { buffer = buf })
+
+    assert.is_true(vim.bo[buf].modifiable)
+    assert.is_false(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("registers FileType autocmd that locks buffers", function()
+    mode.setup({ auto_relock = true })
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].modifiable = true
+    vim.bo[buf].readonly = false
+
+    vim.api.nvim_exec_autocmds("FileType", { buffer = buf })
+
+    assert.is_false(vim.bo[buf].modifiable)
+    assert.is_true(vim.bo[buf].readonly)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("registers BufLeave autocmd that relocks unlocked buffers", function()
+    mode.setup({ auto_relock = true })
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].readonly = true
+
+    -- Unlock via toggle
+    I.toggle(buf)
+    assert.is_true(I.is_unlocked(buf))
+
+    -- Fire BufLeave
+    vim.api.nvim_exec_autocmds("BufLeave", { buffer = buf })
+
+    assert.is_false(vim.bo[buf].modifiable)
+    assert.is_true(vim.bo[buf].readonly)
+    assert.is_false(I.is_unlocked(buf))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("registers BufDelete autocmd that cleans up unlocked tracking", function()
+    mode.setup({ auto_relock = true })
+
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].readonly = true
+
+    -- Unlock via toggle
+    I.toggle(buf)
+    assert.is_true(I.is_unlocked(buf))
+
+    -- Fire BufDelete
+    vim.api.nvim_exec_autocmds("BufDelete", { buffer = buf })
+
+    assert.is_false(I.is_unlocked(buf))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("is idempotent (second call is a no-op)", function()
+    mode.setup({ auto_relock = true })
+    local cmds1 = vim.api.nvim_get_autocmds({ group = "neovia_mode" })
+
+    mode.setup({ auto_relock = false })
+    local cmds2 = vim.api.nvim_get_autocmds({ group = "neovia_mode" })
+
+    assert.equals(#cmds1, #cmds2)
+    -- auto_relock should still be true from first call (second was skipped)
+    assert.is_true(I.get_auto_relock())
+  end)
+end)
+
+------------------------------------------------------------------------
+-- M.toggle() public wrapper
+------------------------------------------------------------------------
+
+describe("M.toggle()", function()
+  before_each(function()
+    I.reset()
+    I.setup({ auto_relock = true })
+  end)
+
+  it("toggles the current buffer", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].readonly = true
+    vim.api.nvim_set_current_buf(buf)
+
+    mode.toggle()
+
     assert.is_true(vim.bo[buf].modifiable)
     assert.is_false(vim.bo[buf].readonly)
 

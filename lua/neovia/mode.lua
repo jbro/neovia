@@ -18,6 +18,7 @@ local skip_filetypes = {
   gitcommit = true,
   fugitive = true,
   ["neo-tree"] = true,
+  opencode_input = true,
   opencode_output = true,
   DiffviewFiles = true,
   DiffviewFileHistory = true,
@@ -226,11 +227,6 @@ M._internal = {
   --- @return boolean
   is_unlocked = function(buf) return unlocked[buf] == true end,
 
-  --- Lualine mode with explicit buffer (delegates to M.lualine_mode).
-  --- @param buf integer
-  --- @return string
-  lualine_mode = function(buf) return M.lualine_mode(buf) end,
-
   --- Get auto_relock setting.
   --- @return boolean
   get_auto_relock = function() return opts.auto_relock end,
@@ -238,6 +234,10 @@ M._internal = {
   --- Relock a buffer (for testing BufLeave behavior).
   --- @param buf integer
   relock_buf = relock_buf,
+
+  --- Apply lock to a buffer (for testing BufReadPost/FileType behavior).
+  --- @param buf integer
+  apply_lock = apply_lock,
 
   --- Setup with reset support (for tests).
   --- @param user_opts? neovia.ModeOpts
