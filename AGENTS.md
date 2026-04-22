@@ -10,7 +10,7 @@ neovia is a Neovim configuration for an AI-driven coding environment.
 - Prefer fewer, thinner plugins. Prefer native Neovim or OpenCode over adding a plugin.
 - Vimscript plugins are fine when battle-tested with no better Lua equivalent.
 - Keep config (`lua/plugins/`) declarative. Non-reusable glue code can stay inline; reusable logic and feature implementations belong in the module (`lua/neovia/`).
-- Use red-green-refactor TDD for the module (`lua/neovia/`). Write a failing test first, then write the minimal code to make it pass, then refactor. Run tests before considering a task done.
+- Use red-green-refactor TDD for the module (`lua/neovia/`). A failing test must exist before any production code is written or changed -- no exceptions. Write the minimal code to make it pass, then refactor. Run tests before considering a task done.
 - Guard `require()` calls for plugins in module code with `pcall` -- modules may run before plugins are loaded (e.g. VimEnter, user commands).
 - All code must be safe to reload via `<leader>pr` (re-source `init.lua` after resetting modules). Follow the reload contract below.
 
@@ -34,13 +34,25 @@ This repo has two distinct parts:
 
 - Tests live in `lua/neovia/tests/*_spec.lua`, run via `nvim -l lua/neovia/tests/run.lua`.
 - Extract pure/testable logic from side-effectful code. Expose internals via `M._internal` for test access without polluting the public API.
-- After implementation, review code against the spec (this file + decision log). Verify every stated behaviour has a corresponding test and every code path honours the spec. Check all public API functions have test coverage.
+
+### Review gate
+
+Run this checklist after every implementation, before considering work done.
+
+1. **Spec compliance** -- re-read the design section and relevant decisions. Verify every stated behaviour has a corresponding test. Check that code paths honour the spec.
+2. **Test coverage** -- every public API function (`M.*`) has tests. Every `_internal` function exposed for testing has tests. When code moves between files, migrate or rewrite the corresponding tests. Edge cases from removed tests are preserved in new ones.
+3. **Dead code** -- scan for unused locals, unreferenced forward declarations, variables that are set but never read, orphaned `_internal` exports with no test consumers. Remove them.
+4. **Duplication** -- check for values defined in multiple files (e.g. colour tables, config constants). Each value has one authoritative source.
+5. **Boundary discipline** -- `_internal` is only accessed from test files. Config (`lua/plugins/`) does not reach into `_internal`. Module code does not contain rendering logic that belongs in config (per decision 0009 and the config-vs-module split).
+6. **Reload contract** -- `reset()` tears down all state created by `setup()`: tables, flags, timers, augroups. Tests verify re-initialisation works after `reset()`.
+7. **Guard hygiene** -- `require()` calls for plugins in module code use `pcall`. `setup()` is guarded by `initialised`. One-time side effects in `init.lua` are guarded by `vim.g` flags.
 
 ### Maintaining this file
 
 - Keep rules brief -- every token costs reasoning.
 - Phrase positively ("use X" over "never use Y"). Exception: hard safety boundaries.
 - Remove redundancy and superseded decisions.
+- Describe current state, not history. Decisions record what and why, not what changed from before.
 - After every edit, re-read and review against these rules before finishing.
 
 ## neovia Design
@@ -52,7 +64,7 @@ These rules define what neovia is. They guide design and implementation decision
 - Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. opencode.nvim detects the directory change and swaps sessions automatically. Background sessions keep running server-side.
 - Worktree lifecycle is managed via `<leader>wc` (create), `<leader>ww` (switch), `<leader>wd` (delete), `<leader>wq` (close). Session forking bridges context across worktrees.
 - Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, and relists saved buffers (or opens netrw on first visit). Closing wipes buffers and tears down SSE but keeps the git worktree on disk. Deleting creates a tombstone session (so reused paths start clean), then removes the worktree and branch.
-- Tabline (`%!v:lua.neovia_tabline()`) shows all worktree branches with status indicators. Current branch highlighted, closed worktrees dimmed.
+- Lualine tabline shows all worktree branches with status indicators. Current branch highlighted, closed worktrees dimmed. Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
 
 ## Decision Log
 
@@ -67,7 +79,6 @@ Superseded entries should be removed to keep context lean.
 Neovim 0.11+ has native LSP config and diagnostics built in.
 Use these instead of the plugin equivalents (lspconfig, etc.).
 Exception: blink.cmp is kept for completion (richer UX than native).
-This reduces the plugin surface and keeps the config closer to upstream.
 
 ### 0002 - OpenCode writes code, user orchestrates (2026-03-26)
 
@@ -80,11 +91,6 @@ reading and navigation, not authoring.
 Each SSE connection to `opencode serve` is scoped to one directory.
 The worktree module opens a separate subscription per worktree for
 real-time status tracking. Status states: idle, responding, needs_attention.
-
-### 0004 - Tests colocated with module, not at repo root (2026-03-26)
-
-Tests live at `lua/neovia/tests/` next to the code they test, run via
-`nvim -l` (Neovim 0.11+ script mode).
 
 ### 0005 - Read-only mode and curated leader keymap (2026-03-27)
 
@@ -106,10 +112,6 @@ No password-manager-specific assumptions.
 ### 0007 - Config reload from leader menu (2026-04-21)
 
 `<leader>pr` reloads all `neovia.*` modules and re-sources `init.lua`.
-Each module must provide `_internal.reset()` to tear down state, use named
-augroups for autocmds, and guard `setup()` with an `initialised` flag.
-`init.lua` guards one-time side effects (`lazy.setup`, `env.setup`) with
-`vim.g` flags. Plugin specs are not reloaded (use `:Lazy sync`).
 See the reload contract in the rules section above.
 
 ### 0008 - Worktree lifecycle via tcd (2026-04-21)
@@ -117,3 +119,10 @@ See the reload contract in the rules section above.
 `tcd` switches worktrees in place; opencode.nvim detects `DirChanged` and
 swaps sessions automatically. Sessions are never deleted -- on worktree
 delete a tombstone session is created so reused paths start clean.
+
+### 0009 - Lualine for worktree display (2026-04-22)
+
+Lualine tabline shows all worktree branches (like tabs); statusline shows
+opencode status for the current worktree. The worktree module exposes
+data only -- rendering lives in `lua/plugins/ui.lua` as declarative
+lualine config.

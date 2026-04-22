@@ -602,106 +602,7 @@ describe("wipeout_buffers_for_dir", function()
   end)
 end)
 
-------------------------------------------------------------------------
--- status_char
-------------------------------------------------------------------------
 
-describe("status_char", function()
-  it("returns empty for idle", function()
-    assert.equals("", I.status_char("idle"))
-  end)
-
-  it("returns ! for needs_attention", function()
-    assert.equals("!", I.status_char("needs_attention"))
-  end)
-
-  it("returns a spinner frame for responding", function()
-    local c = I.status_char("responding")
-    -- Should be one of the spinner characters
-    assert.is_true(c:len() > 0)
-  end)
-
-  it("returns ? for unknown", function()
-    assert.equals("?", I.status_char("unknown"))
-  end)
-end)
-
-------------------------------------------------------------------------
--- render_tabline
-------------------------------------------------------------------------
-
-describe("render_tabline", function()
-  it("renders branch names with current highlighted", function()
-    local entries = {
-      { branch = "main", status = "idle", current = true, open = true },
-      { branch = "feat-a", status = "idle", current = false, open = true },
-    }
-    local result = I.render_tabline(entries)
-    -- Current branch should use TabLineSel highlight
-    assert.is_true(result:find("%%#TabLineSel#") ~= nil)
-    assert.is_true(result:find("main") ~= nil)
-    assert.is_true(result:find("feat%-a") ~= nil)
-  end)
-
-  it("shows status character for non-idle worktrees", function()
-    local entries = {
-      { branch = "main", status = "idle", current = true, open = true },
-      { branch = "feat-a", status = "needs_attention", current = false, open = true },
-    }
-    local result = I.render_tabline(entries)
-    assert.is_true(result:find("!") ~= nil)
-  end)
-
-  it("dims closed worktrees", function()
-    local entries = {
-      { branch = "main", status = "idle", current = true, open = true },
-      { branch = "feat-a", status = "unknown", current = false, open = false },
-    }
-    local result = I.render_tabline(entries)
-    -- Closed worktree should use NeoviaWtClosed highlight
-    assert.is_true(result:find("%%#NeoviaWtClosed#") ~= nil)
-  end)
-
-  it("returns empty string for empty entries", function()
-    assert.equals("", I.render_tabline({}))
-  end)
-
-  it("returns empty string for single entry", function()
-    local entries = {
-      { branch = "main", status = "idle", current = true, open = true },
-    }
-    -- Single worktree: tabline not useful
-    assert.equals("", I.render_tabline(entries))
-  end)
-end)
-
-------------------------------------------------------------------------
--- build_tabline_entries
-------------------------------------------------------------------------
-
-describe("build_tabline_entries", function()
-  before_each(function()
-    I.set_state({
-      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
-      ["/proj/feat"] = I.make_entry({ branch = "feat-a", status = "responding" }),
-      ["/proj/closed"] = I.make_entry({ branch = "closed-one", status = "unknown", open = false }),
-    })
-  end)
-
-  after_each(function()
-    I.reset()
-  end)
-
-  it("builds entries from state matching worktree list", function()
-    -- build_tabline_entries calls list_worktrees (git), so we test the
-    -- shape when state is pre-populated and no git worktrees exist.
-    -- Without a real git repo, list_worktrees returns {}, so entries is [].
-    local entries = I.build_tabline_entries()
-    assert.is_table(entries)
-    -- In headless test (no git repo), this will be empty.
-    -- The test verifies the function is callable and returns a table.
-  end)
-end)
 
 ------------------------------------------------------------------------
 -- reset (reload contract)
@@ -751,29 +652,7 @@ describe("process_event", function()
   end)
 end)
 
-------------------------------------------------------------------------
--- start_spinner
-------------------------------------------------------------------------
 
-describe("start_spinner", function()
-  after_each(function()
-    I.reset()
-  end)
-
-  it("is idempotent (second call is a no-op)", function()
-    -- Stub redrawtabline
-    vim.cmd.redrawtabline = function() end
-    I.set_state({
-      ["/proj/a"] = I.make_entry({ status = "responding", branch = "main" }),
-    })
-
-    -- Calling twice should not error
-    I.start_spinner()
-    I.start_spinner()
-
-    -- Cleanup happens in reset
-  end)
-end)
 
 ------------------------------------------------------------------------
 -- unsubscribe_all
@@ -956,12 +835,6 @@ describe("setup", function()
     assert.is_true(events["VimLeavePre"] ~= nil)
     assert.is_true(events["DirChanged"] ~= nil)
     assert.is_true(events["User"] ~= nil)
-  end)
-
-  it("sets up the tabline", function()
-    wt.setup()
-    assert.equals("%!v:lua.neovia_tabline()", vim.o.tabline)
-    assert.is_function(_G.neovia_tabline)
   end)
 
   it("is idempotent (second call is a no-op)", function()
@@ -1625,21 +1498,159 @@ describe("_delete_continue", function()
 end)
 
 ------------------------------------------------------------------------
+-- get_entries (public API for lualine tabline)
+------------------------------------------------------------------------
+
+describe("get_entries", function()
+  before_each(function()
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat-a", status = "responding" }),
+      ["/proj/closed"] = I.make_entry({ branch = "closed-one", status = "unknown", open = false }),
+    })
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("returns entries from state matching worktree list", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+      { path = "/proj/closed", branch = "closed-one", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    assert.equals(3, #entries)
+    assert.equals("main", entries[1].branch)
+    assert.equals("idle", entries[1].status)
+    assert.equals("feat-a", entries[2].branch)
+    assert.equals("responding", entries[2].status)
+    assert.equals("closed-one", entries[3].branch)
+    assert.is_false(entries[3].open)
+  end)
+
+  it("marks unknown worktrees as open by default", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/new", branch = "new-branch", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    assert.equals(2, #entries)
+    assert.is_true(entries[2].open)
+    assert.equals("unknown", entries[2].status)
+  end)
+
+  it("marks closed worktrees as not open", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/closed", branch = "closed-one", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    assert.equals(2, #entries)
+    assert.is_true(entries[1].open)
+    assert.is_false(entries[2].open)
+  end)
+
+  it("includes worktrees inside .worktrees/ subdirectory", function()
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+      ["/proj/main/.worktrees/feat"] = I.make_entry({ branch = "feat", status = "responding" }),
+    })
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/main/.worktrees/feat", branch = "feat", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    assert.equals(2, #entries)
+    assert.equals("main", entries[1].branch)
+    assert.equals("feat", entries[2].branch)
+    assert.equals("responding", entries[2].status)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- get_current_status (public API for lualine statusline)
+------------------------------------------------------------------------
+
+describe("get_current_status", function()
+  before_each(function()
+    I.set_state({})
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("returns status, icon, and hl_group for the current directory", function()
+    local cwd = vim.fn.getcwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main", status = "idle" }),
+    })
+
+    local result = wt.get_current_status()
+    assert.equals("idle", result.status)
+    assert.is_string(result.icon)
+    assert.is_table(result.hl)
+  end)
+
+  it("returns needs_attention status correctly", function()
+    local cwd = vim.fn.getcwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main", status = "needs_attention" }),
+    })
+
+    local result = wt.get_current_status()
+    assert.equals("needs_attention", result.status)
+    assert.equals("[needs you]", result.icon)
+  end)
+
+  it("returns responding status correctly", function()
+    local cwd = vim.fn.getcwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main", status = "responding" }),
+    })
+
+    local result = wt.get_current_status()
+    assert.equals("responding", result.status)
+    assert.equals("[working]", result.icon)
+  end)
+
+  it("returns nil when no state exists for current directory", function()
+    local result = wt.get_current_status()
+    assert.is_nil(result)
+  end)
+end)
+
+------------------------------------------------------------------------
 -- reset (reload contract)
 ------------------------------------------------------------------------
 
 describe("reset", function()
-  it("clears _G.neovia_tabline", function()
-    _G.neovia_tabline = function() return "" end
-    I.reset()
-    assert.is_nil(_G.neovia_tabline)
-  end)
-
   it("clears all state", function()
     I.set_state({
       ["/a"] = I.make_entry({ branch = "main" }),
     })
     I.reset()
     assert.same({}, I.get_state())
+  end)
+
+  it("allows setup to run again after reset", function()
+    -- setup() is guarded by `initialised`. After reset it must be callable again.
+    wt.setup()
+    I.reset()
+    -- setup() should succeed and recreate the augroup
+    wt.setup()
+    local cmds = vim.api.nvim_get_autocmds({ group = "neovia_worktree" })
+    assert.is_true(#cmds > 0)
+    I.reset()
+  end)
+
+  it("deletes augroups", function()
+    wt.setup()
+    I.reset()
+    -- neovia_worktree augroup should be gone after reset
+    local ok, cmds = pcall(vim.api.nvim_get_autocmds, { group = "neovia_worktree" })
+    assert.is_true(not ok or #cmds == 0)
   end)
 end)

@@ -4,6 +4,12 @@
 local navigate = require("neovia.navigate")
 local I = navigate._internal
 
+-- Resolve project root from this spec file (lua/neovia/tests/ -> repo root)
+local spec_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
+local project_root = vim.fn.fnamemodify(spec_dir, ":h:h:h")
+-- A file guaranteed to exist when running tests from this project
+local test_file = project_root .. "/init.lua"
+
 ------------------------------------------------------------------------
 -- parse_path
 ------------------------------------------------------------------------
@@ -210,7 +216,7 @@ describe("open_dir", function()
     vim.api.nvim_win_set_buf(0, oc_buf)
 
     -- Use a real directory
-    local dir = vim.fn.stdpath("config")
+    local dir = project_root
 
     navigate.open_dir(dir)
 
@@ -228,7 +234,7 @@ describe("open_dir", function()
     vim.bo[oc_buf].filetype = "opencode_output"
     vim.api.nvim_win_set_buf(0, oc_buf)
 
-    local dir = vim.fn.stdpath("config")
+    local dir = project_root
     local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
 
     navigate.open_dir(dir)
@@ -258,7 +264,7 @@ describe("open_in_code_win", function()
     vim.api.nvim_win_set_buf(0, oc_buf)
 
     -- Use a real file
-    local file = vim.fn.stdpath("config") .. "/init.lua"
+    local file = test_file
     navigate.open_in_code_win(file)
 
     -- Should be in the code window with the file open
@@ -276,7 +282,7 @@ describe("open_in_code_win", function()
     local code_buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_win_set_buf(0, code_buf)
 
-    local file = vim.fn.stdpath("config") .. "/init.lua"
+    local file = test_file
     navigate.open_in_code_win(file, 5)
 
     local cursor = vim.api.nvim_win_get_cursor(0)
@@ -292,7 +298,7 @@ describe("open_in_code_win", function()
     vim.bo[oc_buf].filetype = "opencode_output"
     vim.api.nvim_win_set_buf(0, oc_buf)
 
-    local file = vim.fn.stdpath("config") .. "/init.lua"
+    local file = test_file
     local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
 
     navigate.open_in_code_win(file)
@@ -387,7 +393,7 @@ describe("open", function()
     vim.api.nvim_win_set_buf(0, oc_buf)
 
     -- Put a real file path in the buffer and position cursor on it
-    local file = vim.fn.stdpath("config") .. "/init.lua"
+    local file = test_file
     vim.api.nvim_buf_set_lines(oc_buf, 0, -1, false, { file })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
 
@@ -414,7 +420,7 @@ describe("open", function()
     vim.bo[oc_buf].filetype = "opencode_output"
     vim.api.nvim_win_set_buf(0, oc_buf)
 
-    local dir = vim.fn.stdpath("config")
+    local dir = project_root
     vim.api.nvim_buf_set_lines(oc_buf, 0, -1, false, { dir })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
 

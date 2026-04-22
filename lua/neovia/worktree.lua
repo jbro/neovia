@@ -1,6 +1,6 @@
 -- neovia worktree module
 -- Worktree lifecycle (create/switch/close/delete), status tracking via SSE,
--- tabline rendering, and picker.
+-- and picker. Rendering lives in lua/plugins/ui.lua (decision 0009).
 
 local M = {}
 
@@ -29,11 +29,8 @@ local initialised = false
 --- @type uv_timer_t|nil
 local dir_timer = nil
 
---- Whether we've confirmed we're inside a git repo.
-local in_git_repo = false
-
 -- Forward declarations
-local ensure_subscriptions, list_worktrees, unsubscribe_all, start_spinner, ensure_highlights
+local ensure_subscriptions, list_worktrees, unsubscribe_all
 
 ------------------------------------------------------------------------
 -- Buffer helpers
@@ -324,10 +321,6 @@ local function process_event(dir, event)
   if apply_event(entry, event) then
     vim.cmd.redrawstatus()
     vim.cmd.redrawtabline()
-    -- Start spinner if any worktree just entered responding
-    if entry.status == "responding" then
-      start_spinner()
-    end
   end
 end
 
@@ -425,15 +418,6 @@ function M.setup()
   initialised = true
 
   if not resolve_git_common_dir() then return end
-  in_git_repo = true
-
-  -- Set up tabline and highlights
-  ensure_highlights()
-  _G.neovia_tabline = function()
-    return render_tabline(build_tabline_entries())
-  end
-  vim.o.showtabline = 2 -- always show
-  vim.o.tabline = "%!v:lua.neovia_tabline()"
 
   local group = vim.api.nvim_create_augroup("neovia_worktree", { clear = true })
 
@@ -452,10 +436,11 @@ function M.setup()
         dir_timer:stop()
         dir_timer:close()
       end
-      dir_timer = vim.uv.new_timer()
-      dir_timer:start(500, 0, vim.schedule_wrap(function()
-        dir_timer:close()
-        dir_timer = nil
+      local t = vim.uv.new_timer()
+      dir_timer = t
+      t:start(500, 0, vim.schedule_wrap(function()
+        if not t:is_closing() then t:close() end
+        if dir_timer == t then dir_timer = nil end
         ensure_subscriptions()
         vim.cmd.redrawtabline()
       end))
@@ -500,9 +485,6 @@ function M.set_status(dir, new_status)
   end
   vim.cmd.redrawstatus()
   vim.cmd.redrawtabline()
-  if new_status == "responding" then
-    start_spinner()
-  end
 end
 
 ------------------------------------------------------------------------
@@ -880,57 +862,46 @@ function M.pick()
 end
 
 ------------------------------------------------------------------------
--- Lualine components
+-- Public API: data for lualine components
 ------------------------------------------------------------------------
 
---- Define highlight groups.
-local function define_highlights()
-  for name, hl in pairs(status_hl) do
-    vim.api.nvim_set_hl(0, "NeoviaWt_" .. name, hl)
+--- Return tabline-style entries for all worktrees.
+--- Each entry has: branch, status, current (bool), open (bool).
+--- Accepts an optional worktree list override for testing.
+--- @param worktrees? neovia.WorktreeEntry[]
+--- @return neovia.TablineEntry[]
+function M.get_entries(worktrees)
+  worktrees = worktrees or list_worktrees()
+  local cwd = vim.fn.getcwd()
+  local entries = {} --- @type neovia.TablineEntry[]
+
+  for _, wt in ipairs(worktrees) do
+    local entry = state[wt.path]
+    local is_open = entry == nil or entry.open ~= false
+    table.insert(entries, {
+      branch = wt.branch,
+      status = entry and entry.status or "unknown",
+      current = wt.path == cwd,
+      open = is_open,
+    })
   end
-  -- Closed worktree: dim/comment colour
-  vim.api.nvim_set_hl(0, "NeoviaWtClosed", { fg = "#565f89", italic = true })
+
+  return entries
 end
 
---- Set up highlights lazily, re-apply on colorscheme change.
-local hl_initialised = false
-ensure_highlights = function()
-  if hl_initialised then return end
-  hl_initialised = true
-  define_highlights()
-  local hl_group = vim.api.nvim_create_augroup("neovia_worktree_hl", { clear = true })
-  vim.api.nvim_create_autocmd("ColorScheme", {
-    group = hl_group,
-    callback = define_highlights,
-    desc = "neovia: reapply worktree status highlights",
-  })
-end
+--- Return status info for the current working directory.
+--- Returns nil if no state is tracked for the current directory.
+--- @return { status: string, icon: string, hl: table }|nil
+function M.get_current_status()
+  local cwd = vim.fn.getcwd()
+  local entry = state[cwd]
+  if not entry then return nil end
 
-------------------------------------------------------------------------
--- Tabline
-------------------------------------------------------------------------
-
---- Spinner frames for "responding" status.
-local spinner_frames = { "|", "/", "-", "\\" }
-
---- Spinner state: advances each time status_char is called for responding.
-local spinner_idx = 0
-
---- Timer for spinning the tabline spinner.
---- @type uv_timer_t|nil
-local spinner_timer = nil
-
---- Return a single-character status indicator.
---- @param s string  One of "idle", "responding", "needs_attention", "unknown".
---- @return string
-local function status_char(s)
-  if s == "needs_attention" then return "!" end
-  if s == "responding" then
-    spinner_idx = (spinner_idx % #spinner_frames) + 1
-    return spinner_frames[spinner_idx]
-  end
-  if s == "unknown" then return "?" end
-  return "" -- idle: no indicator
+  return {
+    status = entry.status,
+    icon = status_icon[entry.status] or status_icon.unknown,
+    hl = status_hl[entry.status] or status_hl.unknown,
+  }
 end
 
 --- @class neovia.TablineEntry
@@ -938,90 +909,6 @@ end
 --- @field status string
 --- @field current boolean
 --- @field open boolean
-
---- Render the tabline string from a list of entries (pure).
---- Returns "" if there are 0 or 1 entries (tabline not useful).
---- @param entries neovia.TablineEntry[]
---- @return string
-local function render_tabline(entries)
-  if #entries <= 1 then return "" end
-
-  local parts = {}
-  for _, e in ipairs(entries) do
-    local char = status_char(e.status)
-    local suffix = char ~= "" and (" " .. char) or ""
-
-    if e.current then
-      table.insert(parts, "%#TabLineSel# " .. e.branch .. suffix .. " ")
-    elseif not e.open then
-      table.insert(parts, "%#NeoviaWtClosed# " .. e.branch .. suffix .. " ")
-    else
-      -- Use status-coloured highlight for the indicator character
-      local hl = "TabLine"
-      if e.status == "needs_attention" then
-        hl = "NeoviaWt_needs_attention"
-      elseif e.status == "responding" then
-        hl = "NeoviaWt_responding"
-      end
-      if char ~= "" then
-        table.insert(parts, "%#TabLine# " .. e.branch .. " %#" .. hl .. "#" .. char .. " ")
-      else
-        table.insert(parts, "%#TabLine# " .. e.branch .. " ")
-      end
-    end
-  end
-
-  return table.concat(parts) .. "%#TabLineFill#"
-end
-
---- Build tabline entries from current state + worktree list.
---- @return neovia.TablineEntry[]
-local function build_tabline_entries()
-  local worktrees = list_worktrees()
-  local cwd = vim.fn.getcwd()
-  local entries = {} --- @type neovia.TablineEntry[]
-
-  for _, wt in ipairs(worktrees) do
-    local entry = state[wt.path]
-    table.insert(entries, {
-      branch = wt.branch,
-      status = entry and entry.status or "unknown",
-      current = wt.path == cwd,
-      open = entry and entry.open ~= false or true,
-    })
-  end
-
-  return entries
-end
-
--- _G.neovia_tabline is set in setup() so it survives reload.
-
---- Start the spinner timer (redraws tabline periodically when any worktree is responding).
-start_spinner = function()
-  if spinner_timer then return end
-  spinner_timer = vim.uv.new_timer()
-  spinner_timer:start(200, 200, vim.schedule_wrap(function()
-    -- Check if any worktree is still responding
-    local any_responding = false
-    for _, entry in pairs(state) do
-      if entry.status == "responding" then
-        any_responding = true
-        break
-      end
-    end
-    if any_responding then
-      vim.cmd.redrawtabline()
-    else
-      -- Stop spinner when nothing is responding
-      if spinner_timer then
-        spinner_timer:stop()
-        spinner_timer:close()
-        spinner_timer = nil
-      end
-      vim.cmd.redrawtabline()
-    end
-  end))
-end
 
 ------------------------------------------------------------------------
 -- Test internals (exposed for unit tests only)
@@ -1036,16 +923,10 @@ M._internal = {
   unlist_file_buffers = unlist_file_buffers,
   relist_buffers = relist_buffers,
   wipeout_buffers_for_dir = wipeout_buffers_for_dir,
-  status_char = status_char,
-  render_tabline = render_tabline,
-  build_tabline_entries = build_tabline_entries,
-  status_icon = status_icon,
-  status_hl = status_hl,
   process_event = process_event,
   subscribe_one = subscribe_one,
   ensure_subscriptions = ensure_subscriptions,
   unsubscribe_all = unsubscribe_all,
-  start_spinner = start_spinner,
   resolve_git_common_dir = resolve_git_common_dir,
   list_worktrees = list_worktrees,
 
@@ -1065,22 +946,12 @@ M._internal = {
     unsubscribe_all()
     state = {}
     initialised = false
-    hl_initialised = false
-    in_git_repo = false
     if dir_timer then
       dir_timer:stop()
       dir_timer:close()
       dir_timer = nil
     end
-    if spinner_timer then
-      spinner_timer:stop()
-      spinner_timer:close()
-      spinner_timer = nil
-    end
-    spinner_idx = 0
-    _G.neovia_tabline = nil
     pcall(vim.api.nvim_del_augroup_by_name, "neovia_worktree")
-    pcall(vim.api.nvim_del_augroup_by_name, "neovia_worktree_hl")
   end,
 
   --- Create a fresh WorktreeState entry.
