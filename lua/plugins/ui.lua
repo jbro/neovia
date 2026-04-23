@@ -148,6 +148,7 @@ return {
         { "<leader>s", group = "Search" },
         { "<leader>g", group = "Git" },
         { "<leader>o", group = "OpenCode" },
+        { "<leader>oS", group = "Server" },
         { "<leader>p", group = "Plugins" },
         { "<leader>w", group = "Worktree" },
       },

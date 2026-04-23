@@ -1,4 +1,17 @@
 -- opencode.nvim + render-markdown.nvim
+
+--- Resolve the external server port.
+--- Prefers the NEOVIA_SERVER_PORT env var (set by neovia.zsh) but
+--- falls back to reading the port file on disk via the server module.
+--- Returns nil when no external server is available (plugin will spawn).
+local function resolve_server_port()
+  local env_port = tonumber(vim.env.NEOVIA_SERVER_PORT)
+  if env_port then return env_port end
+  local ok, srv = pcall(require, "neovia.server")
+  if ok then return srv.read_port() end
+  return nil
+end
+
 return {
   {
     "sudo-tee/opencode.nvim",
@@ -16,8 +29,14 @@ return {
       "ibhagwan/fzf-lua",
     },
     config = function()
+      local port = resolve_server_port()
       require("opencode").setup({
         preferred_picker = "fzf",
+        server = port and {
+          url = "http://127.0.0.1",
+          port = port,
+          auto_kill = false,
+        } or {},
         ui = {
           window_width = 0.50,
           input = {

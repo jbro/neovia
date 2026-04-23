@@ -23,25 +23,7 @@ buffer on startup instead of netrw.
   - **Not read-only:** exempt from the default read-only mode.
 - **Layout:** neo-tree (left) | code/scratch (centre) | opencode (right).
 
-## Detach opencode server from Neovim
-
-Run the opencode server as an independent process so restarting Neovim doesn't
-kill it. The plugin already supports connecting to an external instance via
-`config.server.url`.
-
-- **Approach:** start `opencode serve` from `neovia.zsh` (the shell wrapper)
-  before launching Neovim, or use a long-lived process manager (launchd, etc.).
-  Pass the URL to the plugin config so it connects instead of spawning.
-- **Benefit:** Neovim restarts become instant and non-disruptive -- in-flight
-  responses survive, and reconnection is seamless.
-- **Port mapping:** the plugin already has reference-counted port mapping; an
-  externally managed server just skips the spawn/kill lifecycle entirely.
-- **Config reload:** reloading `.opencode`, agents, etc. becomes free --
-  restart the external process and the plugin reconnects. No plugin-side
-  reload API needed. (Currently no reload mechanism exists in the plugin
-  or CLI.)
-- **Spike:** verify that `config.server.url` with a pre-running server works
-  end-to-end, including SSE subscriptions and session resumption.
+## ~~Detach opencode server from Neovim~~ (Implemented -- decision 0010)
 
 ## GitHub PR status in worktree tabline
 

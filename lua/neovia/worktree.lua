@@ -468,12 +468,12 @@ function M.setup()
     desc = "neovia: refresh worktree subscriptions on tcd",
   })
 
-  -- Defer initial subscription until opencode server is ready.
-  -- Listen for the server_ready custom event.
+  -- Defer subscription until opencode server is ready.
+  -- Not once=true: the server may restart (external process) and
+  -- fire this event again, so we need to re-subscribe each time.
   vim.api.nvim_create_autocmd("User", {
     group = group,
     pattern = "OpencodeEvent:server.connected",
-    once = true,
     callback = function()
       vim.defer_fn(function() ensure_subscriptions() end, 1000)
     end,

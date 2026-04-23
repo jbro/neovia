@@ -122,6 +122,47 @@ require("neovia.theme").setup()
 require("neovia.theme").apply()
 
 ------------------------------------------------------------------------
+-- Server (external opencode serve lifecycle)
+------------------------------------------------------------------------
+require("neovia.server").setup()
+vim.keymap.set("n", "<leader>oSs", function()
+  local s = require("neovia.server").status()
+  if s.state == "running" then
+    vim.notify(("opencode server: running (port %d, pid %d)"):format(s.port, s.pid), vim.log.levels.INFO)
+  else
+    vim.notify("opencode server: stopped", vim.log.levels.WARN)
+  end
+end, { desc = "Server status" })
+
+vim.keymap.set("n", "<leader>oSr", function()
+  vim.notify("opencode server: restarting...", vim.log.levels.INFO)
+  require("neovia.server").restart(function(err, port)
+    vim.schedule(function()
+      if err then
+        vim.notify("opencode server: restart failed: " .. err, vim.log.levels.ERROR)
+      else
+        vim.notify(("opencode server: restarted on port %d"):format(port), vim.log.levels.INFO)
+        require("neovia.layout").restore_layout()
+      end
+    end)
+  end)
+end, { desc = "Restart server" })
+
+vim.keymap.set("n", "<leader>oSq", function()
+  local stopped = require("neovia.server").stop()
+  if stopped then
+    vim.notify("opencode server: stopped", vim.log.levels.INFO)
+  else
+    vim.notify("opencode server: was not running", vim.log.levels.WARN)
+  end
+end, { desc = "Shutdown server" })
+
+vim.keymap.set("n", "<leader>oSd", function()
+  vim.notify("opencode: reconnecting and restoring layout...", vim.log.levels.INFO)
+  require("neovia.layout").restore_layout()
+end, { desc = "Redraw UI" })
+
+------------------------------------------------------------------------
 -- Read-only mode
 ------------------------------------------------------------------------
 require("neovia.mode").setup({ auto_relock = true })

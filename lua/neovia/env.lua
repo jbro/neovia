@@ -35,29 +35,9 @@ local function cache_fresh(path, ttl)
   return age < ttl
 end
 
---- Read the full contents of a file, trimming trailing whitespace.
---- @param path string
---- @return string?
-local function read_file(path)
-  local fd = vim.uv.fs_open(path, "r", 438) -- 0o666
-  if not fd then return nil end
-  local stat = vim.uv.fs_fstat(fd)
-  if not stat then vim.uv.fs_close(fd); return nil end
-  local data = vim.uv.fs_read(fd, stat.size, 0)
-  vim.uv.fs_close(fd)
-  if not data then return nil end
-  return vim.trim(data)
-end
-
---- Write `data` to `path` with mode 0600.
---- @param path string
---- @param data string
-local function write_file(path, data)
-  local fd = vim.uv.fs_open(path, "w", 384) -- 0o600
-  if not fd then return end
-  vim.uv.fs_write(fd, data, 0)
-  vim.uv.fs_close(fd)
-end
+local ok_fs, fs = pcall(require, "neovia.fs")
+local read_file = ok_fs and fs.read_file or function() return nil end
+local write_file = ok_fs and fs.write_file or function() end
 
 --- Run a command and return trimmed stdout, or nil + error.
 --- @param cmd string|string[]
