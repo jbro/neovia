@@ -429,11 +429,26 @@ describe("M.start", function()
     I.reset()
   end)
 
-  -- M.start() spawns a real opencode process, which is too heavy for
-  -- unit tests. Test the error path: resolve_git_common_dir is tested
-  -- separately, and start()'s internals are tested via the timeout
-  -- and parse_server_url tests. The "already running" early-return
-  -- path is testable.
+  it("calls back with error when not in a git repo", function()
+    -- Run from a temp directory that is not a git repo
+    local tmp = vim.fn.tempname()
+    vim.fn.mkdir(tmp, "p")
+    local orig_cwd = vim.fn.getcwd()
+    vim.cmd("cd " .. vim.fn.fnameescape(tmp))
+
+    local result = {}
+    server.start(function(err, port)
+      result.err = err
+      result.port = port
+    end)
+
+    vim.cmd("cd " .. vim.fn.fnameescape(orig_cwd))
+    vim.fn.delete(tmp, "rf")
+
+    assert.equals("not in a git repository", result.err)
+    assert.is_nil(result.port)
+  end)
+
   it("calls back immediately when server is already running", function()
     local gcd = I.resolve_git_common_dir()
     local sdir = I.state_dir(gcd)
@@ -477,12 +492,9 @@ describe("M.restart", function()
     I.save_server_info(sdir, 55555, pid)
 
     -- Restart will stop the sleep process, then try to start opencode.
-    -- The start will fail (we don't have a mock), but the stop should
-    -- have succeeded.
-    local called = false
-    server.restart(function()
-      called = true
-    end)
+    -- start() will attempt to spawn opencode (which may fail in test),
+    -- but the stop phase should have killed the dummy process.
+    server.restart(function() end)
 
     -- Verify the old process was killed
     vim.wait(3000, function() return not I.pid_alive(pid) end)

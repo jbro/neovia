@@ -186,6 +186,14 @@ local function start(git_common_dir, callback)
     if not timeout_timer:is_closing() then timeout_timer:close() end
     if not settled then
       settled = true
+      -- Kill the orphan process so it doesn't run untracked
+      if job and job.pid then
+        pcall(vim.uv.kill, job.pid, 15)
+        vim.defer_fn(function()
+          if pid_alive(job.pid) then pcall(vim.uv.kill, job.pid, 9) end
+        end, 1000)
+      end
+      clear_server_info(dir)
       callback("opencode server did not start within " .. (START_TIMEOUT_MS / 1000) .. "s")
     end
   end))
