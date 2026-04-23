@@ -2834,6 +2834,598 @@ describe("delete_current", function()
 end)
 
 ------------------------------------------------------------------------
+-- next / prev (cycle through open worktrees)
+------------------------------------------------------------------------
+
+describe("next", function()
+  local orig_cwd
+  local orig_system
+
+  before_each(function()
+    I.reset()
+    orig_cwd = vim.fn.getcwd()
+    orig_system = vim.system
+
+    -- Stub vim.system for list_worktrees
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree /proj/main",
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree /proj/feat",
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree /proj/hotfix",
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat", status = "responding" }),
+      ["/proj/hotfix"] = I.make_entry({ branch = "hotfix", status = "idle" }),
+    })
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    vim.system = orig_system
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+  end)
+
+  it("is a function on the public API", function()
+    assert.is_function(wt.next)
+  end)
+
+  it("switches to the next open worktree", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding" }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
+    })
+
+    vim.cmd.tcd(dir_main)
+    wt.next()
+    assert.equals(dir_feat, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+
+  it("wraps around from the last worktree to the first", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding" }),
+    })
+
+    vim.cmd.tcd(dir_feat)
+    wt.next()
+    assert.equals(dir_main, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+  end)
+
+  it("skips closed worktrees", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding", open = false }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
+    })
+
+    vim.cmd.tcd(dir_main)
+    wt.next()
+    assert.equals(dir_hotfix, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+
+  it("is a no-op when only one open worktree exists", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+    })
+
+    vim.cmd.tcd(dir_main)
+    wt.next()
+    assert.equals(dir_main, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+  end)
+end)
+
+describe("prev", function()
+  local orig_cwd
+  local orig_system
+
+  before_each(function()
+    I.reset()
+    orig_cwd = vim.fn.getcwd()
+    orig_system = vim.system
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    vim.system = orig_system
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+  end)
+
+  it("is a function on the public API", function()
+    assert.is_function(wt.prev)
+  end)
+
+  it("switches to the previous open worktree", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding" }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
+    })
+
+    vim.cmd.tcd(dir_hotfix)
+    wt.prev()
+    assert.equals(dir_feat, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+
+  it("wraps around from the first worktree to the last", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding" }),
+    })
+
+    vim.cmd.tcd(dir_main)
+    wt.prev()
+    assert.equals(dir_feat, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+  end)
+
+  it("skips closed worktrees", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding", open = false }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
+    })
+
+    vim.cmd.tcd(dir_hotfix)
+    wt.prev()
+    assert.equals(dir_main, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- next_attention (cycle to next worktree needing attention)
+------------------------------------------------------------------------
+
+describe("next_attention", function()
+  local orig_cwd
+  local orig_system
+
+  before_each(function()
+    I.reset()
+    orig_cwd = vim.fn.getcwd()
+    orig_system = vim.system
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    vim.system = orig_system
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+  end)
+
+  it("is a function on the public API", function()
+    assert.is_function(wt.next_attention)
+  end)
+
+  it("switches to the next worktree with needs_attention status", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "needs_attention" }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
+    })
+
+    vim.cmd.tcd(dir_main)
+    wt.next_attention()
+    assert.equals(dir_feat, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+
+  it("wraps around when searching for attention worktrees", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "needs_attention" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "idle" }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
+    })
+
+    -- Starting from hotfix, should wrap to main
+    vim.cmd.tcd(dir_hotfix)
+    wt.next_attention()
+    assert.equals(dir_main, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+
+  it("is a no-op when no worktree needs attention", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding" }),
+    })
+
+    vim.cmd.tcd(dir_main)
+    wt.next_attention()
+    assert.equals(dir_main, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+  end)
+
+  it("skips closed worktrees even if they need attention", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "needs_attention", open = false }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "needs_attention" }),
+    })
+
+    vim.cmd.tcd(dir_main)
+    wt.next_attention()
+    assert.equals(dir_hotfix, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+
+  it("cycles forward from the current attention worktree to the next one", function()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+    vim.fn.mkdir(dir_hotfix, "p")
+
+    vim.system = function(cmd, opts)
+      if cmd[1] == "git" and cmd[2] == "worktree" then
+        local output = table.concat({
+          "worktree " .. dir_main,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/main",
+          "",
+          "worktree " .. dir_feat,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/feat",
+          "",
+          "worktree " .. dir_hotfix,
+          "HEAD abc1234def5678901234567890abcdef12345678",
+          "branch refs/heads/hotfix",
+          "",
+        }, "\n")
+        return { wait = function() return { code = 0, stdout = output } end }
+      end
+      return orig_system(cmd, opts)
+    end
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "needs_attention" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "idle" }),
+      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "needs_attention" }),
+    })
+
+    -- Start at main (needs attention), next_attention should go to hotfix
+    vim.cmd.tcd(dir_main)
+    wt.next_attention()
+    assert.equals(dir_hotfix, I.tab_cwd())
+
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+    vim.fn.delete(dir_hotfix, "rf")
+  end)
+end)
+
+------------------------------------------------------------------------
 -- reset (reload contract)
 ------------------------------------------------------------------------
 

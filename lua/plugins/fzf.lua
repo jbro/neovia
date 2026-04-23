@@ -21,6 +21,9 @@ return {
       { "<leader>wQ", function() require("neovia.worktree").close() end, desc = "Close current worktree" },
       { "<leader>wd", function() require("neovia.worktree").delete() end, desc = "Delete worktree" },
       { "<leader>wD", function() require("neovia.worktree").delete_current() end, desc = "Delete current worktree" },
+      { "<leader>wn", function() require("neovia.worktree").next() end, desc = "Next worktree" },
+      { "<leader>wp", function() require("neovia.worktree").prev() end, desc = "Previous worktree" },
+      { "<leader>wa", function() require("neovia.worktree").next_attention() end, desc = "Next needs attention" },
     },
     opts = {
       winopts = {

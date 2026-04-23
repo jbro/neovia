@@ -1004,6 +1004,79 @@ function M.delete_current()
 end
 
 ------------------------------------------------------------------------
+-- Public API: worktree navigation (next / prev / next_attention)
+------------------------------------------------------------------------
+
+--- Collect open worktree paths in order, returning the list and the
+--- 1-based index of the current worktree within it.
+--- @return string[] open_paths
+--- @return integer? current_idx  nil if cwd is not in the list.
+local function open_worktree_list()
+  local worktrees = list_worktrees()
+  local cwd = tab_cwd()
+  local open_paths = {}
+  local current_idx = nil
+  for _, wt in ipairs(worktrees) do
+    local entry = state[wt.path]
+    if not entry or entry.open ~= false then
+      table.insert(open_paths, wt.path)
+      if wt.path == cwd then current_idx = #open_paths end
+    end
+  end
+  return open_paths, current_idx
+end
+
+--- Switch to the next open worktree (wraps around).
+function M.next()
+  M.setup()
+  local paths, idx = open_worktree_list()
+  if not idx or #paths <= 1 then return end
+  local next_idx = (idx % #paths) + 1
+  M.switch_to(paths[next_idx])
+end
+
+--- Switch to the previous open worktree (wraps around).
+function M.prev()
+  M.setup()
+  local paths, idx = open_worktree_list()
+  if not idx or #paths <= 1 then return end
+  local prev_idx = ((idx - 2) % #paths) + 1
+  M.switch_to(paths[prev_idx])
+end
+
+--- Cycle forward to the next open worktree with needs_attention status.
+--- Wraps around. No-op if no worktree needs attention.
+function M.next_attention()
+  M.setup()
+  local worktrees = list_worktrees()
+  local cwd = tab_cwd()
+
+  -- Build ordered list of open worktree paths
+  local open_paths = {}
+  local current_idx = nil
+  for _, wt in ipairs(worktrees) do
+    local entry = state[wt.path]
+    if not entry or entry.open ~= false then
+      table.insert(open_paths, wt.path)
+      if wt.path == cwd then current_idx = #open_paths end
+    end
+  end
+
+  if not current_idx or #open_paths == 0 then return end
+
+  -- Search forward from current+1, wrapping around
+  for offset = 1, #open_paths - 1 do
+    local i = ((current_idx - 1 + offset) % #open_paths) + 1
+    local path = open_paths[i]
+    local entry = state[path]
+    if entry and entry.status == "needs_attention" then
+      M.switch_to(path)
+      return
+    end
+  end
+end
+
+------------------------------------------------------------------------
 -- Picker
 ------------------------------------------------------------------------
 

@@ -29,6 +29,7 @@ return {
             -- Disable close; toggle_focus is sufficient for switching panes
             ["<leader>oq"] = false,
             ["<leader>og"] = { "toggle_focus", desc = "Toggle OpenCode focus" },
+            ["<leader>on"] = { "open_input_new_session", desc = "New session" },
           },
           input_window = {
             ["<esc>"] = false,
