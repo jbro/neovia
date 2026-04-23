@@ -17,7 +17,7 @@ local M = {}
 --- @field pending_permissions table<string, boolean>  permission IDs awaiting reply
 --- @field buffer_paths string[]  saved file paths (for switch restore)
 --- @field open boolean  whether this worktree is actively tracked (vs closed)
---- @field session_id string|nil  cached opencode session ID for direct switch
+--- @field session_id string|nil  cached opencode session ID (used by resync and fork)
 
 --- Per-directory state. Keyed by absolute path.
 --- @type table<string, neovia.WorktreeState>
@@ -309,7 +309,7 @@ local function apply_event(entry, event)
     if id then entry.pending_permissions[id] = true end
 
   elseif t == "permission.replied" or t == "question.replied" or t == "question.rejected" then
-    local id = props.requestID or props.id
+    local id = props.permissionID or props.requestID or props.id
     if id then entry.pending_permissions[id] = nil end
     -- If no more pending permissions/questions, revert to responding.
     -- It will settle to idle via session.idle later.
@@ -582,8 +582,9 @@ end
 --- Saves current file buffer paths (unlist), tcd to target,
 --- restores saved buffers (relist) or opens netrw on first visit.
 --- If the target is closed, reopens it (re-subscribes SSE).
---- Uses core.switch_session when a cached session ID is available,
---- bypassing the slower handle_directory_change path.
+--- Session switching is left to opencode.nvim's DirChanged autocmd
+--- (fires synchronously during tcd) so that SSE reconnection and
+--- session loading happen atomically.
 --- @param dir string  Absolute path to the target worktree.
 function M.switch_to(dir)
   M.setup()
@@ -601,15 +602,12 @@ function M.switch_to(dir)
   -- Unlist current file buffers
   unlist_file_buffers()
 
-  -- Pre-set opencode's current_cwd so its DirChanged autocmd
-  -- short-circuits and does not trigger handle_directory_change.
-  -- We call core.switch_session ourselves for a cleaner swap.
-  local ok_oc, oc_state = pcall(require, "opencode.state")
-  if ok_oc and oc_state.context and oc_state.context.set_current_cwd then
-    oc_state.context.set_current_cwd(dir)
-  end
-
-  -- tcd to target
+  -- tcd to target.  opencode.nvim's DirChanged autocmd fires
+  -- synchronously here, calling set_current_cwd and
+  -- handle_directory_change.  We do NOT pre-set current_cwd
+  -- ourselves because that would trigger the event manager's SSE
+  -- reconnection before the session switch, creating a gap where
+  -- streaming events are lost.
   vim.cmd.tcd(dir)
 
   -- Ensure target has a state entry
@@ -630,17 +628,6 @@ function M.switch_to(dir)
   if not target.open then
     target.open = true
     subscribe_one(dir)
-  end
-
-  -- Switch opencode session directly (avoids blank-then-load flicker).
-  -- If we have a cached session ID, use core.switch_session for a direct
-  -- swap. Otherwise fall back to handle_directory_change which queries
-  -- the API for the last workspace session.
-  local ok_core, core = pcall(require, "opencode.core")
-  if ok_core and core.switch_session and target.session_id then
-    core.switch_session(target.session_id)
-  elseif ok_core and core.handle_directory_change then
-    core.handle_directory_change()
   end
 
   -- Restore saved buffers or open netrw
@@ -668,10 +655,22 @@ function M.switch_to(dir)
 
   -- Deferred layout check: opencode.nvim's session swap is async, so if
   -- it disrupts the output window, ensure_layout repairs it.
+  -- Also re-subscribe the event manager's SSE so the server re-emits
+  -- pending permission state.  renderer.reset() clears permissions
+  -- before render_full_session runs, so permissions delivered on the
+  -- first SSE connection are lost.  The deferred re-subscribe ensures
+  -- they arrive after the session switch has settled.
   vim.defer_fn(function()
     local ok, layout = pcall(require, "neovia.layout")
     if ok and layout._internal and layout._internal.ensure_layout then
       layout._internal.ensure_layout()
+    end
+
+    local ok_oc, oc_state = pcall(require, "opencode.state")
+    if ok_oc and oc_state.event_manager
+      and oc_state.event_manager._subscribe_to_server_events
+      and oc_state.opencode_server then
+      oc_state.event_manager:_subscribe_to_server_events(oc_state.opencode_server)
     end
   end, 100)
 

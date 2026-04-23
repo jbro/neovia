@@ -208,6 +208,20 @@ describe("apply_event", function()
     assert.is_nil(entry.pending_permissions["perm-123"])
   end)
 
+  it("permission.replied with permissionID clears permission and reverts to responding", function()
+    entry.status = "needs_attention"
+    entry.pending_permissions = { ["perm-456"] = true }
+
+    local event = {
+      type = "permission.replied",
+      properties = { permissionID = "perm-456" },
+    }
+    local changed = I.apply_event(entry, event)
+    assert.is_true(changed)
+    assert.equals("responding", entry.status)
+    assert.is_nil(entry.pending_permissions["perm-456"])
+  end)
+
   it("permission.replied stays needs_attention when other perms remain", function()
     entry.status = "needs_attention"
     entry.pending_permissions = { ["p1"] = true, ["p2"] = true }
@@ -377,6 +391,32 @@ describe("event sequence scenario", function()
       properties = {},
     })
     assert.equals("idle", entry.status)
+  end)
+
+  it("tracks lifecycle when permission.replied uses permissionID field", function()
+    local entry = I.make_entry({ status = "idle" })
+
+    -- Assistant starts responding
+    I.apply_event(entry, {
+      type = "message.updated",
+      properties = { info = { role = "assistant", time = { created = 100 } } },
+    })
+    assert.equals("responding", entry.status)
+
+    -- Permission asked with id
+    I.apply_event(entry, {
+      type = "permission.asked",
+      properties = { id = "perm-abc" },
+    })
+    assert.equals("needs_attention", entry.status)
+
+    -- Permission replied using permissionID (not requestID)
+    I.apply_event(entry, {
+      type = "permission.replied",
+      properties = { permissionID = "perm-abc" },
+    })
+    assert.equals("responding", entry.status)
+    assert.same({}, entry.pending_permissions)
   end)
 
   it("handles error mid-response", function()
@@ -3685,13 +3725,17 @@ describe("switch_to session switching", function()
     package.loaded["opencode.core"] = nil
   end)
 
-  it("pre-sets opencode current_cwd before tcd", function()
-    local cwd_set_to = nil
+  it("does not pre-set opencode current_cwd before tcd", function()
+    -- set_current_cwd was previously called before tcd to suppress
+    -- opencode.nvim's DirChanged handler. This caused the event manager
+    -- to tear down and reconnect SSE prematurely, creating a gap where
+    -- streaming events were lost. Now we let DirChanged handle everything.
+    local cwd_set_calls = {}
     package.loaded["opencode.state"] = {
       active_session = { id = "s1" },
       context = {
         set_current_cwd = function(path)
-          cwd_set_to = path
+          table.insert(cwd_set_calls, path)
         end,
       },
     }
@@ -3708,22 +3752,27 @@ describe("switch_to session switching", function()
 
     wt.switch_to(dir_b)
 
-    assert.equals(dir_b, cwd_set_to,
-      "set_current_cwd should be called with the target directory")
+    assert.equals(0, #cwd_set_calls,
+      "set_current_cwd should NOT be called by switch_to; DirChanged handles it")
   end)
 
-  it("calls core.switch_session when target has cached session_id", function()
-    local switched_session_id = nil
+  it("does not call core.switch_session or handle_directory_change", function()
+    -- Session switching is now handled by opencode.nvim's DirChanged
+    -- autocmd, which fires synchronously during tcd. neovia should not
+    -- call these functions directly to avoid racing with the event
+    -- manager's SSE reconnection.
     package.loaded["opencode.state"] = {
       active_session = { id = "s1" },
       context = { set_current_cwd = function() end },
     }
+    local switch_called = false
+    local hdc_called = false
     package.loaded["opencode.core"] = {
-      switch_session = function(id)
-        switched_session_id = id
+      switch_session = function()
+        switch_called = true
       end,
       handle_directory_change = function()
-        error("handle_directory_change should not be called")
+        hdc_called = true
       end,
     }
 
@@ -3735,35 +3784,10 @@ describe("switch_to session switching", function()
 
     wt.switch_to(dir_b)
 
-    assert.equals("target-session-99", switched_session_id,
-      "core.switch_session should be called with cached session ID")
-  end)
-
-  it("falls back to handle_directory_change when no cached session_id", function()
-    local hdc_called = false
-    package.loaded["opencode.state"] = {
-      active_session = { id = "s1" },
-      context = { set_current_cwd = function() end },
-    }
-    package.loaded["opencode.core"] = {
-      switch_session = function()
-        error("switch_session should not be called without cached ID")
-      end,
-      handle_directory_change = function()
-        hdc_called = true
-      end,
-    }
-
-    vim.cmd.tcd(dir_a)
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({ branch = "feat" }), -- no session_id
-    })
-
-    wt.switch_to(dir_b)
-
-    assert.is_true(hdc_called,
-      "handle_directory_change should be called when no cached session ID")
+    assert.is_false(switch_called,
+      "core.switch_session should NOT be called by switch_to")
+    assert.is_false(hdc_called,
+      "handle_directory_change should NOT be called by switch_to")
   end)
 
   it("saves current session_id before switching away", function()
@@ -3786,6 +3810,43 @@ describe("switch_to session switching", function()
 
     assert.equals("current-session-77", I.get_state()[dir_a].session_id,
       "Session ID should be saved for the worktree we switched away from")
+  end)
+
+  it("schedules deferred event manager re-subscribe after switch", function()
+    -- opencode.nvim's renderer.reset() clears pending permissions before
+    -- render_full_session runs. If the SSE already delivered permission
+    -- events they get wiped. A deferred re-subscribe forces the server
+    -- to re-emit pending state after the session switch has settled.
+    local resubscribe_server = nil
+    local mock_server = { url = "http://localhost:1234" }
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      context = { set_current_cwd = function() end },
+      opencode_server = mock_server,
+      event_manager = {
+        _subscribe_to_server_events = function(_, server)
+          resubscribe_server = server
+        end,
+      },
+    }
+    package.loaded["opencode.core"] = {}
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    -- Should not have fired yet (deferred)
+    assert.is_nil(resubscribe_server)
+
+    -- Flush the deferred callback (100ms defer + margin)
+    vim.wait(200, function() return resubscribe_server ~= nil end)
+
+    assert.equals(mock_server, resubscribe_server,
+      "event manager should be re-subscribed with the opencode server")
   end)
 end)
 
