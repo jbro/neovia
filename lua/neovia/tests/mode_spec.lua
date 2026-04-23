@@ -49,12 +49,16 @@ describe("should_lock", function()
     assert.is_false(I.should_lock({ buftype = "", filetype = "neo-tree" }))
   end)
 
-  it("returns false for opencode_input filetype", function()
-    assert.is_false(I.should_lock({ buftype = "", filetype = "opencode_input" }))
+  it("returns false for opencode filetype (input buffer)", function()
+    assert.is_false(I.should_lock({ buftype = "", filetype = "opencode" }))
   end)
 
   it("returns false for opencode_output filetype", function()
     assert.is_false(I.should_lock({ buftype = "", filetype = "opencode_output" }))
+  end)
+
+  it("returns false for opencode_footer filetype", function()
+    assert.is_false(I.should_lock({ buftype = "", filetype = "opencode_footer" }))
   end)
 
   it("returns false for DiffviewFiles filetype", function()

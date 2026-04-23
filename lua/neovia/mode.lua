@@ -18,8 +18,9 @@ local skip_filetypes = {
   gitcommit = true,
   fugitive = true,
   ["neo-tree"] = true,
-  opencode_input = true,
+  opencode = true,
   opencode_output = true,
+  opencode_footer = true,
   DiffviewFiles = true,
   DiffviewFileHistory = true,
 }
