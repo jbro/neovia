@@ -111,6 +111,11 @@ require("neovia.layout").setup()
 require("neovia.worktree").setup()
 
 ------------------------------------------------------------------------
+-- PR status (GitHub PR polling for tabline/statusline)
+------------------------------------------------------------------------
+require("neovia.pr").setup()
+
+------------------------------------------------------------------------
 -- Theme (persist light/dark across restarts)
 ------------------------------------------------------------------------
 require("neovia.theme").setup()
