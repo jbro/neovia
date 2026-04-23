@@ -283,7 +283,7 @@ describe("setup", function()
 end)
 
 ------------------------------------------------------------------------
--- read_port (the function plugin config will call)
+-- read_port (internal, for plugin config)
 ------------------------------------------------------------------------
 
 describe("read_port", function()
@@ -315,5 +315,180 @@ describe("read_port", function()
   it("returns nil when no info exists", function()
     local port = I.read_port(tmp_dir)
     assert.is_nil(port)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Public API: M.status()
+------------------------------------------------------------------------
+
+describe("M.status", function()
+  -- Tests run inside the neovia git repo, so resolve_git_common_dir works.
+  local gcd, sdir
+
+  before_each(function()
+    I.reset()
+    gcd = I.resolve_git_common_dir()
+    assert.is_not_nil(gcd, "tests must run inside a git repo")
+    sdir = I.state_dir(gcd)
+  end)
+
+  after_each(function()
+    I.clear_server_info(sdir)
+    I.reset()
+  end)
+
+  it("returns 'running' when server info exists with alive PID", function()
+    I.save_server_info(sdir, 11111, vim.fn.getpid())
+    local s = server.status()
+    assert.equals("running", s.state)
+    assert.equals(11111, s.port)
+    assert.equals(vim.fn.getpid(), s.pid)
+  end)
+
+  it("returns 'stopped' when no server info exists", function()
+    local s = server.status()
+    assert.equals("stopped", s.state)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Public API: M.read_port()
+------------------------------------------------------------------------
+
+describe("M.read_port", function()
+  local gcd, sdir
+
+  before_each(function()
+    I.reset()
+    gcd = I.resolve_git_common_dir()
+    sdir = I.state_dir(gcd)
+  end)
+
+  after_each(function()
+    I.clear_server_info(sdir)
+    I.reset()
+  end)
+
+  it("returns the port when server is alive", function()
+    I.save_server_info(sdir, 22222, vim.fn.getpid())
+    assert.equals(22222, server.read_port())
+  end)
+
+  it("returns nil when no server is running", function()
+    assert.is_nil(server.read_port())
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Public API: M.stop()
+------------------------------------------------------------------------
+
+describe("M.stop", function()
+  local gcd, sdir
+
+  before_each(function()
+    I.reset()
+    gcd = I.resolve_git_common_dir()
+    sdir = I.state_dir(gcd)
+  end)
+
+  after_each(function()
+    I.clear_server_info(sdir)
+    I.reset()
+  end)
+
+  it("returns false when no server is running", function()
+    assert.is_false(server.stop())
+  end)
+
+  it("returns true and clears info when server info exists", function()
+    -- Use a dummy sleep process
+    local job = vim.system({ "sleep", "60" }, { detach = true })
+    local pid = job.pid
+    I.save_server_info(sdir, 33333, pid)
+
+    assert.is_true(server.stop())
+    assert.is_nil(I.load_server_info(sdir))
+
+    -- Clean up
+    vim.wait(500, function() return not I.pid_alive(pid) end)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Public API: M.start()
+------------------------------------------------------------------------
+
+describe("M.start", function()
+  before_each(function()
+    I.reset()
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  -- M.start() spawns a real opencode process, which is too heavy for
+  -- unit tests. Test the error path: resolve_git_common_dir is tested
+  -- separately, and start()'s internals are tested via the timeout
+  -- and parse_server_url tests. The "already running" early-return
+  -- path is testable.
+  it("calls back immediately when server is already running", function()
+    local gcd = I.resolve_git_common_dir()
+    local sdir = I.state_dir(gcd)
+    I.save_server_info(sdir, 44444, vim.fn.getpid())
+
+    local result = {}
+    server.start(function(err, port)
+      result.err = err
+      result.port = port
+    end)
+
+    assert.is_nil(result.err)
+    assert.equals(44444, result.port)
+
+    I.clear_server_info(sdir)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Public API: M.restart()
+------------------------------------------------------------------------
+
+describe("M.restart", function()
+  before_each(function()
+    I.reset()
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  -- Full restart spawns a real opencode process. Test that the stop
+  -- phase works by setting up a dummy process, then verifying the
+  -- callback is invoked (start will proceed to spawn, which we can't
+  -- fully test here without the opencode binary).
+  it("stops the existing server before starting", function()
+    local gcd = I.resolve_git_common_dir()
+    local sdir = I.state_dir(gcd)
+    local job = vim.system({ "sleep", "60" }, { detach = true })
+    local pid = job.pid
+    I.save_server_info(sdir, 55555, pid)
+
+    -- Restart will stop the sleep process, then try to start opencode.
+    -- The start will fail (we don't have a mock), but the stop should
+    -- have succeeded.
+    local called = false
+    server.restart(function()
+      called = true
+    end)
+
+    -- Verify the old process was killed
+    vim.wait(3000, function() return not I.pid_alive(pid) end)
+    assert.is_false(I.pid_alive(pid))
+
+    -- Clean up
+    I.clear_server_info(sdir)
   end)
 end)

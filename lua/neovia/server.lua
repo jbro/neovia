@@ -155,6 +155,9 @@ end
 -- Server lifecycle
 ------------------------------------------------------------------------
 
+--- Timeout in milliseconds for the server to report its listening URL.
+local START_TIMEOUT_MS = 15000
+
 --- Start the opencode server in the background.
 --- @param git_common_dir string
 --- @param callback fun(err: string?, port: number?)
@@ -174,14 +177,26 @@ local function start(git_common_dir, callback)
   local log_fd = vim.uv.fs_open(log_path, "w", 384)
 
   local cmd = { "opencode", "serve", "--port", "0" }
-  local ready = false
+  local settled = false -- true once callback has been invoked
+
+  -- Timeout: if the server doesn't report ready within START_TIMEOUT_MS,
+  -- call back with an error so the caller doesn't hang forever.
+  local timeout_timer = vim.uv.new_timer()
+  timeout_timer:start(START_TIMEOUT_MS, 0, vim.schedule_wrap(function()
+    if not timeout_timer:is_closing() then timeout_timer:close() end
+    if not settled then
+      settled = true
+      callback("opencode server did not start within " .. (START_TIMEOUT_MS / 1000) .. "s")
+    end
+  end))
 
   local job = vim.system(cmd, {
     detach = true,
     stdout = function(err, data)
       if err then
-        if not ready then
-          ready = true
+        if not settled then
+          settled = true
+          if not timeout_timer:is_closing() then timeout_timer:close() end
           vim.schedule(function() callback("server stdout error: " .. tostring(err)) end)
         end
         return
@@ -191,8 +206,9 @@ local function start(git_common_dir, callback)
         if log_fd then pcall(vim.uv.fs_write, log_fd, data, -1) end
 
         local url = data:match("opencode server listening on ([^%s]+)")
-        if url and not ready then
-          ready = true
+        if url and not settled then
+          settled = true
+          if not timeout_timer:is_closing() then timeout_timer:close() end
           local port = parse_server_url(url)
           if port and job and job.pid then
             save_server_info(dir, port, job.pid)
@@ -207,17 +223,23 @@ local function start(git_common_dir, callback)
       if data and log_fd then pcall(vim.uv.fs_write, log_fd, data, -1) end
     end,
   }, function()
-    -- On exit: close log fd
+    -- On exit: close log fd, cancel timeout
     if log_fd then pcall(vim.uv.fs_close, log_fd) end
+    if not timeout_timer:is_closing() then
+      pcall(timeout_timer.close, timeout_timer)
+    end
   end)
 
   if not job or not job.pid then
+    settled = true
+    if not timeout_timer:is_closing() then timeout_timer:close() end
     if log_fd then pcall(vim.uv.fs_close, log_fd) end
     callback("failed to spawn opencode serve")
   end
 end
 
---- Stop the opencode server.
+--- Stop the opencode server synchronously.
+--- Sends SIGTERM, waits up to 2s for exit, then SIGKILL if needed.
 --- @param git_common_dir string
 --- @return boolean stopped  True if a process was killed.
 local function stop(git_common_dir)
@@ -228,14 +250,23 @@ local function stop(git_common_dir)
     return false
   end
 
-  if pid_alive(info.pid) then
-    pcall(vim.uv.kill, info.pid, 15) -- SIGTERM
-    -- Give it a moment, then force kill
-    vim.defer_fn(function()
-      if pid_alive(info.pid) then
-        pcall(vim.uv.kill, info.pid, 9) -- SIGKILL
-      end
-    end, 1000)
+  local pid = info.pid
+  if pid_alive(pid) then
+    pcall(vim.uv.kill, pid, 15) -- SIGTERM
+
+    -- Poll for process death (up to 2s, checking every 100ms)
+    local waited = 0
+    while pid_alive(pid) and waited < 2000 do
+      vim.wait(100, function() return false end) -- sleep 100ms
+      waited = waited + 100
+    end
+
+    -- Force kill if still alive
+    if pid_alive(pid) then
+      pcall(vim.uv.kill, pid, 9) -- SIGKILL
+      -- Brief wait for SIGKILL to take effect
+      vim.wait(200, function() return not pid_alive(pid) end)
+    end
   end
 
   clear_server_info(dir)
@@ -243,14 +274,12 @@ local function stop(git_common_dir)
 end
 
 --- Restart the opencode server.
+--- Stops the current server (waits for exit), then starts a new one.
 --- @param git_common_dir string
 --- @param callback fun(err: string?, port: number?)
 local function restart(git_common_dir, callback)
-  stop(git_common_dir)
-  -- Allow process to exit before restarting
-  vim.defer_fn(function()
-    start(git_common_dir, callback)
-  end, 1500)
+  stop(git_common_dir) -- synchronous: blocks until process is dead
+  start(git_common_dir, callback)
 end
 
 ------------------------------------------------------------------------
@@ -258,6 +287,8 @@ end
 ------------------------------------------------------------------------
 
 --- Resolve the git common dir for the current working directory.
+--- Uses vim.uv.fs_realpath to resolve symlinks, matching the shell
+--- wrapper's realpath-based canonicalisation.
 --- @return string?
 local function resolve_git_common_dir()
   local result = vim.system({ "git", "rev-parse", "--git-common-dir" }, { text = true }):wait()
@@ -267,6 +298,11 @@ local function resolve_git_common_dir()
   -- Resolve to absolute path
   if not dir:match("^/") then
     dir = vim.fn.getcwd() .. "/" .. dir
+  end
+  -- Resolve symlinks so the hash matches the shell wrapper
+  local real = vim.uv.fs_realpath(dir)
+  if real then
+    return real:gsub("/$", "")
   end
   return vim.fn.fnamemodify(dir, ":p"):gsub("/$", "")
 end

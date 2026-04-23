@@ -25,10 +25,10 @@ _neovia_ensure_server() {
   local git_common_dir
   git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || return 0
 
-  # Resolve to absolute path
+  # Resolve to absolute, symlink-free path (must match server.lua's
+  # vim.uv.fs_realpath canonicalisation so the SHA-256 hashes agree).
   [[ "$git_common_dir" = /* ]] || git_common_dir="$PWD/$git_common_dir"
-  git_common_dir=$(cd "$(dirname "$git_common_dir")" && echo "$PWD/$(basename "$git_common_dir")")
-  # Strip trailing slash
+  git_common_dir=$(realpath "$git_common_dir" 2>/dev/null || echo "$git_common_dir")
   git_common_dir="${git_common_dir%/}"
 
   local state_dir
@@ -54,23 +54,46 @@ _neovia_ensure_server() {
   # Start the server
   echo "neovia: starting opencode server..."
 
-  # Use a fifo to capture the URL from stdout while backgrounding
-  local fifo="$state_dir/startup.fifo"
-  rm -f "$fifo"
-  mkfifo "$fifo"
+  # Use a pipe to capture the first line (the URL) from stdout.
+  # A wrapper reads one line, writes it to a temp file for the caller,
+  # then redirects subsequent stdout directly to the log file.
+  local url_file="$state_dir/startup_url"
+  rm -f "$url_file"
 
-  # Launch server, tee stdout to fifo and log, stderr to log
-  opencode serve --port 0 > >(tee "$fifo" >> "$log_file") 2>> "$log_file" &
-  local server_pid=$!
-  disown "$server_pid" 2>/dev/null
+  opencode serve --port 0 2>> "$log_file" | {
+    # Read the first line (the listening URL)
+    IFS= read -r first_line
+    printf '%s' "$first_line" > "$url_file"
+    # Drain remaining stdout to the log (no backpressure)
+    cat >> "$log_file"
+  } &
+  local wrapper_pid=$!
+  disown "$wrapper_pid" 2>/dev/null
 
-  # Read the listening URL from the fifo (with timeout)
+  # Wait for the URL file to appear (with timeout)
+  local elapsed=0
+  while [[ ! -s "$url_file" ]] && (( elapsed < 10 )); do
+    sleep 0.2
+    elapsed=$((elapsed + 1))
+  done
+
   local line=""
   local port=""
-  if read -t 10 line < "$fifo"; then
-    port=$(echo "$line" | grep -oE '[0-9]+$')
+  [[ -s "$url_file" ]] && line=$(< "$url_file")
+  rm -f "$url_file"
+  [[ -n "$line" ]] && port=$(echo "$line" | grep -oE '[0-9]+$')
+
+  # Resolve the actual server PID (the opencode process, not the wrapper).
+  # The wrapper's child is the opencode process.
+  local server_pid=""
+  if [[ -n "$port" ]]; then
+    # Find the opencode process listening on this port
+    server_pid=$(lsof -ti :"$port" -sTCP:LISTEN 2>/dev/null | head -1)
+    # Fallback: use the wrapper PID's child
+    if [[ -z "$server_pid" ]]; then
+      server_pid=$(pgrep -P "$wrapper_pid" 2>/dev/null | head -1)
+    fi
   fi
-  rm -f "$fifo"
 
   if [[ -z "$port" ]]; then
     echo "neovia: failed to start opencode server" >&2
