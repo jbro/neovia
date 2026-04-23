@@ -43,7 +43,7 @@ Run this checklist after every implementation, before considering work done.
 2. **Test coverage** -- every public API function (`M.*`) has tests. Every `_internal` function exposed for testing has tests. When code moves between files, migrate or rewrite the corresponding tests. Edge cases from removed tests are preserved in new ones.
 3. **Dead code** -- scan for unused locals, unreferenced forward declarations, variables that are set but never read, orphaned `_internal` exports with no test consumers. Remove them.
 4. **Duplication** -- check for values defined in multiple files (e.g. colour tables, config constants). Each value has one authoritative source.
-5. **Boundary discipline** -- `_internal` is only accessed from test files. Config (`lua/plugins/`) does not reach into `_internal`. Module code does not contain rendering logic that belongs in config (per decision 0009 and the config-vs-module split).
+5. **Boundary discipline** -- `_internal` is only accessed from test files. Config (`lua/plugins/`) does not reach into `_internal`. Reusable logic (including statusline/tabline string building) belongs in the module; config wires it into plugin specs.
 6. **Reload contract** -- `reset()` tears down all state created by `setup()`: tables, flags, timers, augroups. Tests verify re-initialisation works after `reset()`.
 7. **Guard hygiene** -- `require()` calls for plugins in module code use `pcall`. `setup()` is guarded by `initialised`. One-time side effects in `init.lua` are guarded by `vim.g` flags.
 
@@ -62,9 +62,9 @@ These rules define what neovia is. They guide design and implementation decision
 - Optimized for an AI-driven coding workflow: OpenCode writes project code, the user reviews, navigates, and orchestrates. Plugin choices follow from this.
 - One OpenCode process per git worktree. Worktree switching uses `tcd` to scope all plugins to that directory.
 - Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. opencode.nvim detects the directory change and swaps sessions automatically. Background sessions keep running server-side.
-- Worktree lifecycle is managed via `<leader>wc` (create), `<leader>ww` (switch), `<leader>wd` (delete), `<leader>wq` (close). Session forking bridges context across worktrees.
+- Worktree lifecycle: `<leader>wc` (create), `<leader>wf` (fork), `<leader>wC` (create from picked source), `<leader>wF` (fork from picked source), `<leader>ww` (switch picker), `<leader>wq` (close picker), `<leader>wQ` (close current), `<leader>wd` (delete picker), `<leader>wD` (delete current). Pickers use fzf-lua; current-worktree shortcuts act directly. Session forking bridges context across worktrees.
 - Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, and relists saved buffers (or opens netrw on first visit). Closing wipes buffers and tears down SSE but keeps the git worktree on disk. Deleting creates a tombstone session (so reused paths start clean), then removes the worktree and branch.
-- Lualine tabline shows all worktree branches with status indicators. Current branch highlighted, closed worktrees dimmed. Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
+- Lualine tabline shows open worktree branches with status indicators. Current branch highlighted. Closed worktrees are hidden from the tabline (reopen via `<leader>ww`). Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
 
 ## Decision Log
 
@@ -95,11 +95,11 @@ real-time status tracking. Status states: idle, responding, needs_attention.
 ### 0005 - Read-only mode and curated leader keymap (2026-03-27)
 
 Buffers open read-only (modifiable=false, readonly=true) by default.
-`<leader>u` toggles edit mode; BufLeave auto-relocks (configurable).
+`<leader>bu` toggles edit mode; BufLeave auto-relocks (configurable).
 Special buffers (terminal, help, quickfix, gitcommit, fugitive, neo-tree,
 etc.) are excluded. Which-key only triggers on `<leader>` with curated
-groups: Find (f), Search (s), Git (g), OpenCode (o), Worktree (w),
-Plugins (p).
+groups: Buffer (b), Find (f), Search (s), Git (g), OpenCode (o),
+Worktree (w), Plugins (p).
 
 ### 0006 - Env module sets variables before plugin load (2026-04-21)
 
@@ -123,6 +123,6 @@ delete a tombstone session is created so reused paths start clean.
 ### 0009 - Lualine for worktree display (2026-04-22)
 
 Lualine tabline shows all worktree branches (like tabs); statusline shows
-opencode status for the current worktree. The worktree module exposes
-data only -- rendering lives in `lua/plugins/ui.lua` as declarative
-lualine config.
+opencode status for the current worktree. The worktree module builds the
+tabline string (including click-to-switch handlers); `lua/plugins/ui.lua`
+wires it into lualine config and defines highlight groups.
