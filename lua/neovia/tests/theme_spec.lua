@@ -291,3 +291,26 @@ describe("define_worktree_highlights", function()
     assert.is_not_nil(unknown.fg)
   end)
 end)
+
+------------------------------------------------------------------------
+-- status_colors (authoritative colour source)
+------------------------------------------------------------------------
+
+describe("status_colors", function()
+  it("is exposed on the public API", function()
+    assert.is_table(theme.status_colors)
+  end)
+
+  it("contains all four status keys", function()
+    assert.is_string(theme.status_colors.idle)
+    assert.is_string(theme.status_colors.responding)
+    assert.is_string(theme.status_colors.needs_attention)
+    assert.is_string(theme.status_colors.unknown)
+  end)
+
+  it("values are hex colour strings", function()
+    for _, colour in pairs(theme.status_colors) do
+      assert.is_truthy(colour:match("^#%x+$"), "expected hex colour, got: " .. colour)
+    end
+  end)
+end)

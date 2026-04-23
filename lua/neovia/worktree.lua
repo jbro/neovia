@@ -257,14 +257,18 @@ local status_icon = {
   unknown = "[idle]",
 }
 
---- Highlight groups used by lualine components.
---- @type table<string, table>
-local status_hl = {
-  idle = { fg = "#9ece6a" },            -- tokyonight green
-  responding = { fg = "#e0af68" },      -- tokyonight yellow
-  needs_attention = { fg = "#f7768e" }, -- tokyonight red
-  unknown = { fg = "#565f89" },         -- tokyonight comment
-}
+--- Build a lualine-compatible color table from the theme's authoritative colours.
+--- Uses pcall because the theme module may not be loaded yet during early require.
+--- @param status string
+--- @return table
+local function status_hl_for(status)
+  local ok, theme = pcall(require, "neovia.theme")
+  if ok and theme.status_colors then
+    return { fg = theme.status_colors[status] or theme.status_colors.unknown }
+  end
+  -- Fallback: neutral dim grey if theme is unavailable
+  return { fg = "#565f89" }
+end
 
 ------------------------------------------------------------------------
 -- SSE event processing
@@ -479,6 +483,15 @@ function M.setup()
       ensure_subscriptions()
     end
   end, 2000)
+
+  -- Global click handler for worktree tabline entries.
+  -- Defined as VimScript so it is callable from %@FuncName@ statusline syntax.
+  -- function! is idempotent (overwrites on reload).
+  vim.cmd([[
+    function! NeoviaWorktreeSwitch(id, clicks, button, modifiers)
+      call v:lua.require('neovia.worktree')._internal.handle_tabline_click(a:id)
+    endfunction
+  ]])
 end
 
 ------------------------------------------------------------------------
@@ -546,21 +559,22 @@ function M.switch_to(dir)
   end
 
   -- Restore saved buffers or open netrw
-  if #target.buffer_paths > 0 then
-    local bufs = relist_buffers(target.buffer_paths)
-    -- Open the first restored buffer in the code window
-    if #bufs > 0 then
-      local navigate = require("neovia.navigate")
-      local win = navigate.find_code_win()
-      if win then
-        vim.api.nvim_set_current_win(win)
-        vim.api.nvim_win_set_buf(win, bufs[1])
+  local ok_nav, navigate = pcall(require, "neovia.navigate")
+  if ok_nav then
+    if #target.buffer_paths > 0 then
+      local bufs = relist_buffers(target.buffer_paths)
+      -- Open the first restored buffer in the code window
+      if #bufs > 0 then
+        local win = navigate.find_code_win()
+        if win then
+          vim.api.nvim_set_current_win(win)
+          vim.api.nvim_win_set_buf(win, bufs[1])
+        end
       end
+    else
+      -- First visit: open netrw in the code window
+      navigate.open_dir(dir)
     end
-  else
-    -- First visit: open netrw in the code window
-    local navigate = require("neovia.navigate")
-    navigate.open_dir(dir)
   end
 
   -- Immediate tabline update so the current-worktree highlight is visible
@@ -1258,7 +1272,7 @@ function M.get_current_status()
   return {
     status = entry.status,
     icon = status_icon[entry.status] or status_icon.unknown,
-    hl = status_hl[entry.status] or status_hl.unknown,
+    hl = status_hl_for(entry.status),
   }
 end
 
@@ -1298,15 +1312,7 @@ end
 local tabline_click_paths = {}
 local tabline_click_next_id = 0
 
---- Global click handler for worktree tabline entries.
---- Defined as VimScript so it is callable from %@FuncName@ statusline syntax.
-vim.cmd([[
-  function! NeoviaWorktreeSwitch(id, clicks, button, modifiers)
-    call v:lua.require('neovia.worktree')._internal.handle_tabline_click(a:id)
-  endfunction
-]])
-
---- Lua-side click handler; called from the VimScript shim above.
+--- Lua-side click handler; called from the VimScript shim registered in setup().
 --- @param id integer  Click ID (index into tabline_click_paths)
 local function handle_tabline_click(id)
   local path = tabline_click_paths[id]

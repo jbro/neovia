@@ -91,15 +91,26 @@ end
 -- Worktree highlight definitions
 ------------------------------------------------------------------------
 
+--- Status indicator colours (authoritative source).
+--- Used by define_worktree_highlights() and consumed by worktree.lua
+--- via M.status_colors.
+--- @type table<string, string>
+local status_colors = {
+  idle = "#9ece6a",
+  responding = "#e0af68",
+  needs_attention = "#f7768e",
+  unknown = "#565f89",
+}
+
 --- Define highlight groups used by the worktree tabline.
 --- Derives tab backgrounds from lualine's theme groups so colors follow
 --- the colorscheme. Creates transitional groups for powerline separators.
 local function define_worktree_highlights()
   -- Status indicator colors (used inline in tabline for the icon)
-  vim.api.nvim_set_hl(0, "NeoviaWt_idle", { fg = "#9ece6a" })
-  vim.api.nvim_set_hl(0, "NeoviaWt_responding", { fg = "#e0af68" })
-  vim.api.nvim_set_hl(0, "NeoviaWt_needs_attention", { fg = "#f7768e" })
-  vim.api.nvim_set_hl(0, "NeoviaWt_unknown", { fg = "#565f89" })
+  vim.api.nvim_set_hl(0, "NeoviaWt_idle", { fg = status_colors.idle })
+  vim.api.nvim_set_hl(0, "NeoviaWt_responding", { fg = status_colors.responding })
+  vim.api.nvim_set_hl(0, "NeoviaWt_needs_attention", { fg = status_colors.needs_attention })
+  vim.api.nvim_set_hl(0, "NeoviaWt_unknown", { fg = status_colors.unknown })
 
   -- Tab background groups: selected = lualine_a style, non-selected = lualine_b style.
   local a_bg = hl_bg("lualine_a_normal")
@@ -129,16 +140,14 @@ local function define_worktree_highlights()
   if b_bg and a_bg then
     vim.api.nvim_set_hl(0, "NeoviaWt_to_wt", { fg = b_bg, bg = b_bg })
   end
-  if fill_bg and a_bg then
-    vim.api.nvim_set_hl(0, "Neovia_fill_to_sel", { fg = fill_bg, bg = a_bg })
-  end
-  if fill_bg and b_bg then
-    vim.api.nvim_set_hl(0, "Neovia_fill_to_wt", { fg = fill_bg, bg = b_bg })
-  end
 end
 
 --- Public: define worktree highlights (called by ui.lua after lualine loads).
 M.define_worktree_highlights = define_worktree_highlights
+
+--- Public: status indicator colours (authoritative source).
+--- @type table<string, string>
+M.status_colors = status_colors
 
 ------------------------------------------------------------------------
 -- Test internals

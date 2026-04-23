@@ -11,7 +11,7 @@ neovia is a Neovim configuration for an AI-driven coding environment.
 - Vimscript plugins are fine when battle-tested with no better Lua equivalent.
 - Keep config (`lua/plugins/`) declarative. Non-reusable glue code can stay inline; reusable logic and feature implementations belong in the module (`lua/neovia/`).
 - Use red-green-refactor TDD for the module (`lua/neovia/`). A failing test must exist before any production code is written or changed -- no exceptions. Write the minimal code to make it pass, then refactor. Run tests before considering a task done.
-- Guard `require()` calls for plugins in module code with `pcall` -- modules may run before plugins are loaded (e.g. VimEnter, user commands).
+- Guard `require()` calls in module code with `pcall` -- both plugin and cross-module requires. Modules may load in any order (e.g. VimEnter, user commands, reload).
 - All code must be safe to reload via `<leader>pr` (re-source `init.lua` after resetting modules). Follow the reload contract below.
 
 ### Reload contract
