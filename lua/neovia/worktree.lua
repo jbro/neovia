@@ -17,6 +17,7 @@ local M = {}
 --- @field pending_permissions table<string, boolean>  permission IDs awaiting reply
 --- @field buffer_paths string[]  saved file paths (for switch restore)
 --- @field open boolean  whether this worktree is actively tracked (vs closed)
+--- @field session_id string|nil  cached opencode session ID for direct switch
 
 --- Per-directory state. Keyed by absolute path.
 --- @type table<string, neovia.WorktreeState>
@@ -515,14 +516,74 @@ function M.set_status(dir, new_status)
   vim.cmd.redrawtabline()
 end
 
+--- Resync cached session IDs for all open worktrees from the opencode API.
+--- Useful when sessions are created or switched outside neovia's control
+--- (e.g. via opencode's /session command or the session picker).
+function M.resync()
+  local ok, oc_state = pcall(require, "opencode.state")
+  if not ok or not oc_state or not oc_state.api_client then
+    vim.notify("worktree.resync: opencode not available", vim.log.levels.WARN)
+    return
+  end
+
+  -- Save the current worktree's active session immediately
+  local cwd = tab_cwd()
+  if state[cwd] and oc_state.active_session and oc_state.active_session.id then
+    state[cwd].session_id = oc_state.active_session.id
+  end
+
+  -- Query the API for each other open worktree
+  for dir, entry in pairs(state) do
+    if entry.open and dir ~= cwd then
+      oc_state.api_client
+        :list_sessions(dir)
+        :and_then(function(sessions)
+          vim.schedule(function()
+            if not sessions or type(sessions) ~= "table" or #sessions == 0 then
+              return
+            end
+            -- Pick the most recently updated non-child session
+            table.sort(sessions, function(a, b)
+              return a.time.updated > b.time.updated
+            end)
+            for _, s in ipairs(sessions) do
+              if s.parentID == nil then
+                entry.session_id = s.id
+                return
+              end
+            end
+            -- Fall back to any session
+            entry.session_id = sessions[1].id
+          end)
+        end)
+        :catch(function() end) -- silently ignore per-worktree failures
+    end
+  end
+
+  vim.notify("Worktree sessions resynced", vim.log.levels.INFO)
+end
+
 ------------------------------------------------------------------------
 -- Public API: worktree lifecycle
 ------------------------------------------------------------------------
+
+--- Save the active opencode session ID into state for the given directory.
+--- @param dir string
+local function save_session_id(dir)
+  local entry = state[dir]
+  if not entry then return end
+  local ok, oc_state = pcall(require, "opencode.state")
+  if ok and oc_state.active_session and oc_state.active_session.id then
+    entry.session_id = oc_state.active_session.id
+  end
+end
 
 --- Switch to a worktree directory.
 --- Saves current file buffer paths (unlist), tcd to target,
 --- restores saved buffers (relist) or opens netrw on first visit.
 --- If the target is closed, reopens it (re-subscribes SSE).
+--- Uses core.switch_session when a cached session ID is available,
+--- bypassing the slower handle_directory_change path.
 --- @param dir string  Absolute path to the target worktree.
 function M.switch_to(dir)
   M.setup()
@@ -530,14 +591,23 @@ function M.switch_to(dir)
   local cwd = tab_cwd()
   if cwd == dir then return end
 
-  -- Save current buffers
+  -- Save current buffers and session ID
   local current_entry = state[cwd]
   if current_entry then
     current_entry.buffer_paths = collect_file_buffers()
+    save_session_id(cwd)
   end
 
   -- Unlist current file buffers
   unlist_file_buffers()
+
+  -- Pre-set opencode's current_cwd so its DirChanged autocmd
+  -- short-circuits and does not trigger handle_directory_change.
+  -- We call core.switch_session ourselves for a cleaner swap.
+  local ok_oc, oc_state = pcall(require, "opencode.state")
+  if ok_oc and oc_state.context and oc_state.context.set_current_cwd then
+    oc_state.context.set_current_cwd(dir)
+  end
 
   -- tcd to target
   vim.cmd.tcd(dir)
@@ -550,6 +620,7 @@ function M.switch_to(dir)
       pending_permissions = {},
       buffer_paths = {},
       open = true,
+      session_id = nil,
     }
   end
 
@@ -559,6 +630,17 @@ function M.switch_to(dir)
   if not target.open then
     target.open = true
     subscribe_one(dir)
+  end
+
+  -- Switch opencode session directly (avoids blank-then-load flicker).
+  -- If we have a cached session ID, use core.switch_session for a direct
+  -- swap. Otherwise fall back to handle_directory_change which queries
+  -- the API for the last workspace session.
+  local ok_core, core = pcall(require, "opencode.core")
+  if ok_core and core.switch_session and target.session_id then
+    core.switch_session(target.session_id)
+  elseif ok_core and core.handle_directory_change then
+    core.handle_directory_change()
   end
 
   -- Restore saved buffers or open netrw
@@ -584,9 +666,8 @@ function M.switch_to(dir)
   -- without waiting for the debounced DirChanged handler.
   vim.cmd.redrawtabline()
 
-  -- Deferred layout check: opencode.nvim's DirChanged handler swaps sessions
-  -- asynchronously. If the swap disrupts the output window (e.g. blanks it
-  -- while the session was actively streaming), ensure_layout repairs it.
+  -- Deferred layout check: opencode.nvim's session swap is async, so if
+  -- it disrupts the output window, ensure_layout repairs it.
   vim.defer_fn(function()
     local ok, layout = pcall(require, "neovia.layout")
     if ok and layout._internal and layout._internal.ensure_layout then
@@ -1429,6 +1510,7 @@ M._internal = {
   find_current_worktree = find_current_worktree,
   prompt_branch = prompt_branch,
   tab_cwd = tab_cwd,
+  save_session_id = save_session_id,
   build_tabline = build_tabline,
   handle_tabline_click = handle_tabline_click,
 
@@ -1470,6 +1552,7 @@ M._internal = {
       pending_permissions = {},
       buffer_paths = {},
       open = true,
+      session_id = nil,
     }, overrides or {})
   end,
 }

@@ -3507,3 +3507,303 @@ describe("reset", function()
     assert.is_true(not ok or #cmds == 0)
   end)
 end)
+
+------------------------------------------------------------------------
+-- save_session_id
+------------------------------------------------------------------------
+
+describe("save_session_id", function()
+  after_each(function()
+    I.reset()
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("saves active session ID into state", function()
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main" }),
+    })
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-42" },
+    }
+
+    I.save_session_id("/proj/a")
+
+    assert.equals("session-42", I.get_state()["/proj/a"].session_id)
+  end)
+
+  it("is a no-op for unknown directories", function()
+    I.set_state({})
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-42" },
+    }
+
+    I.save_session_id("/nonexistent")
+    assert.is_nil(I.get_state()["/nonexistent"])
+  end)
+
+  it("is a no-op when opencode.state is not loaded", function()
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main" }),
+    })
+    package.loaded["opencode.state"] = nil
+
+    I.save_session_id("/proj/a")
+    assert.is_nil(I.get_state()["/proj/a"].session_id)
+  end)
+
+  it("is a no-op when active_session is nil", function()
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main" }),
+    })
+    package.loaded["opencode.state"] = {
+      active_session = nil,
+    }
+
+    I.save_session_id("/proj/a")
+    assert.is_nil(I.get_state()["/proj/a"].session_id)
+  end)
+
+  it("does not overwrite with nil when session has no id", function()
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main", session_id = "old-id" }),
+    })
+    package.loaded["opencode.state"] = {
+      active_session = {},
+    }
+
+    I.save_session_id("/proj/a")
+    -- Should not overwrite: active_session.id is nil
+    assert.equals("old-id", I.get_state()["/proj/a"].session_id)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- switch_to: session switching integration
+------------------------------------------------------------------------
+
+describe("switch_to session switching", function()
+  local orig_cwd
+  local dir_a, dir_b
+
+  before_each(function()
+    I.reset()
+
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+
+    orig_cwd = vim.fn.getcwd()
+
+    dir_a = vim.fn.resolve(vim.fn.tempname())
+    dir_b = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_a, "p")
+    vim.fn.mkdir(dir_b, "p")
+
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+    package.loaded["opencode.state"] = nil
+    package.loaded["opencode.core"] = nil
+  end)
+
+  it("pre-sets opencode current_cwd before tcd", function()
+    local cwd_set_to = nil
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      context = {
+        set_current_cwd = function(path)
+          cwd_set_to = path
+        end,
+      },
+    }
+    package.loaded["opencode.core"] = {
+      switch_session = function() end,
+      handle_directory_change = function() end,
+    }
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", session_id = "s2" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.equals(dir_b, cwd_set_to,
+      "set_current_cwd should be called with the target directory")
+  end)
+
+  it("calls core.switch_session when target has cached session_id", function()
+    local switched_session_id = nil
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      context = { set_current_cwd = function() end },
+    }
+    package.loaded["opencode.core"] = {
+      switch_session = function(id)
+        switched_session_id = id
+      end,
+      handle_directory_change = function()
+        error("handle_directory_change should not be called")
+      end,
+    }
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", session_id = "target-session-99" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.equals("target-session-99", switched_session_id,
+      "core.switch_session should be called with cached session ID")
+  end)
+
+  it("falls back to handle_directory_change when no cached session_id", function()
+    local hdc_called = false
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      context = { set_current_cwd = function() end },
+    }
+    package.loaded["opencode.core"] = {
+      switch_session = function()
+        error("switch_session should not be called without cached ID")
+      end,
+      handle_directory_change = function()
+        hdc_called = true
+      end,
+    }
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }), -- no session_id
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.is_true(hdc_called,
+      "handle_directory_change should be called when no cached session ID")
+  end)
+
+  it("saves current session_id before switching away", function()
+    package.loaded["opencode.state"] = {
+      active_session = { id = "current-session-77" },
+      context = { set_current_cwd = function() end },
+    }
+    package.loaded["opencode.core"] = {
+      switch_session = function() end,
+      handle_directory_change = function() end,
+    }
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", session_id = "s2" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.equals("current-session-77", I.get_state()[dir_a].session_id,
+      "Session ID should be saved for the worktree we switched away from")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- make_entry includes session_id
+------------------------------------------------------------------------
+
+describe("make_entry", function()
+  it("includes session_id as nil by default", function()
+    local entry = I.make_entry()
+    assert.is_nil(entry.session_id)
+  end)
+
+  it("accepts session_id override", function()
+    local entry = I.make_entry({ session_id = "custom-id" })
+    assert.equals("custom-id", entry.session_id)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- resync (public API)
+------------------------------------------------------------------------
+
+describe("resync", function()
+  after_each(function()
+    I.reset()
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("is a function on the public API", function()
+    assert.is_function(wt.resync)
+  end)
+
+  it("saves current worktree session from active_session", function()
+    local cwd = I.tab_cwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main" }),
+    })
+    package.loaded["opencode.state"] = {
+      active_session = { id = "active-123" },
+      api_client = {},
+    }
+
+    wt.resync()
+
+    assert.equals("active-123", I.get_state()[cwd].session_id)
+  end)
+
+  it("warns when opencode is not available", function()
+    package.loaded["opencode.state"] = nil
+    I.set_state({})
+
+    local notified_msg = nil
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      if level == vim.log.levels.WARN then notified_msg = msg end
+    end
+
+    wt.resync()
+
+    vim.notify = orig_notify
+    assert.is_not_nil(notified_msg)
+    assert.is_truthy(notified_msg:find("not available"))
+  end)
+
+  it("queries API for other open worktrees", function()
+    local cwd = I.tab_cwd()
+    local queried_dirs = {}
+
+    local mock_promise = {}
+    mock_promise.and_then = function(self, cb)
+      return self
+    end
+    mock_promise.catch = function(self) return self end
+
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main" }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat", open = true }),
+      ["/proj/closed"] = I.make_entry({ branch = "closed", open = false }),
+    })
+
+    package.loaded["opencode.state"] = {
+      active_session = { id = "active-1" },
+      api_client = {
+        list_sessions = function(_, dir)
+          table.insert(queried_dirs, dir)
+          return mock_promise
+        end,
+      },
+    }
+
+    wt.resync()
+
+    -- Should query /proj/feat (open, not current) but NOT cwd or /proj/closed
+    assert.equals(1, #queried_dirs)
+    assert.equals("/proj/feat", queried_dirs[1])
+  end)
+end)

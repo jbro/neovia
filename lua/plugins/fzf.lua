@@ -24,6 +24,7 @@ return {
       { "<leader>wn", function() require("neovia.worktree").next() end, desc = "Next worktree" },
       { "<leader>wp", function() require("neovia.worktree").prev() end, desc = "Previous worktree" },
       { "<leader>wa", function() require("neovia.worktree").next_attention() end, desc = "Next needs attention" },
+      { "<leader>ws", function() require("neovia.worktree").resync() end, desc = "Resync sessions" },
     },
     opts = {
       winopts = {

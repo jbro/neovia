@@ -39,11 +39,13 @@ return {
           },
         },
         hooks = {
-          on_done_thinking = function()
-            require("neovia.worktree").set_status(vim.fn.getcwd(-1, 0), "idle")
+          on_done_thinking = function(session)
+            local dir = session and session.directory or vim.fn.getcwd(-1, 0)
+            require("neovia.worktree").set_status(dir, "idle")
           end,
-          on_permission_requested = function()
-            require("neovia.worktree").set_status(vim.fn.getcwd(-1, 0), "needs_attention")
+          on_permission_requested = function(session)
+            local dir = session and session.directory or vim.fn.getcwd(-1, 0)
+            require("neovia.worktree").set_status(dir, "needs_attention")
           end,
         },
       })
