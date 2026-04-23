@@ -25,6 +25,9 @@ vim.opt.rtp:prepend(lazypath)
 -- Core options
 ------------------------------------------------------------------------
 
+-- Clear shell fzf colors so fzf-lua can derive them from the colorscheme.
+vim.env.FZF_DEFAULT_OPTS = nil
+
 -- Indentation (fallback; vim-sleuth auto-detects per buffer)
 vim.o.expandtab = true
 vim.o.shiftwidth = 2
@@ -98,10 +101,21 @@ if not vim.g.neovia_lazy_loaded then
 end
 
 ------------------------------------------------------------------------
+-- Layout (enforce code + opencode panels, open opencode on launch)
+------------------------------------------------------------------------
+require("neovia.layout").setup()
+
+------------------------------------------------------------------------
+-- Theme (persist light/dark across restarts)
+------------------------------------------------------------------------
+require("neovia.theme").setup()
+require("neovia.theme").apply()
+
+------------------------------------------------------------------------
 -- Read-only mode
 ------------------------------------------------------------------------
 require("neovia.mode").setup({ auto_relock = true })
-vim.keymap.set("n", "<leader>u", function() require("neovia.mode").toggle() end, { desc = "Unlock/lock buffer" })
+vim.keymap.set("n", "<leader>bu", function() require("neovia.mode").toggle() end, { desc = "Unlock/lock buffer" })
 vim.keymap.set("n", "<leader>pp", function()
   local view = require("lazy.view")
   if view.visible() then
@@ -111,23 +125,9 @@ vim.keymap.set("n", "<leader>pp", function()
   end
 end, { desc = "Lazy" })
 vim.keymap.set("n", "<leader>pr", function() require("neovia.reload").reload() end, { desc = "Reload config" })
+vim.keymap.set("n", "<leader>l", function() require("neovia.layout").restore_layout() end, { desc = "Restore layout" })
+vim.keymap.set("n", "<leader>t", function() require("neovia.theme").toggle() end, { desc = "Toggle light/dark" })
 vim.keymap.set("n", "<leader>q", "<cmd>qa<cr>", { desc = "Quit all" })
-
-------------------------------------------------------------------------
--- Open OpenCode on launch (input focused, insert mode)
--- Named augroup so re-sourcing init.lua doesn't duplicate the autocmd.
-------------------------------------------------------------------------
-local oc_launch_group = vim.api.nvim_create_augroup("neovia_opencode_launch", { clear = true })
-vim.api.nvim_create_autocmd("VimEnter", {
-  group = oc_launch_group,
-  callback = function()
-    -- Defer so the UI is fully drawn before splitting
-    vim.schedule(function()
-      local ok, api = pcall(require, "opencode.api")
-      if ok then api.open_input() end
-    end)
-  end,
-})
 
 ------------------------------------------------------------------------
 -- LSP configuration (native 0.11+)

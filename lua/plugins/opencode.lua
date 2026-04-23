@@ -39,10 +39,10 @@ return {
         },
         hooks = {
           on_done_thinking = function()
-            require("neovia.worktree").set_status(vim.fn.getcwd(), "idle")
+            require("neovia.worktree").set_status(vim.fn.getcwd(-1, 0), "idle")
           end,
           on_permission_requested = function()
-            require("neovia.worktree").set_status(vim.fn.getcwd(), "needs_attention")
+            require("neovia.worktree").set_status(vim.fn.getcwd(-1, 0), "needs_attention")
           end,
         },
       })

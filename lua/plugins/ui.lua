@@ -1,71 +1,21 @@
 -- UI: colorscheme, statusline, tabline, which-key, indent guides
 --
 -- Lualine renders both statusline and tabline. The worktree module
--- exposes data only; all rendering logic lives here (decision 0009).
+-- builds the tabline string (including click handlers); this file
+-- wires it into lualine config and defines highlight groups.
 
---- Define highlight groups used by the worktree tabline.
---- Called on setup and on ColorScheme change.
+--- Define worktree highlights, delegating to the theme module.
 local function define_wt_highlights()
-  vim.api.nvim_set_hl(0, "NeoviaWt_idle", { fg = "#9ece6a" })
-  vim.api.nvim_set_hl(0, "NeoviaWt_responding", { fg = "#e0af68" })
-  vim.api.nvim_set_hl(0, "NeoviaWt_needs_attention", { fg = "#f7768e" })
-  vim.api.nvim_set_hl(0, "NeoviaWt_unknown", { fg = "#565f89" })
-  vim.api.nvim_set_hl(0, "NeoviaWtClosed", { fg = "#565f89", italic = true })
+  local ok, t = pcall(require, "neovia.theme")
+  if ok then t.define_worktree_highlights() end
 end
 
---- Spinner frames for "responding" status in the tabline.
-local spinner_frames = { "|", "/", "-", "\\" }
-local spinner_idx = 0
-
---- Return a single-character status indicator for the tabline.
---- @param s string  One of "idle", "responding", "needs_attention", "unknown".
---- @return string
-local function status_char(s)
-  if s == "needs_attention" then return "!" end
-  if s == "responding" then
-    spinner_idx = (spinner_idx % #spinner_frames) + 1
-    return spinner_frames[spinner_idx]
-  end
-  if s == "unknown" then return "?" end
-  return "" -- idle: no indicator
-end
-
---- Build the worktree tabline component string.
---- Uses statusline highlight groups for per-entry colouring.
---- Returns "" when there are 0 or 1 entries (tabline not useful).
+--- Lualine component: delegates to worktree.build_tabline().
 --- @return string
 local function worktree_tabline()
   local ok, wt = pcall(require, "neovia.worktree")
   if not ok then return "" end
-
-  local entries = wt.get_entries()
-  if #entries <= 1 then return "" end
-
-  local parts = {}
-  for _, e in ipairs(entries) do
-    local char = status_char(e.status)
-    local suffix = char ~= "" and (" " .. char) or ""
-
-    if e.current then
-      table.insert(parts, "%#TabLineSel# " .. e.branch .. suffix .. " ")
-    elseif not e.open then
-      table.insert(parts, "%#NeoviaWtClosed# " .. e.branch .. suffix .. " ")
-    else
-      local hl = "TabLine"
-      if e.status == "needs_attention" then
-        hl = "NeoviaWt_needs_attention"
-      elseif e.status == "responding" then
-        hl = "NeoviaWt_responding"
-      end
-      if char ~= "" then
-        table.insert(parts, "%#TabLine# " .. e.branch .. " %#" .. hl .. "#" .. char .. " ")
-      else
-        table.insert(parts, "%#TabLine# " .. e.branch .. " ")
-      end
-    end
-  end
-
-  return table.concat(parts) .. "%#TabLineFill#"
+  return wt.build_tabline()
 end
 
 --- Build the opencode status component string for the statusline.
@@ -110,18 +60,25 @@ return {
     dependencies = { "nvim-tree/nvim-web-devicons" },
     event = "VeryLazy",
     config = function(_, opts)
+      require("lualine").setup(opts)
       define_wt_highlights()
       local hl_group = vim.api.nvim_create_augroup("neovia_wt_hl", { clear = true })
       vim.api.nvim_create_autocmd("ColorScheme", {
         group = hl_group,
-        callback = define_wt_highlights,
+        callback = function()
+          -- Defer so lualine's own ColorScheme handler runs first and
+          -- recreates lualine_a_normal / lualine_b_normal.
+          vim.schedule(define_wt_highlights)
+        end,
         desc = "neovia: reapply worktree status highlights",
       })
-      require("lualine").setup(opts)
     end,
     opts = {
       options = {
         globalstatus = true,
+        refresh = {
+          tabline = 200,  -- spinner animation
+        },
       },
       tabline = {
         lualine_a = {
@@ -158,6 +115,7 @@ return {
         { "<leader>", mode = { "n", "v" } },
       },
       spec = {
+        { "<leader>b", group = "Buffer" },
         { "<leader>f", group = "Find" },
         { "<leader>s", group = "Search" },
         { "<leader>g", group = "Git" },
@@ -182,5 +140,24 @@ return {
     main = "ibl",
     event = { "BufReadPost", "BufNewFile" },
     opts = {},
+  },
+
+  -- Floating vim.ui.input and vim.ui.select via dressing builtin
+  {
+    "stevearc/dressing.nvim",
+    event = "VeryLazy",
+    opts = {
+      input = {
+        enabled = true,
+        relative = "editor",
+      },
+      select = {
+        enabled = true,
+        backend = { "builtin" },
+        builtin = {
+          relative = "editor",
+        },
+      },
+    },
   },
 }
