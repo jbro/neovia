@@ -384,9 +384,6 @@ ensure_subscriptions = function()
         buffer_paths = {},
         open = true,
       }
-    else
-      -- Update branch in case it changed
-      state[wt.path].branch = wt.branch
     end
 
     -- Subscribe if open and not already subscribed (or if subscription died)
@@ -1344,8 +1341,11 @@ function M.get_entries(worktrees)
     local entry = state[wt.path]
     local is_open = entry == nil or entry.open ~= false
     local pr_info = ok_pr and pr_mod.get(wt.branch) or nil
+    -- Use the snapshotted branch from state (stable across rebases);
+    -- fall back to the live git branch for worktrees not yet in state.
+    local branch = (entry and entry.branch ~= "") and entry.branch or wt.branch
     table.insert(entries, {
-      branch = wt.branch,
+      branch = branch,
       path = wt.path,
       status = entry and entry.status or "unknown",
       current = wt.path == cwd,

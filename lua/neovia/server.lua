@@ -178,6 +178,7 @@ local function start(git_common_dir, callback)
 
   local cmd = { "opencode", "serve", "--port", "0" }
   local settled = false -- true once callback has been invoked
+  local job -- forward-declare so the timeout closure can reference it
 
   -- Timeout: if the server doesn't report ready within START_TIMEOUT_MS,
   -- call back with an error so the caller doesn't hang forever.
@@ -198,7 +199,7 @@ local function start(git_common_dir, callback)
     end
   end))
 
-  local job = vim.system(cmd, {
+  job = vim.system(cmd, {
     detach = true,
     stdout = function(err, data)
       if err then
