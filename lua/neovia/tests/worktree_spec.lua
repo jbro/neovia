@@ -2395,6 +2395,42 @@ describe("get_entries", function()
     assert.equals("/proj/main", entries[1].path)
     assert.equals("/proj/feat", entries[2].path)
   end)
+
+  it("populates pr field from pr module cache", function()
+    local ok_pr, pr = pcall(require, "neovia.pr")
+    if not ok_pr then return end
+
+    pr._internal.set_cache({
+      ["feat-a"] = { state = "open", number = 42, url = "https://example.com/42" },
+    })
+
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    assert.is_nil(entries[1].pr, "main has no PR")
+    assert.is_not_nil(entries[2].pr, "feat-a has a PR")
+    assert.equals("open", entries[2].pr.state)
+    assert.equals(42, entries[2].pr.number)
+
+    pr._internal.set_cache({})
+  end)
+
+  it("sets pr to nil when branch has no PR", function()
+    local ok_pr, pr = pcall(require, "neovia.pr")
+    if not ok_pr then return end
+
+    pr._internal.set_cache({})
+
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    assert.is_nil(entries[1].pr)
+
+    pr._internal.set_cache({})
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -2611,6 +2647,47 @@ describe("build_tabline", function()
     }
     local result = I.build_tabline(entries)
     assert.is_truthy(result:find("󰒲", 1, true), "expected 󰒲 for idle status")
+  end)
+
+  it("prefixes branch name with PR icon when pr field is set", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat",
+        pr = { state = "open", number = 42, url = "" } },
+    }
+    local result = I.build_tabline(entries)
+    -- The open PR icon should appear before "feat"
+    assert.is_truthy(result:find("\u{f407} feat", 1, true),
+      "expected open PR icon before branch name")
+  end)
+
+  it("shows draft PR icon", function()
+    local entries = {
+      { branch = "wip", status = "idle", current = true, open = true, path = "/proj/wip",
+        pr = { state = "draft", number = 7, url = "" } },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("\u{f67c}", 1, true), "expected draft PR icon")
+  end)
+
+  it("shows merged PR icon", function()
+    local entries = {
+      { branch = "done", status = "idle", current = true, open = true, path = "/proj/done",
+        pr = { state = "merged", number = 100, url = "" } },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("\u{f402}", 1, true), "expected merged PR icon")
+  end)
+
+  it("does not show PR icon when pr field is nil", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+    }
+    local result = I.build_tabline(entries)
+    -- Should not contain any PR icons
+    assert.is_falsy(result:find("\u{f407}", 1, true), "no open PR icon expected")
+    assert.is_falsy(result:find("\u{f67c}", 1, true), "no draft PR icon expected")
+    assert.is_falsy(result:find("\u{f402}", 1, true), "no merged PR icon expected")
   end)
 end)
 

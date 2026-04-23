@@ -1338,17 +1338,20 @@ end
 function M.get_entries(worktrees)
   worktrees = worktrees or list_worktrees()
   local cwd = tab_cwd()
+  local ok_pr, pr_mod = pcall(require, "neovia.pr")
   local entries = {} --- @type neovia.TablineEntry[]
 
   for _, wt in ipairs(worktrees) do
     local entry = state[wt.path]
     local is_open = entry == nil or entry.open ~= false
+    local pr_info = ok_pr and pr_mod.get(wt.branch) or nil
     table.insert(entries, {
       branch = wt.branch,
       path = wt.path,
       status = entry and entry.status or "unknown",
       current = wt.path == cwd,
       open = is_open,
+      pr = pr_info,
     })
   end
 
@@ -1376,6 +1379,7 @@ end
 --- @field status string
 --- @field current boolean
 --- @field open boolean
+--- @field pr neovia.PrInfo|nil
 
 ------------------------------------------------------------------------
 -- Tabline builder
@@ -1452,10 +1456,20 @@ local function build_tabline(entries)
     local kind = e.current and "sel" or "wt"
     local bg_hl = e.current and "NeoviaWtSel" or "NeoviaWt"
 
-    -- Build the tab content: branch name + status icon, all on bg_hl.
+    -- Build the tab content: [PR icon] branch name + status icon, all on bg_hl.
     -- Only the selected tab gets colored status icons; non-selected
     -- tabs keep the tab's own fg so they don't stand out.
-    local content = "%#" .. bg_hl .. "# " .. e.branch .. " " .. char .. " "
+    local pr_prefix = ""
+    if e.pr then
+      local ok_pr, pr_mod = pcall(require, "neovia.pr")
+      if ok_pr then
+        local icon = pr_mod.icon(e.pr.state)
+        if icon ~= "" then
+          pr_prefix = icon .. " "
+        end
+      end
+    end
+    local content = "%#" .. bg_hl .. "# " .. pr_prefix .. e.branch .. " " .. char .. " "
 
     -- Wrap non-current entries with click handler.
     if not e.current then

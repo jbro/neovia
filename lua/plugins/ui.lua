@@ -43,6 +43,19 @@ local function opencode_status_color()
   return info.hl
 end
 
+--- Build the PR number string for the statusline (e.g. "#42").
+--- Returns empty string when the current branch has no PR.
+--- @return string
+local function pr_number()
+  local ok, pr = pcall(require, "neovia.pr")
+  if not ok then return "" end
+
+  local info = pr.get_current()
+  if not info then return "" end
+
+  return "#" .. info.number
+end
+
 return {
   -- Colorscheme
   {
@@ -94,7 +107,22 @@ return {
         lualine_a = {
           { function() return require("neovia.mode").lualine_mode() end },
         },
-        lualine_b = { "branch", "diff", "diagnostics" },
+        lualine_b = {
+          "branch",
+          {
+            pr_number,
+            on_click = function()
+              local ok, pr = pcall(require, "neovia.pr")
+              if not ok then return end
+              local info = pr.get_current()
+              if info and info.url ~= "" then
+                vim.ui.open(info.url)
+              end
+            end,
+          },
+          "diff",
+          "diagnostics",
+        },
         lualine_c = { "filename" },
         lualine_x = {
           { opencode_status, color = opencode_status_color },
