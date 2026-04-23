@@ -106,6 +106,11 @@ end
 require("neovia.layout").setup()
 
 ------------------------------------------------------------------------
+-- Worktree (SSE subscriptions, tabline status tracking)
+------------------------------------------------------------------------
+require("neovia.worktree").setup()
+
+------------------------------------------------------------------------
 -- Theme (persist light/dark across restarts)
 ------------------------------------------------------------------------
 require("neovia.theme").setup()

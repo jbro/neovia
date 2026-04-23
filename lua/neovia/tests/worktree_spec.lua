@@ -1059,6 +1059,38 @@ describe("switch_to", function()
 
     assert.is_true(I.get_state()[dir_b].open)
   end)
+
+  it("schedules layout restoration after switching", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    local layout_restored = false
+    local orig_restore = require("neovia.layout").restore_layout
+    require("neovia.layout").restore_layout = function()
+      layout_restored = true
+    end
+
+    -- Mock ensure_layout instead since restore_layout is too aggressive
+    local layout_ensured = false
+    local layout_internal = require("neovia.layout")._internal
+    local orig_ensure = layout_internal.ensure_layout
+    layout_internal.ensure_layout = function()
+      layout_ensured = true
+    end
+
+    wt.switch_to(dir_b)
+
+    -- ensure_layout should be deferred; flush pending callbacks
+    vim.wait(200, function() return layout_ensured end)
+
+    require("neovia.layout").restore_layout = orig_restore
+    layout_internal.ensure_layout = orig_ensure
+
+    assert.is_true(layout_ensured, "Expected layout check to be scheduled after switch")
+  end)
 end)
 
 ------------------------------------------------------------------------

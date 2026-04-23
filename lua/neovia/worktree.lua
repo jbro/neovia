@@ -581,6 +581,16 @@ function M.switch_to(dir)
   -- without waiting for the debounced DirChanged handler.
   vim.cmd.redrawtabline()
 
+  -- Deferred layout check: opencode.nvim's DirChanged handler swaps sessions
+  -- asynchronously. If the swap disrupts the output window (e.g. blanks it
+  -- while the session was actively streaming), ensure_layout repairs it.
+  vim.defer_fn(function()
+    local ok, layout = pcall(require, "neovia.layout")
+    if ok and layout._internal and layout._internal.ensure_layout then
+      layout._internal.ensure_layout()
+    end
+  end, 100)
+
   vim.notify("Switched to " .. dir, vim.log.levels.INFO)
 end
 
@@ -1322,7 +1332,7 @@ end
 
 --- Build the worktree tabline statusline string.
 --- Non-current entries are clickable (switch worktree on click).
---- Returns "" when there are 0 or 1 entries.
+--- Returns "" when there are no visible (open) entries.
 --- @param entries neovia.TablineEntry[]
 --- @return string
 --- Transitional highlight group name for a powerline separator between two sections.
