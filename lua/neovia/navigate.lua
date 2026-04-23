@@ -106,7 +106,10 @@ end
 --- @param dir string  Absolute worktree path.
 local function open_scratch_in_code_win(dir)
   local ok_scratch, scratch = pcall(require, "neovia.scratch")
-  if not ok_scratch then return end
+  if not ok_scratch then
+    vim.notify("open_scratch_in_code_win: scratch module not available", vim.log.levels.WARN)
+    return
+  end
 
   local buf = scratch.get_or_create(dir)
   local win = find_code_win()
@@ -130,6 +133,7 @@ local function buffer_list()
   for _, b in ipairs(bufs) do
     if vim.bo[b].buflisted
       and vim.bo[b].buftype == ""
+      and not vim.b[b].neovia_scratch
     then
       local name = vim.api.nvim_buf_get_name(b)
       if name ~= "" then

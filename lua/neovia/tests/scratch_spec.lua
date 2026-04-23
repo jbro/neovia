@@ -341,4 +341,44 @@ describe("setup", function()
     local cmds2 = vim.api.nvim_get_autocmds({ group = "neovia_scratch" })
     assert.equals(#cmds1, #cmds2)
   end)
+
+  it("auto-saves scratch content on BufLeave", function()
+    scratch.setup({ state_dir = test_state_dir })
+
+    local dir = "/tmp/wt_autosave_test"
+    local buf = scratch.get_or_create(dir, test_state_dir)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "# Auto-saved", "content" })
+
+    -- Show the scratch buffer in the current window so BufLeave fires.
+    vim.api.nvim_win_set_buf(0, buf)
+
+    -- Switch to another buffer to trigger BufLeave.
+    local other = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(0, other)
+
+    -- Verify content was persisted to disk.
+    local path = I.storage_path(dir, test_state_dir)
+    local lines = vim.fn.readfile(path)
+    assert.same({ "# Auto-saved", "content" }, lines)
+
+    cleanup_buf(buf)
+    cleanup_buf(other)
+  end)
+
+  it("handles :w via BufWriteCmd on scratch buffers", function()
+    scratch.setup({ state_dir = test_state_dir })
+
+    local dir = "/tmp/wt_writecmd_test"
+    local buf = scratch.get_or_create(dir, test_state_dir)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "# Written", "via :w" })
+
+    vim.api.nvim_win_set_buf(0, buf)
+    vim.cmd("write")
+
+    local path = I.storage_path(dir, test_state_dir)
+    local lines = vim.fn.readfile(path)
+    assert.same({ "# Written", "via :w" }, lines)
+
+    cleanup_buf(buf)
+  end)
 end)

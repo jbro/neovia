@@ -9,6 +9,10 @@ local initialised = false
 --- @type table<string, integer>
 local buffers = {}
 
+--- Reverse lookup: buffer handle -> worktree dir.
+--- @type table<integer, string>
+local buf_to_dir = {}
+
 --- Configured state directory (set via setup()).
 --- @type string
 local state_dir = ""
@@ -76,13 +80,14 @@ function M.get_or_create(dir, sdir)
 
   -- Configure buffer.
   vim.bo[buf].filetype = "markdown"
-  vim.bo[buf].buftype = ""
+  vim.bo[buf].buftype = "acwrite"
   vim.b[buf].neovia_scratch = true
 
   -- Mark as not modified (content matches disk or is empty).
   vim.bo[buf].modified = false
 
   buffers[dir] = buf
+  buf_to_dir[buf] = dir
   return buf
 end
 
@@ -108,8 +113,11 @@ end
 function M.wipe(dir)
   local buf = buffers[dir]
   buffers[dir] = nil
-  if buf and vim.api.nvim_buf_is_valid(buf) then
-    vim.api.nvim_buf_delete(buf, { force = true })
+  if buf then
+    buf_to_dir[buf] = nil
+    if vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
   end
 end
 
@@ -153,15 +161,17 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd("BufLeave", {
     group = group,
     callback = function(ev)
-      if M.is_scratch(ev.buf) then
-        -- Find the dir for this buffer and save.
-        for dir, buf in pairs(buffers) do
-          if buf == ev.buf then
-            M.save(dir)
-            break
-          end
-        end
-      end
+      local dir = buf_to_dir[ev.buf]
+      if dir then M.save(dir) end
+    end,
+  })
+
+  -- Handle :w / :wall on scratch buffers (buftype=acwrite).
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    group = group,
+    callback = function(ev)
+      local dir = buf_to_dir[ev.buf]
+      if dir then M.save(dir) end
     end,
   })
 end
@@ -185,6 +195,7 @@ M._internal = {
       buffers[dir] = nil
     end
     buffers = {}
+    buf_to_dir = {}
     initialised = false
     state_dir = ""
     pcall(vim.api.nvim_create_augroup, "neovia_scratch", { clear = true })

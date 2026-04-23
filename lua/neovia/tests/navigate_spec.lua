@@ -646,6 +646,25 @@ describe("buffer_list", function()
     vim.api.nvim_buf_delete(named, { force = true })
     vim.api.nvim_buf_delete(unnamed, { force = true })
   end)
+
+  it("excludes scratch buffers", function()
+    local normal = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(normal, project_root .. "/real.lua")
+    local scratch = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(scratch, project_root .. "/[scratch]")
+    vim.b[scratch].neovia_scratch = true
+
+    local list = I.buffer_list()
+    local names = {}
+    for _, entry in ipairs(list) do
+      names[entry.name] = true
+    end
+    assert.is_not_nil(names["real.lua"])
+    assert.is_nil(names["[scratch]"])
+
+    vim.api.nvim_buf_delete(normal, { force = true })
+    vim.api.nvim_buf_delete(scratch, { force = true })
+  end)
 end)
 
 ------------------------------------------------------------------------

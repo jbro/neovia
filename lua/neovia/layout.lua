@@ -43,13 +43,31 @@ local function open_opencode()
   end
 end
 
+--- Check whether a neo-tree sidebar window exists.
+--- @return boolean
+local function has_neo_tree_win()
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_is_valid(win)
+      and vim.api.nvim_win_get_config(win).relative == ""
+    then
+      local buf = vim.api.nvim_win_get_buf(win)
+      if vim.bo[buf].filetype == "neo-tree" then return true end
+    end
+  end
+  return false
+end
+
 --- Check the window layout and restore any missing panel.
+--- If neo-tree is missing, reopen it.
 --- If no code window exists, create one with the scratch buffer for cwd.
 --- If no opencode window exists, reopen it.
 local function ensure_layout()
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if not ok_nav then return end
 
+  if not has_neo_tree_win() then
+    pcall(vim.cmd, "Neotree show")
+  end
   if not navigate.find_code_win() then
     local ok, err = pcall(navigate.open_scratch_in_code_win, vim.fn.getcwd())
     if not ok then
@@ -154,6 +172,12 @@ function M.setup()
         -- Open neo-tree sidebar (far left)
         pcall(vim.cmd, "Neotree show")
         open_opencode()
+        -- Ensure focus lands on the code window, not neo-tree or opencode.
+        local ok_nav, navigate = pcall(require, "neovia.navigate")
+        if ok_nav then
+          local code_win = navigate.find_code_win()
+          if code_win then vim.api.nvim_set_current_win(code_win) end
+        end
       end)
     end,
   })
@@ -165,6 +189,7 @@ end
 
 M._internal = {
   find_opencode_win = find_opencode_win,
+  has_neo_tree_win = has_neo_tree_win,
   ensure_layout = ensure_layout,
 
   --- Set a custom opencode opener (for testing). Pass nil to clear.
