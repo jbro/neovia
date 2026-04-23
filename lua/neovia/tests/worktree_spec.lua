@@ -247,6 +247,42 @@ describe("apply_event", function()
     assert.equals("responding", entry.status)
   end)
 
+  -- question.asked
+
+  it("question.asked sets needs_attention", function()
+    entry.status = "responding"
+    local changed = I.apply_event(entry, {
+      type = "question.asked",
+      properties = { id = "q-1", questions = {} },
+    })
+    assert.is_true(changed)
+    assert.equals("needs_attention", entry.status)
+  end)
+
+  -- question.replied
+
+  it("question.replied reverts to responding", function()
+    entry.status = "needs_attention"
+    local changed = I.apply_event(entry, {
+      type = "question.replied",
+      properties = { id = "q-1" },
+    })
+    assert.is_true(changed)
+    assert.equals("responding", entry.status)
+  end)
+
+  -- question.rejected
+
+  it("question.rejected reverts to responding", function()
+    entry.status = "needs_attention"
+    local changed = I.apply_event(entry, {
+      type = "question.rejected",
+      properties = { id = "q-1" },
+    })
+    assert.is_true(changed)
+    assert.equals("responding", entry.status)
+  end)
+
   -- unknown event types
 
   it("unknown event type is a no-op", function()
@@ -1063,6 +1099,34 @@ describe("close", function()
     assert.is_nil(I.get_state()["/nonexistent"])
   end)
 
+  it("defaults to tab-level cwd when dir is nil", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "feat", open = true }),
+      [dir_b] = I.make_entry({ branch = "main" }),
+    })
+
+    -- Set window-level lcd to dir_b (simulating netrw)
+    vim.cmd.lcd(dir_b)
+
+    -- close(nil) should close dir_a (tab-level), not dir_b (window-level)
+    -- Will warn because list_worktrees can't find another worktree in headless,
+    -- but that's fine -- we just verify it tried to close dir_a, not dir_b
+    local notified = false
+    local orig_notify = vim.notify
+    vim.notify = function(msg)
+      if msg:find("Cannot close the only worktree") then notified = true end
+    end
+
+    wt.close()
+
+    vim.notify = orig_notify
+    -- dir_a should have been targeted (it's cwd == dir, so it tried to switch away)
+    assert.is_true(notified, "Expected close() to target the tab-level cwd (dir_a)")
+    -- dir_b should be untouched
+    assert.is_true(I.get_state()[dir_b].open)
+  end)
+
   it("marks the worktree as closed", function()
     vim.cmd.tcd(dir_a)
     I.set_state({
@@ -1113,6 +1177,24 @@ describe("close", function()
 
     assert.is_true(shutdown_called)
     assert.is_nil(I.get_state()[dir_b].subscription)
+  end)
+
+  it("triggers tabline redraw after closing", function()
+    vim.cmd.tcd(dir_a)
+    local tabline_redrawn = false
+    vim.cmd.redrawtabline = function() tabline_redrawn = true end
+
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", open = true }),
+    })
+
+    wt.close(dir_b)
+
+    -- Redraw is deferred via vim.schedule; flush pending callbacks
+    vim.wait(50, function() return tabline_redrawn end)
+
+    assert.is_true(tabline_redrawn, "Expected redrawtabline to be called after close")
   end)
 
   it("switches away when closing the current worktree", function()
@@ -1211,6 +1293,33 @@ describe("_create_continue", function()
     assert.equals("feat/new-thing", captured_cmd[5])
     -- Path should contain the branch name (with slashes replaced)
     assert.is_true(captured_cmd[6]:find("feat%-new%-thing") ~= nil)
+    -- No start_point arg when none provided
+    assert.is_nil(captured_cmd[7])
+  end)
+
+  it("passes start_point to git worktree add when provided", function()
+    local captured_cmd = nil
+    vim.system = function(cmd)
+      captured_cmd = cmd
+      return { wait = function() return { code = 1, stderr = "test stop" } end }
+    end
+
+    local orig_notify = vim.notify
+    vim.notify = function() end
+
+    wt._create_continue("feat/from-other", false, "other-branch")
+
+    vim.notify = orig_notify
+    assert.is_not_nil(captured_cmd)
+    assert.equals("git", captured_cmd[1])
+    assert.equals("worktree", captured_cmd[2])
+    assert.equals("add", captured_cmd[3])
+    assert.equals("-b", captured_cmd[4])
+    assert.equals("feat/from-other", captured_cmd[5])
+    -- Path at [6]
+    assert.is_true(captured_cmd[6]:find("feat%-from%-other") ~= nil)
+    -- start_point at [7]
+    assert.equals("other-branch", captured_cmd[7])
   end)
 
   it("switches to the new worktree on success", function()
@@ -1274,6 +1383,93 @@ describe("_create_continue", function()
     assert.is_true(fork_called)
   end)
 
+  it("sends empty JSON object as fork_data", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local captured_fork_data = nil
+    local mock_promise = {
+      and_then = function(self, cb) return self end,
+      catch = function(self) return self end,
+    }
+    package.loaded["opencode.state"] = {
+      api_client = {
+        fork_session = function(_, session_id, fork_data, path)
+          captured_fork_data = fork_data
+          return mock_promise
+        end,
+      },
+      active_session = { id = "s1" },
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    local orig_switch = wt.switch_to
+    wt.switch_to = function() end
+
+    wt._create_continue("fork-empty-body", true)
+
+    wt.switch_to = orig_switch
+    package.loaded["opencode.state"] = nil
+
+    -- Must encode to "{}" (object) not "[]" (array) for the server.
+    assert.is_not_nil(captured_fork_data,
+      "fork_data must not be nil")
+    assert.equals("{}", vim.json.encode(captured_fork_data),
+      "fork_data should encode to an empty JSON object")
+  end)
+
+  it("switches to new worktree only after fork completes", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local switch_called = false
+
+    -- Build a mock promise that captures the and_then callback
+    local captured_then_cb = nil
+    local mock_promise = {}
+    mock_promise.and_then = function(self, cb)
+      captured_then_cb = cb
+      return self
+    end
+    mock_promise.catch = function(self) return self end
+
+    package.loaded["opencode.state"] = {
+      api_client = {
+        fork_session = function()
+          return mock_promise
+        end,
+      },
+      active_session = { id = "s1" },
+      last_user_message = { info = { id = "m1" } },
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    -- Intercept switch_to to track when it's called
+    local orig_switch = wt.switch_to
+    wt.switch_to = function(dir)
+      switch_called = true
+    end
+
+    wt._create_continue("fork-wait-branch", true)
+
+    -- switch_to should NOT have been called yet (fork hasn't resolved)
+    assert.is_false(switch_called, "switch_to should not be called before fork resolves")
+
+    -- The and_then callback should have been captured (fork is deferred)
+    assert.is_not_nil(captured_then_cb, "fork_session and_then callback should be registered")
+
+    wt.switch_to = orig_switch
+    package.loaded["opencode.state"] = nil
+  end)
+
   it("does not fork when do_fork is false", function()
     vim.system = function()
       return { wait = function() return { code = 0, stdout = "" } end }
@@ -1303,6 +1499,380 @@ describe("_create_continue", function()
     package.loaded["opencode.state"] = nil
 
     assert.is_false(fork_called)
+  end)
+
+  it("activates the forked session via core.switch_session after switching", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    -- Make vim.schedule run callbacks synchronously for this test
+    local orig_schedule = vim.schedule
+    vim.schedule = function(fn) fn() end
+
+    -- Capture the and_then callback so we can invoke it manually
+    local captured_then_cb = nil
+    local mock_promise = {}
+    mock_promise.and_then = function(self, cb)
+      captured_then_cb = cb
+      return self
+    end
+    mock_promise.catch = function(self) return self end
+
+    -- Track set_current_cwd calls
+    local cwd_set_to = nil
+    package.loaded["opencode.state"] = {
+      api_client = {
+        fork_session = function()
+          return mock_promise
+        end,
+      },
+      active_session = { id = "s1" },
+      last_user_message = { info = { id = "m1" } },
+      context = {
+        set_current_cwd = function(path)
+          cwd_set_to = path
+        end,
+      },
+    }
+
+    -- Mock core.switch_session to capture calls
+    local switch_session_id = nil
+    package.loaded["opencode.core"] = {
+      switch_session = function(session_id)
+        switch_session_id = session_id
+      end,
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    -- Track ordering: set_current_cwd must be called before switch_to
+    local call_order = {}
+    local oc_state_ref = package.loaded["opencode.state"]
+    local orig_set_cwd = oc_state_ref.context.set_current_cwd
+    oc_state_ref.context.set_current_cwd = function(path)
+      table.insert(call_order, "set_current_cwd")
+      orig_set_cwd(path)
+    end
+
+    local orig_switch = wt.switch_to
+    wt.switch_to = function()
+      table.insert(call_order, "switch_to")
+    end
+
+    wt._create_continue("fork-activate-branch", true)
+
+    assert.is_not_nil(captured_then_cb, "and_then callback should be registered")
+
+    -- Simulate the fork completing with a session ID.
+    -- vim.schedule is mocked to run synchronously above.
+    captured_then_cb({ id = "forked-session-42" })
+
+    -- set_current_cwd must be called before switch_to to prevent the
+    -- DirChanged autocmd from triggering handle_directory_change
+    assert.same({ "set_current_cwd", "switch_to" }, call_order,
+      "set_current_cwd must be called before switch_to")
+    assert.is_truthy(cwd_set_to and cwd_set_to:find("fork%-activate%-branch"),
+      "set_current_cwd should receive the new worktree path")
+    assert.equals("forked-session-42", switch_session_id,
+      "core.switch_session should be called with the forked session ID")
+
+    vim.schedule = orig_schedule
+    wt.switch_to = orig_switch
+    package.loaded["opencode.state"] = nil
+    package.loaded["opencode.core"] = nil
+  end)
+
+  it("passes start_point through to fork_session path argument", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local captured_fork_path = nil
+    local mock_promise = {
+      and_then = function(self, cb) return self end,
+      catch = function(self) return self end,
+    }
+    package.loaded["opencode.state"] = {
+      api_client = {
+        fork_session = function(_, session_id, opts, path)
+          captured_fork_path = path
+          return mock_promise
+        end,
+      },
+      active_session = { id = "s1" },
+      last_user_message = { info = { id = "m1" } },
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    local orig_switch = wt.switch_to
+    wt.switch_to = function() end
+
+    wt._create_continue("fork-from-other", true, "other-branch")
+
+    wt.switch_to = orig_switch
+    package.loaded["opencode.state"] = nil
+
+    -- fork_session receives the new worktree path, not the start_point
+    assert.is_not_nil(captured_fork_path)
+    assert.is_truthy(captured_fork_path:find("fork%-from%-other"))
+  end)
+
+  it("forks the source worktree's session when source_path is provided", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local orig_schedule = vim.schedule
+    vim.schedule = function(fn) fn() end
+
+    -- Track which session ID is forked
+    local forked_session_id = nil
+    local fork_promise = {}
+    fork_promise.and_then = function(self, cb)
+      -- Simulate successful fork
+      cb({ id = "forked-from-source" })
+      return self
+    end
+    fork_promise.catch = function(self) return self end
+
+    -- list_sessions returns sessions for the source directory
+    local list_promise = {}
+    list_promise.and_then = function(self, cb)
+      -- Return a session list for the source worktree
+      cb({
+        { id = "source-session-99", parentID = nil, time = { updated = 100 } },
+        { id = "source-child", parentID = "source-session-99", time = { updated = 200 } },
+      })
+      return self
+    end
+    list_promise.catch = function(self) return self end
+
+    local list_sessions_dir = nil
+    package.loaded["opencode.state"] = {
+      api_client = {
+        list_sessions = function(_, dir)
+          list_sessions_dir = dir
+          return list_promise
+        end,
+        fork_session = function(_, session_id)
+          forked_session_id = session_id
+          return fork_promise
+        end,
+      },
+      active_session = { id = "current-session-1" },
+      context = { set_current_cwd = function() end },
+    }
+
+    package.loaded["opencode.core"] = {
+      switch_session = function() end,
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    local orig_switch = wt.switch_to
+    wt.switch_to = function() end
+
+    -- source_path = "/some/source" triggers list_sessions lookup
+    wt._create_continue("fork-from-source", true, "source-branch", "/some/source")
+
+    wt.switch_to = orig_switch
+    vim.schedule = orig_schedule
+    package.loaded["opencode.state"] = nil
+    package.loaded["opencode.core"] = nil
+
+    -- list_sessions should be called with the source path
+    assert.equals("/some/source", list_sessions_dir,
+      "list_sessions should query the source worktree directory")
+    -- fork_session should use the source's parent session, not the active one
+    assert.equals("source-session-99", forked_session_id,
+      "fork_session should use the source worktree's session, not the active one")
+  end)
+
+  it("forks the active session when no source_path is provided", function()
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local forked_session_id = nil
+    local fork_promise = {
+      and_then = function(self, cb) return self end,
+      catch = function(self) return self end,
+    }
+    package.loaded["opencode.state"] = {
+      api_client = {
+        fork_session = function(_, session_id)
+          forked_session_id = session_id
+          return fork_promise
+        end,
+      },
+      active_session = { id = "current-session-1" },
+    }
+
+    I.set_state({
+      [orig_cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    local orig_switch = wt.switch_to
+    wt.switch_to = function() end
+
+    -- No source_path (4th arg) -- this is the wf case
+    wt._create_continue("fork-current", true)
+
+    wt.switch_to = orig_switch
+    package.loaded["opencode.state"] = nil
+
+    assert.equals("current-session-1", forked_session_id,
+      "fork_session should use the current active session when no source_path")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- create / create_from (public API existence)
+------------------------------------------------------------------------
+
+describe("create", function()
+  it("is a function on the public API", function()
+    assert.is_function(wt.create)
+  end)
+end)
+
+describe("create_from", function()
+  it("is a function on the public API", function()
+    assert.is_function(wt.create_from)
+  end)
+
+  it("errors when fzf-lua is not available", function()
+    I.set_initialised(true)
+    package.loaded["fzf-lua"] = nil
+
+    local notified_msg = nil
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      if level == vim.log.levels.ERROR then notified_msg = msg end
+    end
+
+    wt.create_from({ fork = true })
+
+    vim.notify = orig_notify
+    I.reset()
+    assert.is_not_nil(notified_msg)
+    assert.is_truthy(notified_msg:find("fzf%-lua not available"))
+  end)
+
+  it("defers prompt_branch after fzf picker closes", function()
+    I.set_initialised(true)
+
+    -- Set up state so build_picker_entries works
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+    })
+
+    -- Mock fzf-lua to invoke the default action immediately (simulating pick)
+    local prompt_called_synchronously = false
+    package.loaded["fzf-lua"] = {
+      fzf_exec = function(entries, opts)
+        -- Simulate selecting the first entry
+        if opts.actions and opts.actions["default"] then
+          -- Strip ANSI from entries[1] to simulate what fzf returns
+          local stripped = entries[1]:gsub("\27%[[%d;]*m", "")
+          opts.actions["default"]({ stripped })
+        end
+        -- Check if prompt_branch was called during the fzf action (synchronously)
+        -- If so, prompt_called_synchronously will be true
+      end,
+    }
+
+    -- Mock list_worktrees
+    local orig_list = I.list_worktrees
+    I.list_worktrees = function()
+      return {
+        { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      }
+    end
+
+    -- Track whether vim.ui.input is called synchronously vs deferred
+    local input_called = false
+    local orig_input = vim.ui.input
+    vim.ui.input = function(opts, cb)
+      input_called = true
+    end
+
+    wt.create_from({ fork = false })
+
+    -- prompt_branch should NOT have been called yet (it should be deferred)
+    assert.is_false(input_called, "prompt_branch should be deferred via vim.schedule, not called synchronously inside fzf action")
+
+    -- Flush deferred callbacks (vim.defer_fn uses a short delay)
+    vim.wait(200, function() return input_called end)
+    assert.is_true(input_called, "prompt_branch should run after deferred callback")
+
+    vim.ui.input = orig_input
+    I.list_worktrees = orig_list
+    package.loaded["fzf-lua"] = nil
+    I.reset()
+  end)
+end)
+
+------------------------------------------------------------------------
+-- prompt_branch (internal: vim.ui.input wrapper)
+------------------------------------------------------------------------
+
+describe("prompt_branch", function()
+  it("is exposed on _internal", function()
+    assert.is_function(I.prompt_branch)
+  end)
+
+  it("calls callback with entered branch name", function()
+    local captured_branch = nil
+    local orig_input = vim.ui.input
+    vim.ui.input = function(opts, cb)
+      cb("test-branch")
+    end
+
+    I.prompt_branch(function(branch)
+      captured_branch = branch
+    end)
+
+    vim.ui.input = orig_input
+    assert.equals("test-branch", captured_branch)
+  end)
+
+  it("does not call callback on empty input", function()
+    local called = false
+    local orig_input = vim.ui.input
+    vim.ui.input = function(opts, cb)
+      cb("")
+    end
+
+    I.prompt_branch(function()
+      called = true
+    end)
+
+    vim.ui.input = orig_input
+    assert.is_false(called)
+  end)
+
+  it("does not call callback on nil input (cancelled)", function()
+    local called = false
+    local orig_input = vim.ui.input
+    vim.ui.input = function(opts, cb)
+      cb(nil)
+    end
+
+    I.prompt_branch(function()
+      called = true
+    end)
+
+    vim.ui.input = orig_input
+    assert.is_false(called)
   end)
 end)
 
@@ -1450,6 +2020,40 @@ describe("_delete_continue", function()
     assert.is_true(notified_msg:find("Failed to remove worktree") ~= nil)
   end)
 
+  it("retries with --force when clean remove fails", function()
+    local cmds = {}
+    vim.system = function(cmd)
+      table.insert(cmds, cmd)
+      -- First worktree remove fails (dirty), force succeeds
+      if cmd[2] == "worktree" and cmd[3] == "remove" then
+        if #cmd == 4 then -- no --force
+          return { wait = function() return { code = 1, stderr = "contains modified files" } end }
+        else -- has --force
+          return { wait = function() return { code = 0, stdout = "" } end }
+        end
+      end
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    local wt_entry = { path = "/proj/dirty", branch = "dirty", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    -- Should have: clean remove, force remove, branch -d
+    local found_clean = false
+    local found_force = false
+    for _, cmd in ipairs(cmds) do
+      if cmd[2] == "worktree" and cmd[3] == "remove" then
+        if cmd[4] == "--force" then
+          found_force = true
+        else
+          found_clean = true
+        end
+      end
+    end
+    assert.is_true(found_clean, "Expected clean worktree remove attempt")
+    assert.is_true(found_force, "Expected force worktree remove after clean fails")
+  end)
+
   it("closes an open worktree before removing", function()
     local dir_main = vim.fn.tempname()
     local dir_feat = vim.fn.tempname()
@@ -1494,6 +2098,136 @@ describe("_delete_continue", function()
     wt._delete_continue(wt_entry)
 
     assert.is_nil(I.get_state()["/proj/feat"])
+  end)
+
+  it("force-deletes branch via async vim.system when user confirms", function()
+    local call_idx = 0
+    local force_cmd = nil
+    local force_callback = nil
+
+    vim.system = function(cmd, opts, on_exit)
+      call_idx = call_idx + 1
+      if on_exit then
+        -- Async call (force delete) -- capture for later invocation
+        force_cmd = cmd
+        force_callback = on_exit
+        return
+      end
+      -- Sync calls: worktree remove succeeds, branch -d fails (not merged)
+      if cmd[2] == "worktree" then
+        return { wait = function() return { code = 0, stdout = "" } end }
+      elseif cmd[2] == "branch" and cmd[3] == "-d" then
+        return { wait = function() return { code = 1, stderr = "not fully merged" } end }
+      end
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    -- Mock vim.ui.select to auto-pick "Force delete (-D)"
+    local orig_select = vim.ui.select
+    vim.ui.select = function(items, opts, cb)
+      cb("Force delete (-D)")
+    end
+
+    -- Make vim.schedule run synchronously
+    local orig_schedule = vim.schedule
+    vim.schedule = function(fn) fn() end
+
+    I.set_state({
+      ["/proj/unmerged"] = I.make_entry({ branch = "unmerged" }),
+    })
+
+    local wt_entry = { path = "/proj/unmerged", branch = "unmerged", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    -- The async vim.system call should have been made
+    assert.is_not_nil(force_cmd, "Expected async vim.system call for force delete")
+    assert.equals("-D", force_cmd[3])
+    assert.equals("unmerged", force_cmd[4])
+
+    -- Simulate the async call completing successfully
+    local notified_msg = nil
+    local orig_notify = vim.notify
+    vim.notify = function(msg) notified_msg = msg end
+
+    force_callback({ code = 0, stdout = "" })
+
+    vim.notify = orig_notify
+    vim.schedule = orig_schedule
+    vim.ui.select = orig_select
+
+    assert.is_truthy(notified_msg and notified_msg:find("force%-deleted"),
+      "Expected force-delete success notification")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- build_picker_entries (for pick() fzf-lua integration)
+------------------------------------------------------------------------
+
+describe("build_picker_entries", function()
+  before_each(function()
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat-a", status = "responding" }),
+      ["/proj/closed"] = I.make_entry({ branch = "closed-one", status = "unknown", open = false }),
+    })
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("returns parallel arrays of display entries and paths", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+    }
+    local entries, paths = I.build_picker_entries(worktrees, "/proj/main")
+    assert.equals(2, #entries)
+    assert.equals(2, #paths)
+    assert.equals("/proj/main", paths[1])
+    assert.equals("/proj/feat", paths[2])
+  end)
+
+  it("paths can be looked up by index after stripping ANSI codes", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+    }
+    local entries, paths = I.build_picker_entries(worktrees, "/proj/main")
+
+    -- Simulate what fzf-lua does: strip ANSI codes and return plain text
+    local stripped = entries[2]:gsub("\27%[[%d;]*m", "")
+    assert.is_true(stripped ~= entries[2], "Expected entries to contain ANSI codes")
+
+    -- The path lookup should work by index, not by string match
+    assert.equals("/proj/feat", paths[2])
+  end)
+
+  it("marks current worktree with ' *' in display text", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+    }
+    local entries, _ = I.build_picker_entries(worktrees, "/proj/main")
+
+    -- Strip ANSI for easier assertion
+    local stripped_main = entries[1]:gsub("\27%[[%d;]*m", "")
+    local stripped_feat = entries[2]:gsub("\27%[[%d;]*m", "")
+    assert.is_truthy(stripped_main:find("%*"), "Expected current worktree marker")
+    assert.is_falsy(stripped_feat:find("%*"), "Expected no marker on non-current")
+  end)
+
+  it("includes closed worktrees with [closed] suffix", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/closed", branch = "closed-one", head = "abc1234", bare = false },
+    }
+    local entries, paths = I.build_picker_entries(worktrees, "/proj/main")
+
+    local stripped = entries[2]:gsub("\27%[[%d;]*m", "")
+    assert.is_truthy(stripped:find("%[closed%]"), "Expected [closed] for closed worktree")
+    assert.equals("/proj/closed", paths[2])
   end)
 end)
 
@@ -1552,6 +2286,41 @@ describe("get_entries", function()
     assert.is_false(entries[2].open)
   end)
 
+  it("uses tab-level cwd for current marker, ignoring window-local lcd", function()
+    -- Simulate: tcd is set to /proj/feat, but current window has lcd to /proj/main
+    -- (this happens when netrw sets lcd on the code window)
+    local orig_cwd = I.tab_cwd()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "responding" }),
+    })
+
+    -- Set tab-level cwd to feat
+    vim.cmd.tcd(dir_feat)
+    -- Set window-level cwd to main (simulating netrw's lcd)
+    vim.cmd.lcd(dir_main)
+
+    local worktrees = {
+      { path = dir_main, branch = "main", head = "abc1234", bare = false },
+      { path = dir_feat, branch = "feat", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+
+    -- The current worktree should be feat (tab-level), not main (window-level)
+    assert.is_false(entries[1].current, "main should not be current (that's only the window lcd)")
+    assert.is_true(entries[2].current, "feat should be current (matches tab-level tcd)")
+
+    -- Cleanup: restore tcd first (clears window-level lcd implicitly)
+    vim.cmd.tcd(orig_cwd)
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+  end)
+
   it("includes worktrees inside .worktrees/ subdirectory", function()
     I.set_state({
       ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
@@ -1566,6 +2335,232 @@ describe("get_entries", function()
     assert.equals("main", entries[1].branch)
     assert.equals("feat", entries[2].branch)
     assert.equals("responding", entries[2].status)
+  end)
+  it("includes path in each entry", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    assert.equals("/proj/main", entries[1].path)
+    assert.equals("/proj/feat", entries[2].path)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- build_tabline (tabline string builder with click support)
+------------------------------------------------------------------------
+
+describe("build_tabline", function()
+  before_each(function()
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat-a", status = "responding" }),
+      ["/proj/attn"] = I.make_entry({ branch = "attn", status = "needs_attention" }),
+      ["/proj/closed"] = I.make_entry({ branch = "closed-one", status = "unknown", open = false }),
+    })
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("returns empty string for 0 entries", function()
+    assert.equals("", I.build_tabline({}))
+  end)
+
+  it("renders a single entry", function()
+    local result = I.build_tabline({
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+    })
+    assert.is_truthy(result:find("main"), "expected single entry to be rendered")
+    assert.is_truthy(result:find("%%#TabLineFill#"), "expected TabLineFill at end")
+  end)
+
+  it("renders current entry with NeoviaWtSel highlight", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("%%#NeoviaWtSel#"), "expected NeoviaWtSel for current entry")
+  end)
+
+  it("renders non-current entries with NeoviaWt highlight", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("%%#NeoviaWt#"), "expected NeoviaWt for non-current entry")
+  end)
+
+  it("includes powerline separator between entries", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("\u{e0b0}", 1, true), "expected powerline separator")
+  end)
+
+  it("includes powerline separator after last entry into TabLineFill", function()
+    local result = I.build_tabline({
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+    })
+    assert.is_truthy(result:find("NeoviaWtSel_to_fill", 1, true), "expected transitional hl to TabLineFill")
+    assert.is_truthy(result:find("\u{e0b0}", 1, true), "expected  after last entry")
+  end)
+
+  it("uses transitional highlight between sel and wt entries", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("NeoviaWtSel_to_wt", 1, true), "expected sel-to-wt transition")
+    assert.is_truthy(result:find("NeoviaWt_to_fill", 1, true), "expected wt-to-fill transition")
+  end)
+
+  it("uses transitional highlight from wt to sel", function()
+    local entries = {
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("NeoviaWt_to_sel", 1, true), "expected wt-to-sel transition")
+  end)
+
+  it("uses same highlight for icon and branch text on non-selected tabs", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "attn", status = "needs_attention", current = false, open = true, path = "/proj/attn" },
+    }
+    local result = I.build_tabline(entries)
+    -- The non-selected tab should not switch to a colored highlight for the icon.
+    -- Both branch name and icon should be under NeoviaWt (no NeoviaWt_needs_attention in output).
+    assert.is_falsy(result:find("NeoviaWt_needs_attention", 1, true),
+      "non-selected tab icon should not use colored highlight")
+  end)
+
+  it("uses same highlight for icon and branch text on selected tabs", function()
+    local entries = {
+      { branch = "main", status = "needs_attention", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    -- Selected tab icon should also use NeoviaWtSel, not a colored highlight.
+    assert.is_falsy(result:find("NeoviaWt_needs_attention", 1, true),
+      "selected tab icon should not use colored highlight")
+  end)
+
+  it("does not wrap current entry with click handler", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    -- Current entry should not have %@...@ wrapping around "main"
+    assert.is_falsy(result:find("@NeoviaWorktreeSwitch@%%#NeoviaWtSel# main"))
+  end)
+
+  it("wraps non-current entries with click handler", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("@NeoviaWorktreeSwitch@"), "expected click handler for non-current entry")
+    assert.is_truthy(result:find("%%T"), "expected %%T click terminator")
+  end)
+
+  it("hides closed worktrees", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "closed", status = "unknown", current = false, open = false, path = "/proj/closed" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_falsy(result:find("closed"), "closed worktree should not appear")
+  end)
+
+  it("shows alert icon for needs_attention", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "attn", status = "needs_attention", current = false, open = true, path = "/proj/attn" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("󰀦", 1, true), "expected 󰀦 for needs_attention")
+  end)
+
+  it("shows dots icon for unknown", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "other", status = "unknown", current = false, open = true, path = "/proj/other" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("󰇘", 1, true), "expected 󰇘 for unknown status")
+  end)
+
+  it("ends with TabLineFill", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("%%#TabLineFill#"), "expected TabLineFill at end")
+  end)
+
+  it("registers click paths that resolve to worktree paths", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "attn", status = "needs_attention", current = false, open = true, path = "/proj/attn" },
+    }
+    I.build_tabline(entries)
+    local click_paths = I.get_click_paths()
+    -- Two non-current entries should have click IDs
+    assert.equals(2, vim.tbl_count(click_paths))
+    -- Paths should match the non-current entries
+    local paths = vim.tbl_values(click_paths)
+    table.sort(paths)
+    assert.are.same({ "/proj/attn", "/proj/feat" }, paths)
+  end)
+
+  it("resets click paths on each call", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    I.build_tabline(entries)
+    assert.equals(1, vim.tbl_count(I.get_click_paths()))
+    -- Second call should reset
+    I.build_tabline(entries)
+    assert.equals(1, vim.tbl_count(I.get_click_paths()))
+  end)
+
+  it("shows braille spinner for responding status", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "busy", status = "responding", current = false, open = true, path = "/proj/busy" },
+    }
+    local result = I.build_tabline(entries)
+    -- Should contain one of the full braille spinner frames
+    local braille = { "⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾" }
+    local found = false
+    for _, frame in ipairs(braille) do
+      if result:find(frame, 1, true) then found = true; break end
+    end
+    assert.is_true(found, "expected a braille spinner frame for responding status")
+  end)
+
+  it("shows sleep icon for idle status", function()
+    local entries = {
+      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+    }
+    local result = I.build_tabline(entries)
+    assert.is_truthy(result:find("󰒲", 1, true), "expected 󰒲 for idle status")
   end)
 end)
 
@@ -1583,7 +2578,7 @@ describe("get_current_status", function()
   end)
 
   it("returns status, icon, and hl_group for the current directory", function()
-    local cwd = vim.fn.getcwd()
+    local cwd = I.tab_cwd()
     I.set_state({
       [cwd] = I.make_entry({ branch = "main", status = "idle" }),
     })
@@ -1595,7 +2590,7 @@ describe("get_current_status", function()
   end)
 
   it("returns needs_attention status correctly", function()
-    local cwd = vim.fn.getcwd()
+    local cwd = I.tab_cwd()
     I.set_state({
       [cwd] = I.make_entry({ branch = "main", status = "needs_attention" }),
     })
@@ -1606,7 +2601,7 @@ describe("get_current_status", function()
   end)
 
   it("returns responding status correctly", function()
-    local cwd = vim.fn.getcwd()
+    local cwd = I.tab_cwd()
     I.set_state({
       [cwd] = I.make_entry({ branch = "main", status = "responding" }),
     })
@@ -1619,6 +2614,222 @@ describe("get_current_status", function()
   it("returns nil when no state exists for current directory", function()
     local result = wt.get_current_status()
     assert.is_nil(result)
+  end)
+
+  it("uses tab-level cwd, ignoring window-local lcd", function()
+    local orig_cwd = I.tab_cwd()
+    local dir_main = vim.fn.resolve(vim.fn.tempname())
+    local dir_feat = vim.fn.resolve(vim.fn.tempname())
+    vim.fn.mkdir(dir_main, "p")
+    vim.fn.mkdir(dir_feat, "p")
+
+    I.set_state({
+      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
+      [dir_feat] = I.make_entry({ branch = "feat", status = "needs_attention" }),
+    })
+
+    -- tcd to feat, but window lcd to main
+    vim.cmd.tcd(dir_feat)
+    vim.cmd.lcd(dir_main)
+
+    local result = wt.get_current_status()
+    -- Should return feat's status (tab-level), not main's (window-level)
+    assert.is_not_nil(result)
+    assert.equals("needs_attention", result.status)
+
+    -- Cleanup: restore tcd (clears window-level lcd implicitly)
+    vim.cmd.tcd(orig_cwd)
+    vim.fn.delete(dir_main, "rf")
+    vim.fn.delete(dir_feat, "rf")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- build_close_candidates
+------------------------------------------------------------------------
+
+describe("build_close_candidates", function()
+  before_each(function()
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat", status = "responding", open = true }),
+      ["/proj/closed"] = I.make_entry({ branch = "closed", status = "unknown", open = false }),
+    })
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("excludes the main worktree (first entry)", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+    }
+    local candidates, line_to_wt = I.build_close_candidates(worktrees, "/proj/main")
+    assert.equals(1, #candidates)
+    assert.is_truthy(candidates[1]:find("feat"))
+  end)
+
+  it("excludes closed worktrees", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+      { path = "/proj/closed", branch = "closed", head = "abc", bare = false },
+    }
+    local candidates, line_to_wt = I.build_close_candidates(worktrees, "/proj/main")
+    assert.equals(1, #candidates)
+    assert.is_truthy(candidates[1]:find("feat"))
+  end)
+
+  it("marks the current worktree in the display", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+    }
+    local candidates, _ = I.build_close_candidates(worktrees, "/proj/feat")
+    assert.equals(1, #candidates)
+    assert.is_truthy(candidates[1]:find("%(current%)"))
+  end)
+
+  it("returns a lookup table from display line to worktree entry", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+    }
+    local candidates, line_to_wt = I.build_close_candidates(worktrees, "/proj/main")
+    assert.equals(1, #candidates)
+    local wt_entry = line_to_wt[candidates[1]]
+    assert.is_not_nil(wt_entry)
+    assert.equals("/proj/feat", wt_entry.path)
+    assert.equals("feat", wt_entry.branch)
+  end)
+
+  it("returns empty when only main worktree exists", function()
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ branch = "main" }),
+    })
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+    }
+    local candidates, _ = I.build_close_candidates(worktrees, "/proj/main")
+    assert.equals(0, #candidates)
+  end)
+
+  it("excludes bare worktrees", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/.bare", branch = "", head = "abc", bare = true },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+    }
+    local candidates, _ = I.build_close_candidates(worktrees, "/proj/main")
+    assert.equals(1, #candidates)
+    assert.is_truthy(candidates[1]:find("feat"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- find_current_worktree
+------------------------------------------------------------------------
+
+describe("find_current_worktree", function()
+  it("returns the worktree matching the current tab cwd", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+    }
+    local result = I.find_current_worktree(worktrees, "/proj/feat")
+    assert.is_not_nil(result)
+    assert.equals("/proj/feat", result.path)
+  end)
+
+  it("returns nil when cwd does not match any worktree", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+    }
+    local result = I.find_current_worktree(worktrees, "/somewhere/else")
+    assert.is_nil(result)
+  end)
+
+  it("returns the worktree index (1-based)", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+    }
+    local result, idx = I.find_current_worktree(worktrees, "/proj/feat")
+    assert.equals(2, idx)
+  end)
+
+  it("returns index 1 for main worktree", function()
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc", bare = false },
+      { path = "/proj/feat", branch = "feat", head = "abc", bare = false },
+    }
+    local result, idx = I.find_current_worktree(worktrees, "/proj/main")
+    assert.equals(1, idx)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- close_picker
+------------------------------------------------------------------------
+
+describe("close_picker", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("is a function on the public API", function()
+    assert.is_function(wt.close_picker)
+  end)
+
+  it("errors when fzf-lua is not available", function()
+    I.set_initialised(true)
+    package.loaded["fzf-lua"] = nil
+
+    local notified_msg = nil
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      if level == vim.log.levels.ERROR then notified_msg = msg end
+    end
+
+    wt.close_picker()
+
+    vim.notify = orig_notify
+    assert.is_not_nil(notified_msg)
+    assert.is_truthy(notified_msg:find("fzf%-lua not available"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- delete_current
+------------------------------------------------------------------------
+
+describe("delete_current", function()
+  local orig_cwd
+  local orig_system
+
+  before_each(function()
+    I.reset()
+
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+
+    orig_cwd = vim.fn.getcwd()
+    orig_system = vim.system
+
+    I.set_initialised(true)
+  end)
+
+  after_each(function()
+    vim.system = orig_system
+    pcall(vim.cmd.tcd, orig_cwd)
+    I.reset()
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("is a function on the public API", function()
+    assert.is_function(wt.delete_current)
   end)
 end)
 

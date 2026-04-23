@@ -30,7 +30,20 @@ local initialised = false
 local dir_timer = nil
 
 -- Forward declarations
-local ensure_subscriptions, list_worktrees, unsubscribe_all
+local ensure_subscriptions, list_worktrees, unsubscribe_all, build_picker_entries
+local build_close_candidates, find_current_worktree, prompt_branch
+
+------------------------------------------------------------------------
+-- Directory helpers
+------------------------------------------------------------------------
+
+--- Return the tab-level working directory (set by tcd), ignoring any
+--- window-local lcd overrides.  This is the authoritative "which worktree
+--- are we in?" answer, because tcd is the switching mechanism.
+--- @return string
+local function tab_cwd()
+  return vim.fn.getcwd(-1, 0)
+end
 
 ------------------------------------------------------------------------
 -- Buffer helpers
@@ -122,7 +135,7 @@ local function resolve_git_common_dir()
   if dir == "" then return nil end
   -- Make absolute
   if not vim.startswith(dir, "/") then
-    dir = vim.fn.getcwd() .. "/" .. dir
+    dir = tab_cwd() .. "/" .. dir
   end
   return vim.fn.fnamemodify(dir, ":p:h")
 end
@@ -282,18 +295,17 @@ local function apply_event(entry, event)
       end
     end
 
-  elseif t == "permission.asked" then
+  elseif t == "permission.asked" or t == "question.asked" then
     entry.status = "needs_attention"
     local id = props.id or props.requestID
     if id then entry.pending_permissions[id] = true end
 
-  elseif t == "permission.replied" then
+  elseif t == "permission.replied" or t == "question.replied" or t == "question.rejected" then
     local id = props.requestID or props.id
     if id then entry.pending_permissions[id] = nil end
-    -- If no more pending permissions, revert to responding or idle
+    -- If no more pending permissions/questions, revert to responding.
+    -- It will settle to idle via session.idle later.
     if vim.tbl_isempty(entry.pending_permissions) then
-      -- We don't have direct job_count info; assume responding if we were
-      -- needs_attention, it will settle via session.idle later.
       entry.status = "responding"
     end
 
@@ -499,7 +511,7 @@ end
 function M.switch_to(dir)
   M.setup()
 
-  local cwd = vim.fn.getcwd()
+  local cwd = tab_cwd()
   if cwd == dir then return end
 
   -- Save current buffers
@@ -551,20 +563,25 @@ function M.switch_to(dir)
     navigate.open_dir(dir)
   end
 
+  -- Immediate tabline update so the current-worktree highlight is visible
+  -- without waiting for the debounced DirChanged handler.
+  vim.cmd.redrawtabline()
+
   vim.notify("Switched to " .. dir, vim.log.levels.INFO)
 end
 
 --- Close a worktree: wipeout its buffers, tear down SSE, mark closed.
 --- The git worktree stays on disk. Sessions are untouched.
---- @param dir string  Absolute path to the worktree.
+--- @param dir? string  Absolute path to the worktree (defaults to tab-level cwd).
 function M.close(dir)
   M.setup()
+  dir = dir or tab_cwd()
 
   local entry = state[dir]
   if not entry then return end
 
   -- If this is the current worktree, switch to main first
-  local cwd = vim.fn.getcwd()
+  local cwd = tab_cwd()
   if cwd == dir then
     local worktrees = list_worktrees()
     local main_path = nil
@@ -595,6 +612,14 @@ function M.close(dir)
   entry.open = false
   entry.status = "unknown"
 
+  -- Deferred redraw: switch_to (called above when closing the current worktree)
+  -- triggers a debounced DirChanged that redraws the tabline before our state
+  -- mutation is visible. Schedule the redraw so it runs after pending events.
+  vim.schedule(function()
+    vim.cmd.redrawstatus()
+    vim.cmd.redrawtabline()
+  end)
+
   vim.notify("Closed worktree " .. (entry.branch ~= "" and entry.branch or dir), vim.log.levels.INFO)
 end
 
@@ -602,77 +627,190 @@ end
 -- Public API: worktree create / delete
 ------------------------------------------------------------------------
 
---- Create a new worktree.
+--- Create a new worktree from the current HEAD.
 --- @param opts? { fork?: boolean }
 function M.create(opts)
   M.setup()
   opts = opts or {}
+  local do_fork = opts.fork or false
 
-  -- Step 1: prompt for branch name
-  vim.ui.input({ prompt = "New branch name: " }, function(branch)
-    if not branch or branch == "" then return end
-
-    -- Step 2: ask fork-or-fresh (before git add, so user can cancel)
-    local do_fork = false
-    if opts.fork ~= nil then
-      do_fork = opts.fork
-      M._create_continue(branch, do_fork)
-    else
-      vim.ui.select({ "Fork current session", "Fresh session" }, {
-        prompt = "Session for new worktree:",
-      }, function(choice)
-        if not choice then return end
-        do_fork = choice == "Fork current session"
-        M._create_continue(branch, do_fork)
-      end)
-    end
+  prompt_branch(function(branch)
+    M._create_continue(branch, do_fork)
   end)
+end
+
+--- Create a new worktree from a picked source worktree.
+--- Shows an fzf picker to select the source, then prompts for a branch name.
+--- @param opts? { fork?: boolean }
+function M.create_from(opts)
+  M.setup()
+  opts = opts or {}
+  local do_fork = opts.fork or false
+
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("worktree.create_from: fzf-lua not available", vim.log.levels.ERROR)
+    return
+  end
+
+  local worktrees = list_worktrees()
+  if #worktrees == 0 then
+    vim.notify("No git worktrees found", vim.log.levels.WARN)
+    return
+  end
+
+  local cwd = tab_cwd()
+  local entries, paths = build_picker_entries(worktrees, cwd)
+
+  fzf.fzf_exec(entries, {
+    prompt = "Source worktree> ",
+    fzf_opts = {
+      ["--ansi"] = "",
+      ["--no-multi"] = "",
+    },
+    actions = {
+      ["default"] = function(selected)
+        if not selected or #selected == 0 then return end
+        -- Resolve path from selection
+        local source_path = nil
+        local source_branch = nil
+        for i, e in ipairs(entries) do
+          local stripped = e:gsub("\27%[[%d;]*m", "")
+          if stripped == selected[1] then
+            source_path = paths[i]
+            break
+          end
+        end
+        if not source_path then return end
+
+        -- Find the branch name for the source
+        for _, w in ipairs(worktrees) do
+          if w.path == source_path then
+            source_branch = w.branch
+            break
+          end
+        end
+
+        -- Defer so fzf-lua's window teardown completes before dressing opens.
+        -- A short delay is needed because vim.schedule alone can fire before
+        -- fzf-lua finishes restoring focus, which prevents dressing from
+        -- gaining focus and entering insert mode.
+        vim.defer_fn(function()
+          prompt_branch(function(branch)
+            M._create_continue(branch, do_fork, source_branch, source_path)
+          end)
+        end, 50)
+      end,
+    },
+  })
 end
 
 --- Internal: continue worktree creation after prompts.
 --- @param branch string
 --- @param do_fork boolean
-function M._create_continue(branch, do_fork)
+--- @param start_point? string  Git ref to base the new branch on (default: HEAD).
+--- @param source_path? string  Absolute path to the source worktree (for fork-from).
+function M._create_continue(branch, do_fork, start_point, source_path)
   local worktrees = list_worktrees()
   local path = derive_worktree_path(worktrees, branch)
 
   -- Step 3: git worktree add
-  local result = vim.system(
-    { "git", "worktree", "add", "-b", branch, path },
-    { text = true }
-  ):wait()
+  local cmd = { "git", "worktree", "add", "-b", branch, path }
+  if start_point then
+    table.insert(cmd, start_point)
+  end
+  local result = vim.system(cmd, { text = true }):wait()
 
   if result.code ~= 0 then
     vim.notify("Failed to create worktree: " .. (result.stderr or ""), vim.log.levels.ERROR)
     return
   end
 
-  -- Step 4: fork session if requested
+  -- Step 4: fork session if requested, then switch.
+  -- When forking, switch must wait for the fork to complete so the new
+  -- worktree's opencode session exists before DirChanged fires.
   if do_fork then
     local oc_state = package.loaded["opencode.state"]
-    if oc_state and oc_state.api_client and oc_state.active_session then
-      local session_id = oc_state.active_session.id
-      local msg_id = oc_state.last_user_message
-        and oc_state.last_user_message.info
-        and oc_state.last_user_message.info.id
-      oc_state.api_client
-        :fork_session(session_id, msg_id and { messageID = msg_id } or nil, path)
-        :and_then(function(response)
-          vim.schedule(function()
-            if response and response.id then
-              vim.notify("Session forked for " .. branch, vim.log.levels.INFO)
-            end
+    if oc_state and oc_state.api_client then
+      -- Resolve which session to fork:
+      -- - wf (no source_path): fork the current active session
+      -- - wF (source_path): find the source worktree's session via API
+      local function do_fork_session(session_id)
+        local fork_data = vim.empty_dict()
+        oc_state.api_client
+          :fork_session(session_id, fork_data, path)
+          :and_then(function(response)
+            vim.schedule(function()
+              if response and response.id then
+                -- Pre-set opencode's current_cwd so the DirChanged autocmd
+                -- (fired by tcd inside switch_to) short-circuits and does
+                -- not race with switch_session.
+                if oc_state.context and oc_state.context.set_current_cwd then
+                  oc_state.context.set_current_cwd(path)
+                end
+                M.switch_to(path)
+                vim.notify("Session forked for " .. branch, vim.log.levels.INFO)
+                local ok_core, core = pcall(require, "opencode.core")
+                if ok_core and core.switch_session then
+                  core.switch_session(response.id)
+                end
+              else
+                M.switch_to(path)
+              end
+            end)
           end)
-        end)
-        :catch(function(err)
-          vim.schedule(function()
-            vim.notify("Session fork failed: " .. vim.inspect(err), vim.log.levels.WARN)
+          :catch(function(err)
+            vim.schedule(function()
+              vim.notify("Session fork failed: " .. vim.inspect(err), vim.log.levels.WARN)
+              M.switch_to(path)
+            end)
           end)
-        end)
+      end
+
+      if source_path then
+        -- Fork-from: look up the most recent session for the source worktree
+        oc_state.api_client
+          :list_sessions(source_path)
+          :and_then(function(sessions)
+            vim.schedule(function()
+              if not sessions or type(sessions) ~= "table" or #sessions == 0 then
+                vim.notify("No session found for source worktree", vim.log.levels.WARN)
+                M.switch_to(path)
+                return
+              end
+              -- Sort by updated time descending, pick the most recent parent session
+              table.sort(sessions, function(a, b)
+                return a.time.updated > b.time.updated
+              end)
+              local target = nil
+              for _, s in ipairs(sessions) do
+                if s.parentID == nil then
+                  target = s
+                  break
+                end
+              end
+              -- Fall back to any session if no parent sessions exist
+              target = target or sessions[1]
+              do_fork_session(target.id)
+            end)
+          end)
+          :catch(function(err)
+            vim.schedule(function()
+              vim.notify("Failed to find source session: " .. vim.inspect(err), vim.log.levels.WARN)
+              M.switch_to(path)
+            end)
+          end)
+      elseif oc_state.active_session then
+        -- Fork current: use the active session directly
+        do_fork_session(oc_state.active_session.id)
+      else
+        M.switch_to(path)
+      end
+      return
     end
   end
 
-  -- Step 5: switch to the new worktree
+  -- Step 5: switch to the new worktree (no fork, or opencode unavailable)
   M.switch_to(path)
 end
 
@@ -687,7 +825,7 @@ function M.delete()
     return
   end
   local worktrees = list_worktrees()
-  local cwd = vim.fn.getcwd()
+  local cwd = tab_cwd()
 
   -- Filter out the main worktree (first entry) and current
   local candidates = {}
@@ -743,22 +881,31 @@ function M._delete_continue(wt)
     M.close(wt.path)
   end
 
-  -- git worktree remove
+  -- git worktree remove (try clean first, then force)
   local rm_result = vim.system(
     { "git", "worktree", "remove", wt.path },
     { text = true }
   ):wait()
 
   if rm_result.code ~= 0 then
-    vim.notify("Failed to remove worktree: " .. (rm_result.stderr or ""), vim.log.levels.ERROR)
-    return
+    local force_result = vim.system(
+      { "git", "worktree", "remove", "--force", wt.path },
+      { text = true }
+    ):wait()
+    if force_result.code ~= 0 then
+      vim.notify("Failed to remove worktree: " .. (force_result.stderr or ""), vim.log.levels.ERROR)
+      return
+    end
   end
 
   -- git branch -d (safe delete)
+  -- Run from the current tab cwd (which close() switched to main) so git
+  -- can find the repository. The deleted worktree directory no longer exists.
   if wt.branch ~= "" and wt.branch ~= "(detached)" then
+    local git_cwd = tab_cwd()
     local br_result = vim.system(
       { "git", "branch", "-d", wt.branch },
-      { text = true }
+      { text = true, cwd = git_cwd }
     ):wait()
 
     if br_result.code ~= 0 then
@@ -767,15 +914,19 @@ function M._delete_continue(wt)
         prompt = string.format("Branch '%s' is not fully merged:", wt.branch),
       }, function(choice)
         if choice == "Force delete (-D)" then
-          local force = vim.system(
+          vim.system(
             { "git", "branch", "-D", wt.branch },
-            { text = true }
-          ):wait()
-          if force.code ~= 0 then
-            vim.notify("Failed to delete branch: " .. (force.stderr or ""), vim.log.levels.ERROR)
-          else
-            vim.notify("Branch '" .. wt.branch .. "' force-deleted", vim.log.levels.INFO)
-          end
+            { text = true, cwd = git_cwd },
+            function(force)
+              vim.schedule(function()
+                if force.code ~= 0 then
+                  vim.notify("Failed to delete branch: " .. (force.stderr or ""), vim.log.levels.ERROR)
+                else
+                  vim.notify("Branch '" .. wt.branch .. "' force-deleted", vim.log.levels.INFO)
+                end
+              end)
+            end
+          )
         end
       end)
     end
@@ -790,9 +941,157 @@ function M._delete_continue(wt)
   vim.notify("Deleted worktree " .. wt.branch, vim.log.levels.INFO)
 end
 
+--- Close a worktree via fzf picker.
+--- Shows open, non-main worktrees. Selecting one calls M.close(path).
+function M.close_picker()
+  M.setup()
+
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("worktree.close_picker: fzf-lua not available", vim.log.levels.ERROR)
+    return
+  end
+
+  local worktrees = list_worktrees()
+  local cwd = tab_cwd()
+  local candidates, line_to_wt = build_close_candidates(worktrees, cwd)
+
+  if #candidates == 0 then
+    vim.notify("No open worktrees to close", vim.log.levels.WARN)
+    return
+  end
+
+  fzf.fzf_exec(candidates, {
+    prompt = "Close worktree> ",
+    fzf_opts = { ["--no-multi"] = "" },
+    actions = {
+      ["default"] = function(selected)
+        if not selected or #selected == 0 then return end
+        local wt = line_to_wt[selected[1]]
+        if wt then
+          M.close(wt.path)
+        end
+      end,
+    },
+  })
+end
+
+--- Delete the current worktree directly (with confirmation).
+--- Warns if on the main worktree. Shows vim.ui.select confirmation.
+function M.delete_current()
+  M.setup()
+
+  local worktrees = list_worktrees()
+  local cwd = tab_cwd()
+  local current, idx = find_current_worktree(worktrees, cwd)
+
+  if not current then
+    vim.notify("Current directory is not a known worktree", vim.log.levels.WARN)
+    return
+  end
+
+  if idx == 1 then
+    vim.notify("Cannot delete the main worktree", vim.log.levels.WARN)
+    return
+  end
+
+  vim.ui.select({ "Yes", "No" }, {
+    prompt = string.format("Delete worktree '%s' at %s?", current.branch, current.path),
+  }, function(confirm)
+    if confirm ~= "Yes" then return end
+    M._delete_continue(current)
+  end)
+end
+
 ------------------------------------------------------------------------
 -- Picker
 ------------------------------------------------------------------------
+
+--- Build parallel arrays of display entries and worktree paths for the picker.
+--- Entries contain ANSI colour codes for fzf-lua display. Paths are indexed
+--- in parallel so lookup works by position (not by string key, since fzf-lua
+--- strips ANSI codes from the returned selection).
+--- @param worktrees neovia.WorktreeEntry[]
+--- @param cwd string  Current working directory (for marking the current entry).
+--- @return string[] entries  ANSI-coloured display strings.
+--- @return string[] paths    Parallel array of absolute worktree paths.
+build_picker_entries = function(worktrees, cwd)
+  local dim = status_ansi.unknown -- dim grey for closed worktrees
+
+  local entries = {} --- @type string[]
+  local paths = {} --- @type string[]
+  for _, wt in ipairs(worktrees) do
+    local entry = state[wt.path] or { status = "unknown", open = true }
+    local is_open = entry.open ~= false
+    local colour = is_open and (status_ansi[entry.status] or status_ansi.unknown) or dim
+    local icon = is_open and (status_icon[entry.status] or "") or "[closed]"
+    local marker = wt.path == cwd and " *" or ""
+
+    -- Show path relative to home for readability
+    local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
+
+    local line = string.format(
+      "%s%-20s%s  %s%s%s%s",
+      colour, wt.branch, ansi_reset,
+      is_open and display_path or (dim .. display_path .. ansi_reset),
+      marker,
+      icon ~= "" and ("  " .. colour .. icon .. ansi_reset) or "",
+      ""
+    )
+    table.insert(entries, line)
+    table.insert(paths, wt.path)
+  end
+
+  return entries, paths
+end
+
+--- Build candidate list for the close picker.
+--- Returns open, non-bare, non-main worktrees as display lines plus a lookup table.
+--- @param worktrees neovia.WorktreeEntry[]
+--- @param cwd string
+--- @return string[] candidates  Display lines for fzf-lua.
+--- @return table<string, neovia.WorktreeEntry> line_to_wt  Lookup from line to entry.
+build_close_candidates = function(worktrees, cwd)
+  local candidates = {}
+  local line_to_wt = {}
+  for i, wt in ipairs(worktrees) do
+    if i > 1 and not wt.bare then -- skip main worktree (first entry)
+      local entry = state[wt.path] or { open = true }
+      if entry.open ~= false then
+        local marker = wt.path == cwd and " (current)" or ""
+        local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
+        local line = string.format("%s  %s%s", wt.branch, display_path, marker)
+        table.insert(candidates, line)
+        line_to_wt[line] = wt
+      end
+    end
+  end
+  return candidates, line_to_wt
+end
+
+--- Find the worktree entry matching a given directory.
+--- @param worktrees neovia.WorktreeEntry[]
+--- @param cwd string
+--- @return neovia.WorktreeEntry|nil entry
+--- @return integer|nil index  1-based index in the worktree list.
+find_current_worktree = function(worktrees, cwd)
+  for i, wt in ipairs(worktrees) do
+    if wt.path == cwd then
+      return wt, i
+    end
+  end
+  return nil, nil
+end
+
+--- Prompt for a new branch name via vim.ui.input (rendered by dressing.nvim).
+--- @param callback fun(branch: string)  Called with the entered branch name.
+prompt_branch = function(callback)
+  vim.ui.input({ prompt = "New branch name: " }, function(branch)
+    if branch and branch ~= "" then
+      callback(branch)
+    end
+  end)
+end
 
 --- Open the worktree picker.
 --- Shows all worktrees (open and closed). Closed worktrees are dimmed.
@@ -815,33 +1114,8 @@ function M.pick()
     return
   end
 
-  local cwd = vim.fn.getcwd()
-  local dim = "\27[90m" -- ANSI dim grey for closed worktrees
-
-  -- Build entries and a lookup from display line to worktree path
-  local entries = {} --- @type string[]
-  local line_to_path = {} --- @type table<string, string>
-  for _, wt in ipairs(worktrees) do
-    local entry = state[wt.path] or { status = "unknown", open = true }
-    local is_open = entry.open ~= false
-    local colour = is_open and (status_ansi[entry.status] or status_ansi.unknown) or dim
-    local icon = is_open and (status_icon[entry.status] or "") or "[closed]"
-    local marker = wt.path == cwd and " *" or ""
-
-    -- Show path relative to home for readability
-    local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
-
-    local line = string.format(
-      "%s%-20s%s  %s%s%s%s",
-      colour, wt.branch, ansi_reset,
-      is_open and display_path or (dim .. display_path .. ansi_reset),
-      marker,
-      icon ~= "" and ("  " .. colour .. icon .. ansi_reset) or "",
-      ""
-    )
-    table.insert(entries, line)
-    line_to_path[line] = wt.path
-  end
+  local cwd = tab_cwd()
+  local entries, paths = build_picker_entries(worktrees, cwd)
 
   fzf.fzf_exec(entries, {
     prompt = "Worktrees> ",
@@ -852,7 +1126,17 @@ function M.pick()
     actions = {
       ["default"] = function(selected)
         if not selected or #selected == 0 then return end
-        local target = line_to_path[selected[1]]
+        -- Find the path by matching the selected string back to our entries.
+        -- fzf-lua strips ANSI codes from selections, so match against
+        -- stripped versions of our entries.
+        local target = nil
+        for i, e in ipairs(entries) do
+          local stripped = e:gsub("\27%[[%d;]*m", "")
+          if stripped == selected[1] then
+            target = paths[i]
+            break
+          end
+        end
         if target then
           M.switch_to(target)
         end
@@ -872,7 +1156,7 @@ end
 --- @return neovia.TablineEntry[]
 function M.get_entries(worktrees)
   worktrees = worktrees or list_worktrees()
-  local cwd = vim.fn.getcwd()
+  local cwd = tab_cwd()
   local entries = {} --- @type neovia.TablineEntry[]
 
   for _, wt in ipairs(worktrees) do
@@ -880,6 +1164,7 @@ function M.get_entries(worktrees)
     local is_open = entry == nil or entry.open ~= false
     table.insert(entries, {
       branch = wt.branch,
+      path = wt.path,
       status = entry and entry.status or "unknown",
       current = wt.path == cwd,
       open = is_open,
@@ -893,7 +1178,7 @@ end
 --- Returns nil if no state is tracked for the current directory.
 --- @return { status: string, icon: string, hl: table }|nil
 function M.get_current_status()
-  local cwd = vim.fn.getcwd()
+  local cwd = tab_cwd()
   local entry = state[cwd]
   if not entry then return nil end
 
@@ -906,9 +1191,127 @@ end
 
 --- @class neovia.TablineEntry
 --- @field branch string
+--- @field path string
 --- @field status string
 --- @field current boolean
 --- @field open boolean
+
+------------------------------------------------------------------------
+-- Tabline builder
+------------------------------------------------------------------------
+
+--- Spinner frames for "responding" status in the tabline.
+--- Full braille block with rotating gap -- vertically centered in the cell.
+local spinner_frames = { "⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾" }
+local spinner_idx = 0
+
+--- Return a single-character status indicator.
+--- Every status returns an icon so the tabline width stays stable.
+--- @param s string  One of "idle", "responding", "needs_attention", "unknown".
+--- @return string
+local function status_char(s)
+  if s == "needs_attention" then return "󰀦" end
+  if s == "responding" then
+    spinner_idx = (spinner_idx % #spinner_frames) + 1
+    return spinner_frames[spinner_idx]
+  end
+  if s == "unknown" then return "󰇘" end
+  return "󰒲" -- idle: sleep/zzz
+end
+
+--- Worktree paths indexed by tabline click ID.
+--- Populated on each render so the click handler can resolve the target.
+--- @type table<integer, string>
+local tabline_click_paths = {}
+local tabline_click_next_id = 0
+
+--- Global click handler for worktree tabline entries.
+--- Defined as VimScript so it is callable from %@FuncName@ statusline syntax.
+vim.cmd([[
+  function! NeoviaWorktreeSwitch(id, clicks, button, modifiers)
+    call v:lua.require('neovia.worktree')._internal.handle_tabline_click(a:id)
+  endfunction
+]])
+
+--- Lua-side click handler; called from the VimScript shim above.
+--- @param id integer  Click ID (index into tabline_click_paths)
+local function handle_tabline_click(id)
+  local path = tabline_click_paths[id]
+  if not path then return end
+  M.switch_to(path)
+end
+
+--- Build the worktree tabline statusline string.
+--- Non-current entries are clickable (switch worktree on click).
+--- Returns "" when there are 0 or 1 entries.
+--- @param entries neovia.TablineEntry[]
+--- @return string
+--- Transitional highlight group name for a powerline separator between two sections.
+--- @param from string  "sel", "wt", or "fill"
+--- @param to string    "sel", "wt", or "fill"
+--- @return string
+local function trans_hl(from, to)
+  if from == "sel" and to == "wt"   then return "NeoviaWtSel_to_wt" end
+  if from == "sel" and to == "fill" then return "NeoviaWtSel_to_fill" end
+  if from == "wt"  and to == "sel"  then return "NeoviaWt_to_sel" end
+  if from == "wt"  and to == "wt"   then return "NeoviaWt_to_wt" end
+  if from == "wt"  and to == "fill" then return "NeoviaWt_to_fill" end
+  return "TabLineFill"
+end
+
+local function build_tabline(entries)
+  if #entries == 0 then return "" end
+
+  -- Reset click ID table each render cycle.
+  tabline_click_paths = {}
+  tabline_click_next_id = 0
+
+  -- Collect visible entries first so we can look ahead for transitions.
+  local visible = {}
+  for _, e in ipairs(entries) do
+    if e.open then table.insert(visible, e) end
+  end
+  if #visible == 0 then return "" end
+
+  local parts = {}
+  for i, e in ipairs(visible) do
+    local char = status_char(e.status)
+    local kind = e.current and "sel" or "wt"
+    local bg_hl = e.current and "NeoviaWtSel" or "NeoviaWt"
+
+    -- Build the tab content: branch name + status icon, all on bg_hl.
+    -- Only the selected tab gets colored status icons; non-selected
+    -- tabs keep the tab's own fg so they don't stand out.
+    local content = "%#" .. bg_hl .. "# " .. e.branch .. " " .. char .. " "
+
+    -- Wrap non-current entries with click handler.
+    if not e.current then
+      tabline_click_next_id = tabline_click_next_id + 1
+      local click_id = tabline_click_next_id
+      tabline_click_paths[click_id] = e.path
+      content = "%" .. click_id .. "@NeoviaWorktreeSwitch@" .. content .. "%T"
+    end
+
+    -- Powerline separator  after this entry.
+    local next_kind = "fill"
+    if i < #visible then
+      next_kind = visible[i + 1].current and "sel" or "wt"
+    end
+    local sep = "%#" .. trans_hl(kind, next_kind) .. "#\u{e0b0}"
+
+    table.insert(parts, content .. sep)
+  end
+
+  return table.concat(parts) .. "%#TabLineFill#"
+end
+
+--- Build the worktree tabline string from current state.
+--- Convenience wrapper that calls get_entries() then build_tabline().
+--- @param worktrees? neovia.WorktreeEntry[]
+--- @return string
+function M.build_tabline(worktrees)
+  return build_tabline(M.get_entries(worktrees))
+end
 
 ------------------------------------------------------------------------
 -- Test internals (exposed for unit tests only)
@@ -929,6 +1332,17 @@ M._internal = {
   unsubscribe_all = unsubscribe_all,
   resolve_git_common_dir = resolve_git_common_dir,
   list_worktrees = list_worktrees,
+  build_picker_entries = build_picker_entries,
+  build_close_candidates = build_close_candidates,
+  find_current_worktree = find_current_worktree,
+  prompt_branch = prompt_branch,
+  tab_cwd = tab_cwd,
+  build_tabline = build_tabline,
+  handle_tabline_click = handle_tabline_click,
+
+  --- Get the current click path lookup table (for assertions).
+  --- @return table<integer, string>
+  get_click_paths = function() return tabline_click_paths end,
 
   --- Get the raw state table (for assertions).
   --- @return table<string, neovia.WorktreeState>
