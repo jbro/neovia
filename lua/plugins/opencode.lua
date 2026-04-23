@@ -1,12 +1,12 @@
 -- opencode.nvim + render-markdown.nvim
 
 --- Resolve the external server port.
---- Prefers the NEOVIA_SERVER_PORT env var (set by neovia.zsh) but
---- falls back to reading the port file on disk via the server module.
+--- Reads from vim.g.neovia_server_port (set by init.lua before
+--- lazy.setup) with a fallback to the server module's on-disk state.
 --- Returns nil when no external server is available (plugin will spawn).
 local function resolve_server_port()
-  local env_port = tonumber(vim.env.NEOVIA_SERVER_PORT)
-  if env_port then return env_port end
+  local g_port = tonumber(vim.g.neovia_server_port)
+  if g_port then return g_port end
   local ok, srv = pcall(require, "neovia.server")
   if ok then return srv.read_port() end
   return nil

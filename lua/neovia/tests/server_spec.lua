@@ -471,6 +471,86 @@ end)
 -- Public API: M.restart()
 ------------------------------------------------------------------------
 
+------------------------------------------------------------------------
+-- ensure_running (internal)
+------------------------------------------------------------------------
+
+describe("ensure_running", function()
+  -- ensure_running takes a git_common_dir and computes the state dir
+  -- internally, matching the convention of start/stop/restart.
+  local fake_git_dir = "__test_ensure_running__"
+  local sdir
+
+  before_each(function()
+    sdir = I.state_dir(fake_git_dir)
+    vim.fn.mkdir(sdir, "p")
+  end)
+
+  after_each(function()
+    I.clear_server_info(sdir)
+    pcall(vim.fn.delete, sdir, "rf")
+  end)
+
+  it("returns existing port when server is already alive", function()
+    I.save_server_info(sdir, 44444, vim.fn.getpid())
+    local port, err = I.ensure_running(fake_git_dir)
+    assert.is_nil(err)
+    assert.equals(44444, port)
+  end)
+
+  it("clears stale info and attempts start when PID is dead", function()
+    I.save_server_info(sdir, 44444, 99999999)
+    -- The stale info should be cleared, then start should be attempted.
+    -- Without the opencode binary, start will fail, but stale info
+    -- should be gone after the attempt.
+    local port, err = I.ensure_running(fake_git_dir)
+    -- Either it started (port ~= nil) or it failed (err ~= nil)
+    assert.is_true(port ~= nil or err ~= nil)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Public API: M.ensure_running()
+------------------------------------------------------------------------
+
+describe("M.ensure_running", function()
+  local gcd, sdir
+
+  before_each(function()
+    I.reset()
+    gcd = I.resolve_git_common_dir()
+    assert.is_not_nil(gcd, "tests must run inside a git repo")
+    sdir = I.state_dir(gcd)
+  end)
+
+  after_each(function()
+    I.clear_server_info(sdir)
+    I.reset()
+  end)
+
+  it("returns the port when server is already running", function()
+    I.save_server_info(sdir, 55555, vim.fn.getpid())
+    local port, err = server.ensure_running()
+    assert.is_nil(err)
+    assert.equals(55555, port)
+  end)
+
+  it("returns nil port and error when not in a git repo", function()
+    local tmp = vim.fn.tempname()
+    vim.fn.mkdir(tmp, "p")
+    local orig_cwd = vim.fn.getcwd()
+    vim.cmd("cd " .. vim.fn.fnameescape(tmp))
+
+    local port, err = server.ensure_running()
+
+    vim.cmd("cd " .. vim.fn.fnameescape(orig_cwd))
+    vim.fn.delete(tmp, "rf")
+
+    assert.is_nil(port)
+    assert.equals("not in a git repository", err)
+  end)
+end)
+
 describe("M.restart", function()
   before_each(function()
     I.reset()

@@ -96,6 +96,21 @@ if not vim.g.neovia_env_loaded then
 end
 
 ------------------------------------------------------------------------
+-- Server (start opencode serve before plugins so the port is available)
+-- Guarded: the server survives Neovim restarts, skip on re-source.
+------------------------------------------------------------------------
+if not vim.g.neovia_server_started then
+  vim.g.neovia_server_started = true
+  require("neovia.server").setup()
+  local port, err = require("neovia.server").ensure_running()
+  if port then
+    vim.g.neovia_server_port = port
+  elseif err then
+    vim.notify("neovia: server start failed: " .. err, vim.log.levels.WARN)
+  end
+end
+
+------------------------------------------------------------------------
 -- Load plugins (skip on re-source; use :Lazy sync to update plugins)
 ------------------------------------------------------------------------
 if not vim.g.neovia_lazy_loaded then
@@ -127,10 +142,9 @@ require("neovia.theme").setup()
 require("neovia.theme").apply()
 
 ------------------------------------------------------------------------
--- Server (external opencode serve lifecycle)
+-- Server keymaps (lifecycle management)
 ------------------------------------------------------------------------
-require("neovia.server").setup()
-vim.keymap.set("n", "<leader>oSs", function()
+vim.keymap.set("n", "<leader>oEs", function()
   local s = require("neovia.server").status()
   if s.state == "running" then
     vim.notify(("opencode server: running (port %d, pid %d)"):format(s.port, s.pid), vim.log.levels.INFO)
@@ -139,7 +153,7 @@ vim.keymap.set("n", "<leader>oSs", function()
   end
 end, { desc = "Server status" })
 
-vim.keymap.set("n", "<leader>oSr", function()
+vim.keymap.set("n", "<leader>oEr", function()
   vim.notify("opencode server: restarting...", vim.log.levels.INFO)
   require("neovia.server").restart(function(err, port)
     vim.schedule(function()
@@ -153,7 +167,7 @@ vim.keymap.set("n", "<leader>oSr", function()
   end)
 end, { desc = "Restart server" })
 
-vim.keymap.set("n", "<leader>oSq", function()
+vim.keymap.set("n", "<leader>oEq", function()
   local stopped = require("neovia.server").stop()
   if stopped then
     vim.notify("opencode server: stopped", vim.log.levels.INFO)
@@ -162,7 +176,7 @@ vim.keymap.set("n", "<leader>oSq", function()
   end
 end, { desc = "Shutdown server" })
 
-vim.keymap.set("n", "<leader>oSd", function()
+vim.keymap.set("n", "<leader>oEd", function()
   vim.notify("opencode: reconnecting and restoring layout...", vim.log.levels.INFO)
   require("neovia.layout").restore_layout()
 end, { desc = "Redraw UI" })

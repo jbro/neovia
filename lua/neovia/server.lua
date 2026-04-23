@@ -69,12 +69,25 @@ end
 --- @field port number
 --- @field pid number
 
+--- Ensure a directory exists, creating parents as needed.
+--- Safe to call from fast event contexts (uses libuv, not Vimscript).
+--- @param path string
+local function mkdir_p(path)
+  -- Split path into segments and build progressively
+  local current = ""
+  for segment in path:gmatch("[^/]+") do
+    current = current .. "/" .. segment
+    vim.uv.fs_mkdir(current, 493) -- 0755; ignores EEXIST
+  end
+end
+
 --- Save port and PID to the state directory.
+--- Safe to call from fast event contexts (stdout callbacks).
 --- @param dir string  The state directory (not git common dir).
 --- @param port number
 --- @param pid number
 local function save_server_info(dir, port, pid)
-  vim.fn.mkdir(dir, "p")
+  mkdir_p(dir)
   write_file(dir .. "/port", tostring(port))
   write_file(dir .. "/pid", tostring(pid))
 end
@@ -158,6 +171,9 @@ end
 --- Timeout in milliseconds for the server to report its listening URL.
 local START_TIMEOUT_MS = 15000
 
+--- Synchronous timeout in milliseconds for ensure_running.
+local SYNC_TIMEOUT_MS = 10000
+
 --- Start the opencode server in the background.
 --- @param git_common_dir string
 --- @param callback fun(err: string?, port: number?)
@@ -171,7 +187,7 @@ local function start(git_common_dir, callback)
 
   -- Clear stale info
   clear_server_info(dir)
-  vim.fn.mkdir(dir, "p")
+  mkdir_p(dir)
 
   local log_path = dir .. "/server.log"
   local log_fd = vim.uv.fs_open(log_path, "w", 384)
@@ -292,6 +308,42 @@ local function restart(git_common_dir, callback)
 end
 
 ------------------------------------------------------------------------
+-- Synchronous start (for use before plugin load)
+------------------------------------------------------------------------
+
+--- Ensure the server is running, starting it synchronously if needed.
+--- Delegates to the async start() function and blocks with vim.wait()
+--- until the callback fires. Intended for use during init.lua before
+--- lazy.setup() so the port is available for plugin config.
+--- @param git_common_dir string
+--- @return number? port, string? err
+local function ensure_running(git_common_dir)
+  local dir = state_dir(git_common_dir)
+  local s = status(dir)
+  if s.state == "running" then
+    return s.port, nil
+  end
+
+  local done = false
+  local result_port, result_err
+
+  start(git_common_dir, function(err, port)
+    result_err = err
+    result_port = port
+    done = true
+  end)
+
+  -- Block until the async callback fires or we time out.
+  vim.wait(SYNC_TIMEOUT_MS, function() return done end, 50)
+
+  if not done then
+    return nil, "opencode server did not start within " .. (SYNC_TIMEOUT_MS / 1000) .. "s"
+  end
+
+  return result_port, result_err
+end
+
+------------------------------------------------------------------------
 -- Git common dir resolution
 ------------------------------------------------------------------------
 
@@ -372,6 +424,19 @@ function M.restart(callback)
   restart(gcd, callback)
 end
 
+--- Ensure the server is running for the current repo, starting it
+--- synchronously if needed. Returns port on success, nil + error on
+--- failure. Blocks the event loop -- intended for use during startup
+--- before lazy.setup().
+--- @return number? port, string? err
+function M.ensure_running()
+  local gcd = resolve_git_common_dir()
+  if not gcd then
+    return nil, "not in a git repository"
+  end
+  return ensure_running(gcd)
+end
+
 M._internal = {
   state_dir = state_dir,
   port_file = port_file,
@@ -384,6 +449,7 @@ M._internal = {
   read_port = read_port,
   parse_server_url = parse_server_url,
   stop = stop,
+  ensure_running = ensure_running,
   resolve_git_common_dir = resolve_git_common_dir,
 
   --- Reset module state (for test isolation / reload contract).
