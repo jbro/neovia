@@ -556,6 +556,24 @@ describe("unlist_file_buffers", function()
     vim.api.nvim_buf_delete(buf2, { force = true })
   end)
 
+  it("stops treesitter on buffers before unlisting (fold race workaround)", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/test_unlist_ts.lua")
+    -- Seed buffer with valid Lua so treesitter can parse it.
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "local x = 1" })
+    vim.treesitter.start(buf, "lua")
+    -- Sanity: highlighter should be active before unlist.
+    assert.is_truthy(vim.treesitter.highlighter.active[buf])
+
+    I.unlist_file_buffers()
+
+    assert.is_false(vim.bo[buf].buflisted)
+    -- After unlist, treesitter highlighter should have been stopped.
+    assert.is_falsy(vim.treesitter.highlighter.active[buf])
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
   it("does not touch special buffers", function()
     local buf = vim.api.nvim_create_buf(true, false)
     vim.bo[buf].buftype = "nofile"
