@@ -5,9 +5,9 @@ neovia is a Neovim configuration for an AI-driven coding environment.
 ## How to Work on This Project
 
 - Target Neovim >= 0.11
-- Use native APIs over plugins where Neovim has built-in support (e.g. `vim.lsp.config`/`vim.lsp.enable`)
+- Exhaust existing plugins before adding new ones. Check `lazy-lock.json` and `lua/plugins/` to understand what is already available -- do not assume. A well-established plugin is preferred over homebrew code when the problem is already solved.
+- Use native Neovim APIs where they are sufficient (e.g. `vim.lsp.config`/`vim.lsp.enable`). Plugins that enhance native APIs (e.g. better UX for completion, pickers, `vim.ui.*`) are fine.
 - Use Neovim default keybindings. Only override on conflict (log the resolution). Only add new bindings where no default exists.
-- Prefer fewer, thinner plugins. Prefer native Neovim or OpenCode over adding a plugin.
 - Vimscript plugins are fine when battle-tested with no better Lua equivalent.
 - Keep config (`lua/plugins/`) declarative. Non-reusable glue code can stay inline; reusable logic and feature implementations belong in the module (`lua/neovia/`).
 - Use red-green-refactor TDD for the module (`lua/neovia/`). A failing test must exist before any production code is written or changed -- no exceptions. Write the minimal code to make it pass, then refactor. Run tests before considering a task done.
@@ -62,7 +62,7 @@ These rules define what neovia is. They guide design and implementation decision
 - Optimized for an AI-driven coding workflow: OpenCode writes project code, the user reviews, navigates, and orchestrates. Plugin choices follow from this.
 - One OpenCode process per git worktree. Worktree switching uses `tcd` to scope all plugins to that directory.
 - Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. opencode.nvim detects the directory change and swaps sessions automatically. Background sessions keep running server-side.
-- Worktree lifecycle: `<leader>wc` (create), `<leader>wf` (fork), `<leader>wC` (create from picked source), `<leader>wF` (fork from picked source), `<leader>ww` (switch picker), `<leader>wq` (close picker), `<leader>wQ` (close current), `<leader>wd` (delete picker), `<leader>wD` (delete current). Pickers use fzf-lua; current-worktree shortcuts act directly. Session forking bridges context across worktrees.
+- Worktree lifecycle: `<leader>wc` (create), `<leader>wf` (fork), `<leader>wC` (create from picked source), `<leader>wF` (fork from picked source), `<leader>ww` (switch picker), `<leader>wn` (next), `<leader>wp` (previous), `<leader>wa` (next needing attention), `<leader>wq` (close picker), `<leader>wQ` (close current), `<leader>wd` (delete picker), `<leader>wD` (delete current). Pickers use fzf-lua; current-worktree shortcuts act directly. Session forking bridges context across worktrees.
 - Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, and relists saved buffers (or opens netrw on first visit). Closing wipes buffers and tears down SSE but keeps the git worktree on disk. Deleting creates a tombstone session (so reused paths start clean), then removes the worktree and branch.
 - Lualine tabline shows open worktree branches with status indicators. Current branch highlighted. Closed worktrees are hidden from the tabline (reopen via `<leader>ww`). Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
 
@@ -78,7 +78,6 @@ Superseded entries should be removed to keep context lean.
 
 Neovim 0.11+ has native LSP config and diagnostics built in.
 Use these instead of the plugin equivalents (lspconfig, etc.).
-Exception: blink.cmp is kept for completion (richer UX than native).
 
 ### 0002 - OpenCode writes code, user orchestrates (2026-03-26)
 
