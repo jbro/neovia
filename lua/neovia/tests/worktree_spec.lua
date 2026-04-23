@@ -574,6 +574,25 @@ describe("collect_file_buffers", function()
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
+
+  it("excludes scratch buffers", function()
+    local scratch = require("neovia.scratch")
+    local test_state_dir = vim.fn.tempname() .. "_wt_collect_test"
+    scratch._internal.reset()
+    scratch.setup({ state_dir = test_state_dir })
+
+    local scratch_buf = scratch.get_or_create("/tmp/wt_collect")
+    assert.is_true(vim.bo[scratch_buf].buflisted)
+
+    local paths = I.collect_file_buffers()
+    local scratch_name = vim.api.nvim_buf_get_name(scratch_buf)
+    for _, p in ipairs(paths) do
+      assert.is_not_equal(scratch_name, p)
+    end
+
+    scratch._internal.reset()
+    vim.fn.delete(test_state_dir, "rf")
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -1149,6 +1168,106 @@ describe("switch_to", function()
 
     assert.is_true(layout_ensured, "Expected layout check to be scheduled after switch")
   end)
+
+  it("opens scratch buffer on first visit instead of netrw", function()
+    local scratch = require("neovia.scratch")
+    local test_state_dir = vim.fn.tempname() .. "_wt_switch_scratch_test"
+    scratch._internal.reset()
+    scratch.setup({ state_dir = test_state_dir })
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", buffer_paths = {} }),
+    })
+
+    -- Create a code window
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    wt.switch_to(dir_b)
+
+    -- The code window should show a scratch buffer
+    local navigate = require("neovia.navigate")
+    local code_win = navigate.find_code_win()
+    if code_win then
+      local buf = vim.api.nvim_win_get_buf(code_win)
+      assert.is_true(scratch.is_scratch(buf), "expected scratch buffer on first visit")
+    end
+
+    pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
+    scratch._internal.reset()
+    vim.fn.delete(test_state_dir, "rf")
+  end)
+
+  it("tells neo-tree the new root after switching", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    local neotree_cmd = nil
+    local orig_cmd = vim.cmd
+    local mt = getmetatable(vim.cmd) or {}
+    -- Wrap vim.cmd to capture Neotree calls
+    vim.cmd = setmetatable({}, {
+      __call = function(_, c)
+        if type(c) == "string" and c:find("Neotree") then
+          neotree_cmd = c
+        else
+          orig_cmd(c)
+        end
+      end,
+      __index = function(_, k)
+        return mt.__index and mt.__index(vim.cmd, k) or rawget(orig_cmd, k)
+      end,
+    })
+
+    wt.switch_to(dir_b)
+
+    vim.cmd = orig_cmd
+
+    assert.is_truthy(neotree_cmd, "expected a Neotree command after switch")
+    assert.is_truthy(neotree_cmd:find("dir="), "expected Neotree dir= argument")
+  end)
+
+  it("does not include scratch buffer in saved buffer_paths", function()
+    local scratch = require("neovia.scratch")
+    local test_state_dir = vim.fn.tempname() .. "_wt_switch_paths_test"
+    scratch._internal.reset()
+    scratch.setup({ state_dir = test_state_dir })
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Create a scratch buffer for dir_a AND a normal file buffer
+    local scratch_buf = scratch.get_or_create(dir_a)
+    local file_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(file_buf, dir_a .. "/real_file.lua")
+    vim.bo[file_buf].buflisted = true
+
+    wt.switch_to(dir_b)
+
+    -- Saved paths for dir_a should contain the file but not the scratch
+    local saved = I.get_state()[dir_a].buffer_paths
+    local file_name = vim.api.nvim_buf_get_name(file_buf)
+    local scratch_name = vim.api.nvim_buf_get_name(scratch_buf)
+    local found_file, found_scratch = false, false
+    for _, p in ipairs(saved) do
+      if p == file_name then found_file = true end
+      if p == scratch_name then found_scratch = true end
+    end
+    assert.is_true(found_file, "Expected real file in saved buffer_paths")
+    assert.is_false(found_scratch, "Scratch buffer should not be in saved buffer_paths")
+
+    pcall(vim.api.nvim_buf_delete, file_buf, { force = true })
+    scratch._internal.reset()
+    vim.fn.delete(test_state_dir, "rf")
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -1196,7 +1315,7 @@ describe("close", function()
       [dir_b] = I.make_entry({ branch = "main" }),
     })
 
-    -- Set window-level lcd to dir_b (simulating netrw)
+    -- Set window-level lcd to dir_b (simulating a plugin that sets lcd)
     vim.cmd.lcd(dir_b)
 
     -- close(nil) should close dir_a (tab-level), not dir_b (window-level)
@@ -2378,7 +2497,7 @@ describe("get_entries", function()
 
   it("uses tab-level cwd for current marker, ignoring window-local lcd", function()
     -- Simulate: tcd is set to /proj/feat, but current window has lcd to /proj/main
-    -- (this happens when netrw sets lcd on the code window)
+    -- (this can happen when a plugin sets lcd on the code window)
     local orig_cwd = I.tab_cwd()
     local dir_main = vim.fn.resolve(vim.fn.tempname())
     local dir_feat = vim.fn.resolve(vim.fn.tempname())
@@ -2392,7 +2511,7 @@ describe("get_entries", function()
 
     -- Set tab-level cwd to feat
     vim.cmd.tcd(dir_feat)
-    -- Set window-level cwd to main (simulating netrw's lcd)
+    -- Set window-level cwd to main (simulating a plugin's lcd)
     vim.cmd.lcd(dir_main)
 
     local worktrees = {

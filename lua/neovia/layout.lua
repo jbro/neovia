@@ -1,5 +1,5 @@
 -- neovia layout module
--- Enforce the two-panel layout: code window (left) + opencode (right).
+-- Enforce the three-panel layout: neo-tree (left) + code (centre) + opencode (right).
 -- Restores missing panels on WinClosed and opens opencode on VimEnter.
 
 local M = {}
@@ -44,14 +44,14 @@ local function open_opencode()
 end
 
 --- Check the window layout and restore any missing panel.
---- If no code window exists, create one with netrw for cwd.
+--- If no code window exists, create one with the scratch buffer for cwd.
 --- If no opencode window exists, reopen it.
 local function ensure_layout()
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if not ok_nav then return end
 
   if not navigate.find_code_win() then
-    local ok, err = pcall(navigate.open_dir, vim.fn.getcwd())
+    local ok, err = pcall(navigate.open_scratch_in_code_win, vim.fn.getcwd())
     if not ok then
       vim.notify("layout: failed to restore code window: " .. tostring(err), vim.log.levels.WARN)
     end
@@ -68,9 +68,9 @@ end
 -- Restore layout
 ------------------------------------------------------------------------
 
---- Nuke all windows and rebuild the canonical two-panel layout.
+--- Nuke all windows and rebuild the canonical layout.
 --- Remembers the buffer that was in the code window and restores it.
---- Falls back to netrw (cwd) if no code buffer was showing.
+--- Falls back to scratch buffer (cwd) if no code buffer was showing.
 function M.restore_layout()
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if not ok_nav then return end
@@ -82,16 +82,17 @@ function M.restore_layout()
     code_buf = vim.api.nvim_win_get_buf(code_win)
   end
 
-  -- Collapse to one window, then let opencode set up its panels.
+  -- Collapse to one window, then rebuild all panels.
   -- open_opencode may clobber the current buffer, so we restore
   -- the code buffer *after* it finishes.
   vim.cmd("only")
+  pcall(vim.cmd, "Neotree show")
   open_opencode()
 
   -- Find or create the code window, then put the remembered buffer in it.
   local new_code_win = navigate.find_code_win()
   if not new_code_win then
-    navigate.open_dir(vim.fn.getcwd())
+    navigate.open_scratch_in_code_win(vim.fn.getcwd())
     new_code_win = navigate.find_code_win()
   end
   if new_code_win then
@@ -150,6 +151,8 @@ function M.setup()
     group = group,
     callback = function()
       vim.schedule(function()
+        -- Open neo-tree sidebar (far left)
+        pcall(vim.cmd, "Neotree show")
         open_opencode()
       end)
     end,

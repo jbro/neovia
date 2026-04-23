@@ -70,7 +70,11 @@ describe("ensure_layout", function()
     I.set_opencode_opener(nil)
   end)
 
-  it("creates a code window with netrw when none exists", function()
+  it("creates a code window with scratch buffer when none exists", function()
+    local scratch = require("neovia.scratch")
+    scratch._internal.reset()
+    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_test" })
+
     local oc_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[oc_buf].filetype = "opencode"
     vim.api.nvim_win_set_buf(0, oc_buf)
@@ -79,7 +83,12 @@ describe("ensure_layout", function()
 
     I.ensure_layout()
 
-    assert.is_not_nil(navigate.find_code_win(), "expected a code window to be created")
+    local code_win = navigate.find_code_win()
+    assert.is_not_nil(code_win, "expected a code window to be created")
+    local buf = vim.api.nvim_win_get_buf(code_win)
+    assert.is_true(scratch.is_scratch(buf), "expected scratch buffer in code window")
+
+    scratch._internal.reset()
   end)
 
   it("creates a code window even when the opencode window is a terminal", function()
@@ -293,13 +302,18 @@ describe("setup", function()
     pcall(vim.api.nvim_buf_delete, oc_in_buf, { force = true })
   end)
 
-  it("restores code window when netrw is closed with two opencode terminal windows", function()
+  it("restores code window when scratch buffer is closed with two opencode terminal windows", function()
     layout.setup()
 
-    -- Code window showing netrw (left)
+    -- Code window showing scratch buffer (left)
+    local scratch = require("neovia.scratch")
+    scratch._internal.reset()
+    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_scratch_close_test" })
+
     local spec_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
     local project_root = vim.fn.fnamemodify(spec_dir, ":h:h:h")
-    vim.cmd("edit " .. vim.fn.fnameescape(project_root))
+    local scratch_buf = scratch.get_or_create(project_root)
+    vim.api.nvim_win_set_buf(0, scratch_buf)
     local code_win = vim.api.nvim_get_current_win()
 
     -- Opencode output (right, top) -- terminal buffer
@@ -312,17 +326,18 @@ describe("setup", function()
     local oc_in_buf = vim.api.nvim_get_current_buf()
     vim.bo[oc_in_buf].filetype = "opencode"
 
-    -- Close the netrw window
+    -- Close the scratch window
     vim.api.nvim_set_current_win(code_win)
     vim.cmd("close")
 
     vim.wait(100, function() return false end)
 
     local new_code_win = navigate.find_code_win()
-    assert.is_not_nil(new_code_win, "code window should be restored after netrw close")
+    assert.is_not_nil(new_code_win, "code window should be restored after scratch close")
 
     pcall(vim.api.nvim_buf_delete, oc_out_buf, { force = true })
     pcall(vim.api.nvim_buf_delete, oc_in_buf, { force = true })
+    scratch._internal.reset()
   end)
 
   it("restores code window when closed with :q instead of :close", function()
@@ -417,10 +432,10 @@ describe("setup", function()
     pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
   end)
 
-  it("navigate.open_dir works when current window is a terminal", function()
-    -- This tests whether open_dir can create a code window and open netrw
-    -- when called while the current window holds a terminal buffer.
-    -- No layout.setup needed -- testing navigate directly.
+  it("open_scratch_in_code_win works when current window is a terminal", function()
+    local scratch = require("neovia.scratch")
+    scratch._internal.reset()
+    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_term_test" })
 
     vim.cmd("terminal")
     local term_buf = vim.api.nvim_get_current_buf()
@@ -431,13 +446,14 @@ describe("setup", function()
     local spec_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
     local project_root = vim.fn.fnamemodify(spec_dir, ":h:h:h")
 
-    local ok, err = pcall(navigate.open_dir, project_root)
+    local ok, err = pcall(navigate.open_scratch_in_code_win, project_root)
 
-    assert.is_true(ok, "open_dir should not error: " .. tostring(err))
+    assert.is_true(ok, "open_scratch_in_code_win should not error: " .. tostring(err))
     assert.is_not_nil(navigate.find_code_win(), "code window should be created")
 
     vim.cmd("only")
     pcall(vim.api.nvim_buf_delete, term_buf, { force = true })
+    scratch._internal.reset()
   end)
 
   it("does nothing when layout is correct after close", function()
@@ -544,7 +560,11 @@ describe("restore_layout", function()
     pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
   end)
 
-  it("falls back to netrw when no code buffer was showing", function()
+  it("falls back to scratch buffer when no code buffer was showing", function()
+    local scratch = require("neovia.scratch")
+    scratch._internal.reset()
+    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_restore_test" })
+
     layout.setup()
 
     I.set_opencode_opener(function() end)
@@ -558,8 +578,11 @@ describe("restore_layout", function()
 
     local win = navigate.find_code_win()
     assert.is_not_nil(win)
+    local buf = vim.api.nvim_win_get_buf(win)
+    assert.is_true(scratch.is_scratch(buf), "expected scratch buffer in code window")
 
     pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
+    scratch._internal.reset()
   end)
 end)
 
