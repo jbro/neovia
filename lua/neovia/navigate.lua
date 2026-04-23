@@ -54,7 +54,9 @@ local function is_opencode_win(win)
   if not vim.api.nvim_win_is_valid(win) then return false end
   local buf = vim.api.nvim_win_get_buf(win)
   local ft = vim.bo[buf].filetype
-  return ft == "opencode_output" or ft == "opencode_input"
+  return ft == "opencode_output"
+    or ft == "opencode"
+    or ft == "opencode_footer"
 end
 
 --- Check whether a window is a special sidebar (neo-tree, etc.).
@@ -88,9 +90,15 @@ end
 --- Create a code window to the left of the opencode pane.
 --- @return integer win  The new window handle.
 local function create_code_win()
-  -- Open a vertical split to the left; this pushes opencode panes right.
+  -- Create a full-height vertical split at the far left. We use an
+  -- unlisted scratch buffer to avoid inheriting a terminal buffer
+  -- from the current window. Callers replace this buffer immediately
+  -- (open_dir, open_in_code_win), so it never appears in :ls or :bn.
+  local buf = vim.api.nvim_create_buf(false, true)
   vim.cmd("topleft vsplit")
-  return vim.api.nvim_get_current_win()
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(win, buf)
+  return win
 end
 
 --- Open a directory in the code window (netrw).
@@ -105,8 +113,42 @@ local function open_dir(dir)
 end
 
 ------------------------------------------------------------------------
+-- Buffer list helpers
+------------------------------------------------------------------------
+
+--- Collect listed, named, normal-buftype buffers with relative paths.
+--- @return table[]  Each entry has {name = string, bufnr = integer}.
+local function buffer_list()
+  local bufs = vim.api.nvim_list_bufs()
+  local cwd = vim.fn.getcwd() .. "/"
+  local result = {}
+  for _, b in ipairs(bufs) do
+    if vim.bo[b].buflisted
+      and vim.bo[b].buftype == ""
+    then
+      local name = vim.api.nvim_buf_get_name(b)
+      if name ~= "" then
+        -- Make path relative to cwd if possible
+        if vim.startswith(name, cwd) then
+          name = name:sub(#cwd + 1)
+        end
+        table.insert(result, { name = name, bufnr = b })
+      end
+    end
+  end
+  return result
+end
+
+------------------------------------------------------------------------
 -- Public API
 ------------------------------------------------------------------------
+
+--- Check whether a window belongs to opencode (output or input).
+--- @param win integer
+--- @return boolean
+function M.is_opencode_win(win)
+  return is_opencode_win(win)
+end
 
 --- Find the best "code" window (non-opencode, non-sidebar, non-floating).
 --- Returns nil if none found.
@@ -177,14 +219,58 @@ end
 -- Test internals
 ------------------------------------------------------------------------
 
+--- Open the buffer picker via fzf-lua fzf_exec.
+--- Shows a plain list of buffer names, no preview, no status indicators.
+function M.pick_buffer()
+  local ok, fzf = pcall(require, "fzf-lua")
+  if not ok then
+    vim.notify("pick_buffer: fzf-lua not available", vim.log.levels.WARN)
+    return
+  end
+
+  local entries = buffer_list()
+  if #entries == 0 then
+    vim.notify("No buffers to pick", vim.log.levels.INFO)
+    return
+  end
+
+  -- Build lookup from display name -> bufnr
+  local lookup = {}
+  local lines = {}
+  for _, e in ipairs(entries) do
+    table.insert(lines, e.name)
+    lookup[e.name] = e.bufnr
+  end
+
+  fzf.fzf_exec(lines, {
+    prompt = "Buffer> ",
+    winopts = { height = 0.4, width = 0.5 },
+    previewer = false,
+    actions = {
+      ["default"] = function(selected)
+        if not selected or #selected == 0 then return end
+        local bufnr = lookup[selected[1]]
+        if bufnr then
+          local win = find_code_win()
+          if win then
+            vim.api.nvim_set_current_win(win)
+            vim.api.nvim_win_set_buf(win, bufnr)
+          else
+            vim.cmd("buffer " .. bufnr)
+          end
+        end
+      end,
+    },
+  })
+end
+
 M._internal = {
   parse_path = parse_path,
-  open_dir = open_dir,
-  is_opencode_win = is_opencode_win,
   is_sidebar_win = is_sidebar_win,
   find_code_win = find_code_win,
   cfile = cfile,
   resolve = resolve,
+  buffer_list = buffer_list,
 
   --- No-op reset (stateless module, satisfies reload contract).
   reset = function() end,

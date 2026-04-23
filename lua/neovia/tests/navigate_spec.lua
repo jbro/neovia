@@ -81,18 +81,29 @@ describe("is_opencode_win", function()
     local win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, buf)
 
-    assert.is_true(I.is_opencode_win(win))
+    assert.is_true(navigate.is_opencode_win(win))
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
-  it("returns true for a window with opencode_input filetype", function()
+  it("returns true for a window with opencode filetype (input buffer)", function()
     local buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[buf].filetype = "opencode_input"
+    vim.bo[buf].filetype = "opencode"
     local win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, buf)
 
-    assert.is_true(I.is_opencode_win(win))
+    assert.is_true(navigate.is_opencode_win(win))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("returns true for a window with opencode_footer filetype", function()
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].filetype = "opencode_footer"
+    local win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(win, buf)
+
+    assert.is_true(navigate.is_opencode_win(win))
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
@@ -102,13 +113,13 @@ describe("is_opencode_win", function()
     local win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, buf)
 
-    assert.is_false(I.is_opencode_win(win))
+    assert.is_false(navigate.is_opencode_win(win))
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
   it("returns false for an invalid window", function()
-    assert.is_false(I.is_opencode_win(99999))
+    assert.is_false(navigate.is_opencode_win(99999))
   end)
 end)
 
@@ -245,6 +256,48 @@ describe("open_dir", function()
     -- Cleanup
     vim.cmd("only")
     vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+
+  it("creates a full-height code window with stacked opencode windows", function()
+    -- Simulate the real opencode layout: output on top, input on bottom
+    local oc_out_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_out_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_out_buf)
+    local oc_out_win = vim.api.nvim_get_current_win()
+
+    vim.cmd("split")
+    local oc_in_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_in_buf].filetype = "opencode"
+    vim.api.nvim_win_set_buf(0, oc_in_buf)
+    local oc_in_win = vim.api.nvim_get_current_win()
+
+    local dir = project_root
+    navigate.open_dir(dir)
+
+    local code_win = navigate.find_code_win()
+    assert.is_not_nil(code_win, "code window should be created")
+
+    -- The code window should span the full height of the editor,
+    -- not be stacked alongside just one opencode window.
+    local code_height = vim.api.nvim_win_get_height(code_win)
+    local oc_out_height = vim.api.nvim_win_get_height(oc_out_win)
+    local oc_in_height = vim.api.nvim_win_get_height(oc_in_win)
+    local total_oc_height = oc_out_height + oc_in_height
+
+    -- Code window height should be close to the combined opencode height
+    -- (within a few lines for separators/statuslines)
+    assert.is_true(
+      math.abs(code_height - total_oc_height) <= 2,
+      string.format(
+        "code window should span full height: code=%d oc_out=%d oc_in=%d total_oc=%d",
+        code_height, oc_out_height, oc_in_height, total_oc_height
+      )
+    )
+
+    -- Cleanup
+    vim.cmd("only")
+    vim.api.nvim_buf_delete(oc_out_buf, { force = true })
+    vim.api.nvim_buf_delete(oc_in_buf, { force = true })
   end)
 end)
 
@@ -489,6 +542,91 @@ describe("open", function()
 
     -- Cleanup
     vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+end)
+
+------------------------------------------------------------------------
+-- buffer_list
+------------------------------------------------------------------------
+
+describe("buffer_list", function()
+  it("returns listed buffers with relative paths", function()
+    -- Create two listed buffers with names
+    local buf1 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf1, project_root .. "/src/foo.lua")
+    local buf2 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf2, project_root .. "/src/bar.lua")
+
+    local list = I.buffer_list()
+
+    -- Should contain both buffers
+    local names = {}
+    for _, entry in ipairs(list) do
+      names[entry.name] = entry.bufnr
+    end
+    assert.is_not_nil(names["src/foo.lua"])
+    assert.is_not_nil(names["src/bar.lua"])
+    assert.equals(buf1, names["src/foo.lua"])
+    assert.equals(buf2, names["src/bar.lua"])
+
+    -- Cleanup
+    vim.api.nvim_buf_delete(buf1, { force = true })
+    vim.api.nvim_buf_delete(buf2, { force = true })
+  end)
+
+  it("excludes unlisted buffers", function()
+    local listed = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(listed, project_root .. "/listed.lua")
+    local unlisted = vim.api.nvim_create_buf(false, false)
+    vim.api.nvim_buf_set_name(unlisted, project_root .. "/unlisted.lua")
+
+    local list = I.buffer_list()
+    local names = {}
+    for _, entry in ipairs(list) do
+      names[entry.name] = true
+    end
+    assert.is_not_nil(names["listed.lua"])
+    assert.is_nil(names["unlisted.lua"])
+
+    vim.api.nvim_buf_delete(listed, { force = true })
+    vim.api.nvim_buf_delete(unlisted, { force = true })
+  end)
+
+  it("excludes special buftype buffers", function()
+    local normal = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(normal, project_root .. "/normal.lua")
+    -- Use nofile as a stand-in for special buftypes (terminal can't be set directly)
+    local special = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(special, project_root .. "/special")
+    vim.bo[special].buftype = "nofile"
+
+    local list = I.buffer_list()
+    local names = {}
+    for _, entry in ipairs(list) do
+      names[entry.name] = true
+    end
+    assert.is_not_nil(names["normal.lua"])
+    assert.is_nil(names["special"])
+
+    vim.api.nvim_buf_delete(normal, { force = true })
+    vim.api.nvim_buf_delete(special, { force = true })
+  end)
+
+  it("excludes unnamed buffers", function()
+    local named = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(named, project_root .. "/named.lua")
+    local unnamed = vim.api.nvim_create_buf(true, false)
+    -- No name set
+
+    local list = I.buffer_list()
+    local names = {}
+    for _, entry in ipairs(list) do
+      names[entry.name] = true
+    end
+    assert.is_not_nil(names["named.lua"])
+
+    vim.api.nvim_buf_delete(named, { force = true })
+    vim.api.nvim_buf_delete(unnamed, { force = true })
   end)
 end)
 
