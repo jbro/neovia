@@ -51,6 +51,7 @@ end
 ------------------------------------------------------------------------
 
 --- Collect file paths of all listed, normal file buffers.
+--- Excludes scratch buffers (they are managed separately).
 --- @return string[]
 local function collect_file_buffers()
   local paths = {}
@@ -58,6 +59,7 @@ local function collect_file_buffers()
     if vim.api.nvim_buf_is_valid(buf)
       and vim.bo[buf].buflisted
       and vim.bo[buf].buftype == ""
+      and not vim.b[buf].neovia_scratch
     then
       local name = vim.api.nvim_buf_get_name(buf)
       if name ~= "" then
@@ -577,11 +579,12 @@ end
 
 --- Switch to a worktree directory.
 --- Saves current file buffer paths (unlist), tcd to target,
---- restores saved buffers (relist) or opens netrw on first visit.
+--- restores saved buffers (relist) or opens scratch on first visit.
 --- If the target is closed, reopens it (re-subscribes SSE).
 --- Session switching is left to opencode.nvim's DirChanged autocmd
 --- (fires synchronously during tcd) so that SSE reconnection and
 --- session loading happen atomically.
+--- Tells neo-tree the new root directory.
 --- @param dir string  Absolute path to the target worktree.
 function M.switch_to(dir)
   M.setup()
@@ -627,7 +630,7 @@ function M.switch_to(dir)
     subscribe_one(dir)
   end
 
-  -- Restore saved buffers or open netrw
+  -- Restore saved buffers or open scratch
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if ok_nav then
     if #target.buffer_paths > 0 then
@@ -641,10 +644,13 @@ function M.switch_to(dir)
         end
       end
     else
-      -- First visit: open netrw in the code window
-      navigate.open_dir(dir)
+      -- First visit: open scratch in the code window
+      navigate.open_scratch_in_code_win(dir)
     end
   end
+
+  -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly)
+  pcall(vim.cmd, "Neotree dir=" .. vim.fn.fnameescape(dir))
 
   -- Immediate tabline update so the current-worktree highlight is visible
   -- without waiting for the debounced DirChanged handler.
@@ -701,6 +707,13 @@ function M.close(dir)
       vim.notify("Cannot close the only worktree", vim.log.levels.WARN)
       return
     end
+  end
+
+  -- Save and wipe scratch buffer
+  local ok_scratch, scratch = pcall(require, "neovia.scratch")
+  if ok_scratch then
+    scratch.save(dir)
+    scratch.wipe(dir)
   end
 
   -- Wipeout saved buffers
@@ -1034,6 +1047,12 @@ function M._delete_continue(wt)
         end
       end)
     end
+  end
+
+  -- Delete scratch storage (worktree is gone, notes lose context)
+  local ok_scratch, scratch = pcall(require, "neovia.scratch")
+  if ok_scratch then
+    scratch.delete_storage(wt.path)
   end
 
   -- Clean up state

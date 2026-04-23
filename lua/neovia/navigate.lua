@@ -93,7 +93,7 @@ local function create_code_win()
   -- Create a full-height vertical split at the far left. We use an
   -- unlisted scratch buffer to avoid inheriting a terminal buffer
   -- from the current window. Callers replace this buffer immediately
-  -- (open_dir, open_in_code_win), so it never appears in :ls or :bn.
+  -- (open_scratch_in_code_win, open_in_code_win), so it never appears in :ls or :bn.
   local buf = vim.api.nvim_create_buf(false, true)
   vim.cmd("topleft vsplit")
   local win = vim.api.nvim_get_current_win()
@@ -101,15 +101,20 @@ local function create_code_win()
   return win
 end
 
---- Open a directory in the code window (netrw).
---- @param dir string  Absolute path to the directory.
-local function open_dir(dir)
+--- Open the scratch buffer for a worktree in the code window.
+--- Creates the code window if needed.
+--- @param dir string  Absolute worktree path.
+local function open_scratch_in_code_win(dir)
+  local ok_scratch, scratch = pcall(require, "neovia.scratch")
+  if not ok_scratch then return end
+
+  local buf = scratch.get_or_create(dir)
   local win = find_code_win()
   if not win then
     win = create_code_win()
   end
   vim.api.nvim_set_current_win(win)
-  vim.cmd("edit " .. vim.fn.fnameescape(dir))
+  vim.api.nvim_win_set_buf(win, buf)
 end
 
 ------------------------------------------------------------------------
@@ -157,10 +162,11 @@ function M.find_code_win()
   return find_code_win()
 end
 
---- Open a directory in the code window (netrw).
---- @param dir string  Absolute path to the directory.
-function M.open_dir(dir)
-  open_dir(dir)
+--- Open the scratch buffer for a worktree in the code window.
+--- Creates the code window if needed.
+--- @param dir string  Absolute worktree path.
+function M.open_scratch_in_code_win(dir)
+  open_scratch_in_code_win(dir)
 end
 
 --- Open a file in the code window. Creates the window if needed.
@@ -204,9 +210,9 @@ function M.open()
   local path, line = parse_path(raw)
   local abs = resolve(path)
 
-  -- Directory: open in code window (netrw)
+  -- Directory: reveal in neo-tree sidebar
   if vim.fn.isdirectory(abs) == 1 then
-    open_dir(abs)
+    vim.cmd("Neotree reveal dir=" .. vim.fn.fnameescape(abs))
     return
   end
 

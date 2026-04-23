@@ -7,6 +7,11 @@
 vim.g.mapleader = " "
 vim.g.maplocalleader = " "
 
+-- Disable netrw (neo-tree replaces it; netrw's lcd and mouse handling
+-- conflict with tcd-based worktree switching and the tabline).
+vim.g.loaded_netrwPlugin = 1
+vim.g.loaded_netrw = 1
+
 ------------------------------------------------------------------------
 -- Bootstrap lazy.nvim
 ------------------------------------------------------------------------
@@ -161,6 +166,11 @@ vim.keymap.set("n", "<leader>oSd", function()
   vim.notify("opencode: reconnecting and restoring layout...", vim.log.levels.INFO)
   require("neovia.layout").restore_layout()
 end, { desc = "Redraw UI" })
+
+------------------------------------------------------------------------
+-- Scratch buffer (per-worktree persistent notes)
+------------------------------------------------------------------------
+require("neovia.scratch").setup()
 
 ------------------------------------------------------------------------
 -- Read-only mode

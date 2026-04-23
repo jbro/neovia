@@ -1,4 +1,4 @@
--- neo-tree: read-only directory tree sidebar
+-- neo-tree: read-only directory tree sidebar (always visible, far left)
 return {
   {
     "nvim-neo-tree/neo-tree.nvim",
@@ -8,7 +8,7 @@ return {
       "nvim-tree/nvim-web-devicons",
       "MunifTanjim/nui.nvim",
     },
-    cmd = "Neotree",
+    lazy = false,
     keys = {
       { "<leader>e", "<cmd>Neotree toggle<CR>", desc = "File tree" },
     },
@@ -16,8 +16,14 @@ return {
       filesystem = {
         follow_current_file = { enabled = true },
         use_libuv_file_watcher = true,
+        -- One-way binding: neo-tree follows tcd (via explicit Neotree dir=
+        -- in worktree.switch_to), but does not set cwd itself. This prevents
+        -- neo-tree's navigate_up/set_root from interfering with tcd-based
+        -- worktree switching.
+        bind_to_cwd = false,
       },
       window = {
+        position = "left",
         width = 35,
         mappings = {
           -- Read-only: disable file-editing actions

@@ -211,12 +211,24 @@ describe("find_code_win", function()
 end)
 
 ------------------------------------------------------------------------
--- open_dir (public API)
+-- open_scratch_in_code_win (public API)
 ------------------------------------------------------------------------
 
-describe("open_dir", function()
-  it("opens the directory in the code window", function()
-    -- Set up: code window with a normal buffer, plus an opencode window
+describe("open_scratch_in_code_win", function()
+  local scratch = require("neovia.scratch")
+  local test_state_dir = vim.fn.tempname() .. "_nav_scratch_test"
+
+  before_each(function()
+    scratch._internal.reset()
+    scratch.setup({ state_dir = test_state_dir })
+  end)
+
+  after_each(function()
+    scratch._internal.reset()
+    vim.fn.delete(test_state_dir, "rf")
+  end)
+
+  it("shows the scratch buffer in the code window", function()
     local code_buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_win_set_buf(0, code_buf)
     local code_win = vim.api.nvim_get_current_win()
@@ -226,13 +238,14 @@ describe("open_dir", function()
     vim.bo[oc_buf].filetype = "opencode_output"
     vim.api.nvim_win_set_buf(0, oc_buf)
 
-    -- Use a real directory
     local dir = project_root
+    navigate.open_scratch_in_code_win(dir)
 
-    navigate.open_dir(dir)
-
-    -- Should have switched to the code window
+    -- Should be in the code window
     assert.equals(code_win, vim.api.nvim_get_current_win())
+    -- Buffer should be a scratch buffer
+    local buf = vim.api.nvim_win_get_buf(code_win)
+    assert.is_true(scratch.is_scratch(buf))
 
     -- Cleanup
     vim.cmd("only")
@@ -245,10 +258,9 @@ describe("open_dir", function()
     vim.bo[oc_buf].filetype = "opencode_output"
     vim.api.nvim_win_set_buf(0, oc_buf)
 
-    local dir = project_root
     local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
 
-    navigate.open_dir(dir)
+    navigate.open_scratch_in_code_win(project_root)
 
     local win_count_after = #vim.api.nvim_tabpage_list_wins(0)
     assert.is_true(win_count_after > win_count_before)
@@ -259,7 +271,6 @@ describe("open_dir", function()
   end)
 
   it("creates a full-height code window with stacked opencode windows", function()
-    -- Simulate the real opencode layout: output on top, input on bottom
     local oc_out_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[oc_out_buf].filetype = "opencode_output"
     vim.api.nvim_win_set_buf(0, oc_out_buf)
@@ -271,21 +282,16 @@ describe("open_dir", function()
     vim.api.nvim_win_set_buf(0, oc_in_buf)
     local oc_in_win = vim.api.nvim_get_current_win()
 
-    local dir = project_root
-    navigate.open_dir(dir)
+    navigate.open_scratch_in_code_win(project_root)
 
     local code_win = navigate.find_code_win()
     assert.is_not_nil(code_win, "code window should be created")
 
-    -- The code window should span the full height of the editor,
-    -- not be stacked alongside just one opencode window.
     local code_height = vim.api.nvim_win_get_height(code_win)
     local oc_out_height = vim.api.nvim_win_get_height(oc_out_win)
     local oc_in_height = vim.api.nvim_win_get_height(oc_in_win)
     local total_oc_height = oc_out_height + oc_in_height
 
-    -- Code window height should be close to the combined opencode height
-    -- (within a few lines for separators/statuslines)
     assert.is_true(
       math.abs(code_height - total_oc_height) <= 2,
       string.format(
@@ -463,10 +469,9 @@ describe("open", function()
     vim.api.nvim_buf_delete(oc_buf, { force = true })
   end)
 
-  it("opens a directory under cursor via netrw", function()
+  it("reveals a directory under cursor in neo-tree", function()
     local code_buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_win_set_buf(0, code_buf)
-    local code_win = vim.api.nvim_get_current_win()
 
     vim.cmd("vsplit")
     local oc_buf = vim.api.nvim_create_buf(false, true)
@@ -477,10 +482,23 @@ describe("open", function()
     vim.api.nvim_buf_set_lines(oc_buf, 0, -1, false, { dir })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
 
+    -- Capture Neotree commands issued
+    local neotree_cmd = nil
+    local orig_cmd = vim.cmd
+    vim.cmd = function(c)
+      if type(c) == "string" and c:find("Neotree") then
+        neotree_cmd = c
+      else
+        orig_cmd(c)
+      end
+    end
+
     navigate.open()
 
-    -- Should have switched to code window
-    assert.equals(code_win, vim.api.nvim_get_current_win())
+    vim.cmd = orig_cmd
+
+    assert.is_truthy(neotree_cmd, "should have issued a Neotree command")
+    assert.is_truthy(neotree_cmd:find("reveal"), "should reveal in neo-tree")
 
     -- Cleanup
     vim.cmd("only")
