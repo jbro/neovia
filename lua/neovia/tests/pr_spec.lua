@@ -381,10 +381,10 @@ describe("M.icon", function()
 end)
 
 ------------------------------------------------------------------------
--- M.get_current
+-- refresh_branch (async branch caching)
 ------------------------------------------------------------------------
 
-describe("get_current", function()
+describe("refresh_branch", function()
   local orig_system
 
   before_each(function()
@@ -396,15 +396,106 @@ describe("get_current", function()
     I.reset()
   end)
 
-  it("returns PR info for the current branch via git", function()
-    -- Mock git rev-parse to return a known branch
+  it("caches the branch name from git rev-parse", function()
+    local orig_schedule = vim.schedule
+    vim.schedule = function(fn) fn() end
+
     vim.system = function(cmd, opts, on_exit)
       if cmd[1] == "git" and cmd[2] == "rev-parse" then
-        return { wait = function() return { code = 0, stdout = "my-branch\n" } end }
+        if on_exit then
+          on_exit({ code = 0, stdout = "feat-cached\n" })
+          return
+        end
       end
       return orig_system(cmd, opts, on_exit)
     end
 
+    I.refresh_branch()
+    vim.schedule = orig_schedule
+    assert.equals("feat-cached", I.get_cached_branch())
+  end)
+
+  it("clears the cache when git fails", function()
+    local orig_schedule = vim.schedule
+    vim.schedule = function(fn) fn() end
+
+    I.set_cached_branch("old-branch")
+
+    vim.system = function(cmd, opts, on_exit)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        if on_exit then
+          on_exit({ code = 128, stdout = "" })
+          return
+        end
+      end
+      return orig_system(cmd, opts, on_exit)
+    end
+
+    I.refresh_branch()
+    vim.schedule = orig_schedule
+    assert.is_nil(I.get_cached_branch())
+  end)
+
+  it("clears the cache for detached HEAD", function()
+    local orig_schedule = vim.schedule
+    vim.schedule = function(fn) fn() end
+
+    I.set_cached_branch("old-branch")
+
+    vim.system = function(cmd, opts, on_exit)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        if on_exit then
+          on_exit({ code = 0, stdout = "HEAD\n" })
+          return
+        end
+      end
+      return orig_system(cmd, opts, on_exit)
+    end
+
+    I.refresh_branch()
+    vim.schedule = orig_schedule
+    assert.is_nil(I.get_cached_branch())
+  end)
+
+  it("does not call vim.system():wait() (is async)", function()
+    local wait_called = false
+    local orig_schedule = vim.schedule
+    vim.schedule = function(fn) fn() end
+
+    vim.system = function(cmd, opts, on_exit)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        if on_exit then
+          on_exit({ code = 0, stdout = "async-branch\n" })
+          return
+        end
+        -- If called without on_exit, it's the sync path
+        return {
+          wait = function()
+            wait_called = true
+            return { code = 0, stdout = "async-branch\n" }
+          end,
+        }
+      end
+      return orig_system(cmd, opts, on_exit)
+    end
+
+    I.refresh_branch()
+    vim.schedule = orig_schedule
+    assert.is_false(wait_called, "refresh_branch must not call :wait()")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- M.get_current (uses cached branch -- no synchronous git call)
+------------------------------------------------------------------------
+
+describe("get_current", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("returns PR info for the cached branch", function()
+    I.set_cached_branch("my-branch")
     I.set_cache({
       ["my-branch"] = { state = "open", number = 55, url = "https://example.com/55" },
     })
@@ -415,14 +506,8 @@ describe("get_current", function()
     assert.equals(55, info.number)
   end)
 
-  it("returns nil when git rev-parse fails", function()
-    vim.system = function(cmd, opts, on_exit)
-      if cmd[1] == "git" and cmd[2] == "rev-parse" then
-        return { wait = function() return { code = 1, stdout = "" } end }
-      end
-      return orig_system(cmd, opts, on_exit)
-    end
-
+  it("returns nil when no branch is cached", function()
+    I.set_cached_branch(nil)
     I.set_cache({
       ["any-branch"] = { state = "open", number = 1, url = "" },
     })
@@ -431,34 +516,28 @@ describe("get_current", function()
     assert.is_nil(info)
   end)
 
-  it("returns nil when branch has no PR", function()
-    vim.system = function(cmd, opts, on_exit)
-      if cmd[1] == "git" and cmd[2] == "rev-parse" then
-        return { wait = function() return { code = 0, stdout = "no-pr-branch\n" } end }
-      end
-      return orig_system(cmd, opts, on_exit)
-    end
-
+  it("returns nil when cached branch has no PR", function()
+    I.set_cached_branch("no-pr-branch")
     I.set_cache({})
 
     local info = pr.get_current()
     assert.is_nil(info)
   end)
 
-  it("returns nil for detached HEAD", function()
-    vim.system = function(cmd, opts, on_exit)
-      if cmd[1] == "git" and cmd[2] == "rev-parse" then
-        return { wait = function() return { code = 0, stdout = "HEAD\n" } end }
-      end
-      return orig_system(cmd, opts, on_exit)
+  it("does not call vim.system", function()
+    local orig_system = vim.system
+    local system_called = false
+    vim.system = function(...)
+      system_called = true
+      return orig_system(...)
     end
 
-    I.set_cache({
-      ["HEAD"] = { state = "open", number = 1, url = "" },
-    })
+    I.set_cached_branch("some-branch")
+    I.set_cache({})
+    pr.get_current()
 
-    local info = pr.get_current()
-    assert.is_nil(info)
+    vim.system = orig_system
+    assert.is_false(system_called, "get_current must not call vim.system")
   end)
 end)
 
@@ -802,6 +881,12 @@ describe("reset", function()
     I.set_repo_nwo("owner/repo")
     I.reset()
     assert.is_nil(I.get_repo_nwo())
+  end)
+
+  it("clears cached_branch", function()
+    I.set_cached_branch("some-branch")
+    I.reset()
+    assert.is_nil(I.get_cached_branch())
   end)
 
   it("stops and closes retry timer", function()

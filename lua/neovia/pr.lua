@@ -21,6 +21,10 @@ local repo_nwo = nil
 --- Whether setup() has been called.
 local initialised = false
 
+--- Cached current branch name (resolved asynchronously).
+--- @type string|nil
+local cached_branch = nil
+
 --- Poll timer handle.
 --- @type uv_timer_t|nil
 local poll_timer = nil
@@ -28,6 +32,9 @@ local poll_timer = nil
 --- Retry timer handle (retries resolve_repo_nwo on failure).
 --- @type uv_timer_t|nil
 local retry_timer = nil
+
+--- Augroup name for DirChanged autocmd.
+local augroup_name = "neovia_pr"
 
 --- PR status icons (nerd font).
 --- @type table<string, string>
@@ -180,13 +187,36 @@ local function current_branch()
   return branch
 end
 
+--- Resolve the current branch asynchronously and cache the result.
+--- Safe to call from any context (does not block the event loop).
+local function refresh_branch()
+  vim.system(
+    { "git", "rev-parse", "--abbrev-ref", "HEAD" },
+    { text = true },
+    function(result)
+      vim.schedule(function()
+        if result.code ~= 0 then
+          cached_branch = nil
+          return
+        end
+        local branch = vim.trim(result.stdout or "")
+        if branch == "" or branch == "HEAD" then
+          cached_branch = nil
+          return
+        end
+        cached_branch = branch
+      end)
+    end
+  )
+end
+
 --- Return PR info for the current worktree's branch, or nil.
---- Resolves the branch directly via `git rev-parse`.
+--- Uses the cached branch name (resolved asynchronously by refresh_branch).
+--- Never blocks the event loop.
 --- @return neovia.PrInfo|nil
 function M.get_current()
-  local branch = current_branch()
-  if not branch then return nil end
-  return pr_cache[branch]
+  if not cached_branch then return nil end
+  return pr_cache[cached_branch]
 end
 
 --- Return the icon string for a PR state.
@@ -240,6 +270,15 @@ function M.setup()
   if initialised then return end
   initialised = true
 
+  -- Resolve branch asynchronously and keep it up to date on directory changes.
+  refresh_branch()
+  local augroup = vim.api.nvim_create_augroup(augroup_name, { clear = true })
+  vim.api.nvim_create_autocmd("DirChanged", {
+    group = augroup,
+    callback = function() refresh_branch() end,
+    desc = "neovia: refresh cached branch for PR status",
+  })
+
   -- Resolve repo nwo (synchronous, runs once)
   repo_nwo = resolve_repo_nwo()
   if not repo_nwo then
@@ -268,8 +307,17 @@ M._internal = {
   build_gh_cmd = build_gh_cmd,
   fetch_pr_status = fetch_pr_status,
   current_branch = current_branch,
+  refresh_branch = refresh_branch,
   truncate_title = truncate_title,
   attempt_resolve = attempt_resolve,
+
+  --- Get the cached branch name (for assertions).
+  --- @return string|nil
+  get_cached_branch = function() return cached_branch end,
+
+  --- Set the cached branch name (for test setup).
+  --- @param branch string|nil
+  set_cached_branch = function(branch) cached_branch = branch end,
 
   --- Get the current cache (for assertions).
   --- @return table<string, neovia.PrInfo>
@@ -302,6 +350,8 @@ M._internal = {
     retry_timer = stop_timer(retry_timer)
     pr_cache = {}
     repo_nwo = nil
+    cached_branch = nil
+    vim.api.nvim_create_augroup(augroup_name, { clear = true })
     initialised = false
   end,
 }
