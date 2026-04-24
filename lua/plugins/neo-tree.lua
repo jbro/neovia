@@ -18,6 +18,19 @@ return {
         -- neo-tree's navigate_up/set_root from interfering with tcd-based
         -- worktree switching.
         bind_to_cwd = false,
+        -- Disable gitignore hiding: worktree directories live under
+        -- .worktrees/ which is gitignored in the main repo. Neo-tree's
+        -- mark_gitignored checks ALL known worktree roots, so files
+        -- inside a child worktree inherit the parent's "!" status and
+        -- get hidden. Dotfiles (.gitignore) should also be visible.
+        filtered_items = {
+          hide_dotfiles = false,
+          hide_gitignored = false,
+          never_show = {
+            ".git",
+            ".worktrees",
+          },
+        },
       },
       window = {
         position = "left",
