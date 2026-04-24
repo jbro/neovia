@@ -888,20 +888,19 @@ describe("ensure_subscriptions", function()
     package.loaded["opencode.state"] = nil
   end)
 
-  it("removes state for worktrees that no longer exist on disk (open only)", function()
+  it("removes state for worktrees that no longer exist on disk", function()
     -- ensure_subscriptions calls list_worktrees which runs git, so in
-    -- headless test with no git repo it returns {}. This means all open
+    -- headless test with no git repo it returns {}. This means all
     -- entries get pruned.
     I.set_state({
-      ["/gone/a"] = I.make_entry({ branch = "gone", open = true }),
-      ["/gone/b"] = I.make_entry({ branch = "closed", open = false }),
+      ["/gone/a"] = I.make_entry({ branch = "gone" }),
+      ["/gone/b"] = I.make_entry({ branch = "also-gone" }),
     })
 
     I.ensure_subscriptions()
 
-    -- Open entry pruned, closed entry retained
     assert.is_nil(I.get_state()["/gone/a"])
-    assert.is_not_nil(I.get_state()["/gone/b"])
+    assert.is_nil(I.get_state()["/gone/b"])
   end)
 end)
 
@@ -1122,19 +1121,6 @@ describe("switch_to", function()
     local entry = I.get_state()[dir_b]
     assert.is_not_nil(entry)
     assert.equals("unknown", entry.status)
-    assert.is_true(entry.open)
-  end)
-
-  it("reopens a closed worktree", function()
-    vim.cmd.tcd(dir_a)
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({ branch = "feat", open = false }),
-    })
-
-    wt.switch_to(dir_b)
-
-    assert.is_true(I.get_state()[dir_b].open)
   end)
 
   it("schedules layout restoration after switching", function()
@@ -1267,171 +1253,6 @@ describe("switch_to", function()
     pcall(vim.api.nvim_buf_delete, file_buf, { force = true })
     scratch._internal.reset()
     vim.fn.delete(test_state_dir, "rf")
-  end)
-end)
-
-------------------------------------------------------------------------
--- close
-------------------------------------------------------------------------
-
-describe("close", function()
-  local orig_cwd
-  local dir_a, dir_b
-
-  before_each(function()
-    I.reset()
-
-    -- Stub commands that fail in headless mode
-    vim.cmd.redrawstatus = function() end
-    vim.cmd.redrawtabline = function() end
-
-    orig_cwd = vim.fn.getcwd()
-
-    dir_a = vim.fn.resolve(vim.fn.tempname())
-    dir_b = vim.fn.resolve(vim.fn.tempname())
-    vim.fn.mkdir(dir_a, "p")
-    vim.fn.mkdir(dir_b, "p")
-
-    I.set_initialised(true)
-  end)
-
-  after_each(function()
-    pcall(vim.cmd.tcd, orig_cwd)
-    I.reset()
-    vim.fn.delete(dir_a, "rf")
-    vim.fn.delete(dir_b, "rf")
-  end)
-
-  it("is a no-op for unknown directories", function()
-    wt.close("/nonexistent")
-    -- Should not error or create state
-    assert.is_nil(I.get_state()["/nonexistent"])
-  end)
-
-  it("defaults to tab-level cwd when dir is nil", function()
-    vim.cmd.tcd(dir_a)
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "feat", open = true }),
-      [dir_b] = I.make_entry({ branch = "main" }),
-    })
-
-    -- Set window-level lcd to dir_b (simulating a plugin that sets lcd)
-    vim.cmd.lcd(dir_b)
-
-    -- close(nil) should close dir_a (tab-level), not dir_b (window-level)
-    -- Will warn because list_worktrees can't find another worktree in headless,
-    -- but that's fine -- we just verify it tried to close dir_a, not dir_b
-    local notified = false
-    local orig_notify = vim.notify
-    vim.notify = function(msg)
-      if msg:find("Cannot close the only worktree") then notified = true end
-    end
-
-    wt.close()
-
-    vim.notify = orig_notify
-    -- dir_a should have been targeted (it's cwd == dir, so it tried to switch away)
-    assert.is_true(notified, "Expected close() to target the tab-level cwd (dir_a)")
-    -- dir_b should be untouched
-    assert.is_true(I.get_state()[dir_b].open)
-  end)
-
-  it("marks the worktree as closed", function()
-    vim.cmd.tcd(dir_a)
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({ branch = "feat", open = true }),
-    })
-
-    wt.close(dir_b)
-
-    assert.is_false(I.get_state()[dir_b].open)
-    assert.equals("unknown", I.get_state()[dir_b].status)
-  end)
-
-  it("wipes saved buffers on close", function()
-    vim.cmd.tcd(dir_a)
-    local buf = vim.api.nvim_create_buf(true, false)
-    vim.api.nvim_buf_set_name(buf, dir_b .. "/closeme.lua")
-    vim.bo[buf].buflisted = false
-
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({
-        branch = "feat",
-        buffer_paths = { dir_b .. "/closeme.lua" },
-      }),
-    })
-
-    wt.close(dir_b)
-
-    assert.is_false(vim.api.nvim_buf_is_valid(buf))
-    assert.same({}, I.get_state()[dir_b].buffer_paths)
-  end)
-
-  it("tears down SSE subscription on close", function()
-    vim.cmd.tcd(dir_a)
-    local shutdown_called = false
-    local mock_sub = {
-      shutdown = function() shutdown_called = true end,
-      is_running = function() return true end,
-    }
-
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({ branch = "feat", subscription = mock_sub }),
-    })
-
-    wt.close(dir_b)
-
-    assert.is_true(shutdown_called)
-    assert.is_nil(I.get_state()[dir_b].subscription)
-  end)
-
-  it("triggers tabline redraw after closing", function()
-    vim.cmd.tcd(dir_a)
-    local tabline_redrawn = false
-    vim.cmd.redrawtabline = function() tabline_redrawn = true end
-
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({ branch = "feat", open = true }),
-    })
-
-    wt.close(dir_b)
-
-    -- Redraw is deferred via vim.schedule; flush pending callbacks
-    vim.wait(50, function() return tabline_redrawn end)
-
-    assert.is_true(tabline_redrawn, "Expected redrawtabline to be called after close")
-  end)
-
-  it("switches away when closing the current worktree", function()
-    vim.cmd.tcd(dir_b)
-    -- State has dir_a as another worktree. We need list_worktrees to return
-    -- something, but it calls git. Instead we can verify indirectly:
-    -- close() on the current dir tries to find another worktree via
-    -- list_worktrees(). In headless test with no matching worktrees,
-    -- it will warn and return early.
-    I.set_state({
-      [dir_b] = I.make_entry({ branch = "feat", open = true }),
-    })
-
-    -- With no other worktrees available via git, close warns and returns
-    local notified = false
-    local orig_notify = vim.notify
-    vim.notify = function(msg, level)
-      if msg:find("Cannot close the only worktree") then
-        notified = true
-      end
-    end
-
-    wt.close(dir_b)
-
-    vim.notify = orig_notify
-    -- The worktree should still be open (close was aborted)
-    assert.is_true(I.get_state()[dir_b].open)
-    assert.is_true(notified)
   end)
 end)
 
@@ -2205,7 +2026,7 @@ describe("_delete_continue", function()
     assert.is_true(found_force, "Expected force worktree remove after clean fails")
   end)
 
-  it("closes an open worktree before removing", function()
+  it("tears down SSE subscription before removing", function()
     local dir_main = vim.fn.tempname()
     local dir_feat = vim.fn.tempname()
     vim.fn.mkdir(dir_main, "p")
@@ -2220,7 +2041,7 @@ describe("_delete_continue", function()
 
     I.set_state({
       [dir_main] = I.make_entry({ branch = "main" }),
-      [dir_feat] = I.make_entry({ branch = "feat", open = true, subscription = mock_sub }),
+      [dir_feat] = I.make_entry({ branch = "feat", subscription = mock_sub }),
     })
 
     vim.system = function()
@@ -2320,7 +2141,6 @@ describe("get_entries", function()
     I.set_state({
       ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
       ["/proj/feat"] = I.make_entry({ branch = "feat-a", status = "responding" }),
-      ["/proj/closed"] = I.make_entry({ branch = "closed-one", status = "unknown", open = false }),
     })
   end)
 
@@ -2332,38 +2152,23 @@ describe("get_entries", function()
     local worktrees = {
       { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
       { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
-      { path = "/proj/closed", branch = "closed-one", head = "abc1234", bare = false },
     }
     local entries = wt.get_entries(worktrees)
-    assert.equals(3, #entries)
+    assert.equals(2, #entries)
     assert.equals("main", entries[1].branch)
     assert.equals("idle", entries[1].status)
     assert.equals("feat-a", entries[2].branch)
     assert.equals("responding", entries[2].status)
-    assert.equals("closed-one", entries[3].branch)
-    assert.is_false(entries[3].open)
   end)
 
-  it("marks unknown worktrees as open by default", function()
+  it("marks unknown worktrees with unknown status", function()
     local worktrees = {
       { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
       { path = "/proj/new", branch = "new-branch", head = "abc1234", bare = false },
     }
     local entries = wt.get_entries(worktrees)
     assert.equals(2, #entries)
-    assert.is_true(entries[2].open)
     assert.equals("unknown", entries[2].status)
-  end)
-
-  it("marks closed worktrees as not open", function()
-    local worktrees = {
-      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
-      { path = "/proj/closed", branch = "closed-one", head = "abc1234", bare = false },
-    }
-    local entries = wt.get_entries(worktrees)
-    assert.equals(2, #entries)
-    assert.is_true(entries[1].open)
-    assert.is_false(entries[2].open)
   end)
 
   it("uses tab-level cwd for current marker, ignoring window-local lcd", function()
@@ -2586,37 +2391,6 @@ describe("find_current_worktree", function()
 end)
 
 ------------------------------------------------------------------------
--- close_picker
-------------------------------------------------------------------------
-
-describe("close_picker", function()
-  after_each(function()
-    I.reset()
-  end)
-
-  it("is a function on the public API", function()
-    assert.is_function(wt.close_picker)
-  end)
-
-  it("errors when fzf-lua is not available", function()
-    I.set_initialised(true)
-    package.loaded["fzf-lua"] = nil
-
-    local notified_msg = nil
-    local orig_notify = vim.notify
-    vim.notify = function(msg, level)
-      if level == vim.log.levels.ERROR then notified_msg = msg end
-    end
-
-    wt.close_picker()
-
-    vim.notify = orig_notify
-    assert.is_not_nil(notified_msg)
-    assert.is_truthy(notified_msg:find("fzf%-lua not available"))
-  end)
-end)
-
-------------------------------------------------------------------------
 -- delete_current
 ------------------------------------------------------------------------
 
@@ -2781,51 +2555,7 @@ describe("next", function()
     vim.fn.delete(dir_feat, "rf")
   end)
 
-  it("skips closed worktrees", function()
-    local dir_main = vim.fn.resolve(vim.fn.tempname())
-    local dir_feat = vim.fn.resolve(vim.fn.tempname())
-    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
-    vim.fn.mkdir(dir_main, "p")
-    vim.fn.mkdir(dir_feat, "p")
-    vim.fn.mkdir(dir_hotfix, "p")
-
-    vim.system = function(cmd, opts)
-      if cmd[1] == "git" and cmd[2] == "worktree" then
-        local output = table.concat({
-          "worktree " .. dir_main,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/main",
-          "",
-          "worktree " .. dir_feat,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/feat",
-          "",
-          "worktree " .. dir_hotfix,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/hotfix",
-          "",
-        }, "\n")
-        return { wait = function() return { code = 0, stdout = output } end }
-      end
-      return orig_system(cmd, opts)
-    end
-
-    I.set_state({
-      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
-      [dir_feat] = I.make_entry({ branch = "feat", status = "responding", open = false }),
-      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
-    })
-
-    vim.cmd.tcd(dir_main)
-    wt.next()
-    assert.equals(dir_hotfix, I.tab_cwd())
-
-    vim.fn.delete(dir_main, "rf")
-    vim.fn.delete(dir_feat, "rf")
-    vim.fn.delete(dir_hotfix, "rf")
-  end)
-
-  it("is a no-op when only one open worktree exists", function()
+  it("is a no-op when only one worktree exists", function()
     local dir_main = vim.fn.resolve(vim.fn.tempname())
     vim.fn.mkdir(dir_main, "p")
 
@@ -2953,50 +2683,6 @@ describe("prev", function()
 
     vim.fn.delete(dir_main, "rf")
     vim.fn.delete(dir_feat, "rf")
-  end)
-
-  it("skips closed worktrees", function()
-    local dir_main = vim.fn.resolve(vim.fn.tempname())
-    local dir_feat = vim.fn.resolve(vim.fn.tempname())
-    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
-    vim.fn.mkdir(dir_main, "p")
-    vim.fn.mkdir(dir_feat, "p")
-    vim.fn.mkdir(dir_hotfix, "p")
-
-    vim.system = function(cmd, opts)
-      if cmd[1] == "git" and cmd[2] == "worktree" then
-        local output = table.concat({
-          "worktree " .. dir_main,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/main",
-          "",
-          "worktree " .. dir_feat,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/feat",
-          "",
-          "worktree " .. dir_hotfix,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/hotfix",
-          "",
-        }, "\n")
-        return { wait = function() return { code = 0, stdout = output } end }
-      end
-      return orig_system(cmd, opts)
-    end
-
-    I.set_state({
-      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
-      [dir_feat] = I.make_entry({ branch = "feat", status = "responding", open = false }),
-      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "idle" }),
-    })
-
-    vim.cmd.tcd(dir_hotfix)
-    wt.prev()
-    assert.equals(dir_main, I.tab_cwd())
-
-    vim.fn.delete(dir_main, "rf")
-    vim.fn.delete(dir_feat, "rf")
-    vim.fn.delete(dir_hotfix, "rf")
   end)
 end)
 
@@ -3148,50 +2834,6 @@ describe("next_attention", function()
 
     vim.fn.delete(dir_main, "rf")
     vim.fn.delete(dir_feat, "rf")
-  end)
-
-  it("skips closed worktrees even if they need attention", function()
-    local dir_main = vim.fn.resolve(vim.fn.tempname())
-    local dir_feat = vim.fn.resolve(vim.fn.tempname())
-    local dir_hotfix = vim.fn.resolve(vim.fn.tempname())
-    vim.fn.mkdir(dir_main, "p")
-    vim.fn.mkdir(dir_feat, "p")
-    vim.fn.mkdir(dir_hotfix, "p")
-
-    vim.system = function(cmd, opts)
-      if cmd[1] == "git" and cmd[2] == "worktree" then
-        local output = table.concat({
-          "worktree " .. dir_main,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/main",
-          "",
-          "worktree " .. dir_feat,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/feat",
-          "",
-          "worktree " .. dir_hotfix,
-          "HEAD abc1234def5678901234567890abcdef12345678",
-          "branch refs/heads/hotfix",
-          "",
-        }, "\n")
-        return { wait = function() return { code = 0, stdout = output } end }
-      end
-      return orig_system(cmd, opts)
-    end
-
-    I.set_state({
-      [dir_main] = I.make_entry({ branch = "main", status = "idle" }),
-      [dir_feat] = I.make_entry({ branch = "feat", status = "needs_attention", open = false }),
-      [dir_hotfix] = I.make_entry({ branch = "hotfix", status = "needs_attention" }),
-    })
-
-    vim.cmd.tcd(dir_main)
-    wt.next_attention()
-    assert.equals(dir_hotfix, I.tab_cwd())
-
-    vim.fn.delete(dir_main, "rf")
-    vim.fn.delete(dir_feat, "rf")
-    vim.fn.delete(dir_hotfix, "rf")
   end)
 
   it("cycles forward from the current attention worktree to the next one", function()
@@ -3686,7 +3328,7 @@ describe("resync", function()
     assert.is_truthy(notified_msg:find("not available"))
   end)
 
-  it("queries API for other open worktrees", function()
+  it("queries API for other worktrees", function()
     local cwd = I.tab_cwd()
     local queried_dirs = {}
 
@@ -3698,8 +3340,7 @@ describe("resync", function()
 
     I.set_state({
       [cwd] = I.make_entry({ branch = "main" }),
-      ["/proj/feat"] = I.make_entry({ branch = "feat", open = true }),
-      ["/proj/closed"] = I.make_entry({ branch = "closed", open = false }),
+      ["/proj/feat"] = I.make_entry({ branch = "feat" }),
     })
 
     package.loaded["opencode.state"] = {
@@ -3714,7 +3355,7 @@ describe("resync", function()
 
     wt.resync()
 
-    -- Should query /proj/feat (open, not current) but NOT cwd or /proj/closed
+    -- Should query /proj/feat (not current) but NOT cwd
     assert.equals(1, #queried_dirs)
     assert.equals("/proj/feat", queried_dirs[1])
   end)

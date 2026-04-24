@@ -162,11 +162,6 @@ vim.keymap.set("n", "<leader>oSq", function()
   end
 end, { desc = "Shutdown server" })
 
-vim.keymap.set("n", "<leader>oSd", function()
-  vim.notify("opencode: reconnecting and restoring layout...", vim.log.levels.INFO)
-  require("neovia.layout").restore_layout()
-end, { desc = "Redraw UI" })
-
 ------------------------------------------------------------------------
 -- Scratch buffer (per-worktree persistent notes)
 ------------------------------------------------------------------------

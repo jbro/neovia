@@ -9,9 +9,6 @@ return {
       "MunifTanjim/nui.nvim",
     },
     lazy = false,
-    keys = {
-      { "<leader>e", "<cmd>Neotree toggle<CR>", desc = "File tree" },
-    },
     opts = {
       filesystem = {
         follow_current_file = { enabled = true },

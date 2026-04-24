@@ -60,28 +60,26 @@ function M.ensure_subscriptions(state, worktrees, event_callback)
         branch = wt.branch,
         pending_permissions = {},
         buffer_paths = {},
-        open = true,
       }
     end
 
     local entry = state[wt.path]
-    if entry.open then
-      local alive = entry.subscription
-        and type(entry.subscription.is_running) == "function"
-        and entry.subscription.is_running()
-      if not alive then
-        if entry.subscription and type(entry.subscription.shutdown) == "function" then
-          pcall(entry.subscription.shutdown)
-        end
-        entry.subscription = nil
-        M.subscribe_one(state, wt.path, event_callback)
+    local alive = entry.subscription
+      and type(entry.subscription.is_running) == "function"
+      and entry.subscription.is_running()
+    if not alive then
+      if entry.subscription and type(entry.subscription.shutdown) == "function" then
+        pcall(entry.subscription.shutdown)
       end
+      entry.subscription = nil
+      M.subscribe_one(state, wt.path, event_callback)
     end
   end
 
-  -- Remove state for worktrees that no longer exist on disk (open only)
-  for dir, entry in pairs(state) do
-    if not valid[dir] and entry.open then
+  -- Remove state for worktrees that no longer exist on disk
+  for dir, _ in pairs(state) do
+    if not valid[dir] then
+      local entry = state[dir]
       if entry.subscription and type(entry.subscription.shutdown) == "function" then
         pcall(entry.subscription.shutdown)
       end

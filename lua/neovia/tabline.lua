@@ -175,7 +175,6 @@ end
 --- @field path string
 --- @field status string
 --- @field current boolean
---- @field open boolean
 --- @field pr neovia.PrInfo|nil
 
 --- Transitional highlight group name for a powerline separator.
@@ -201,15 +200,8 @@ function M.build(entries)
   tabline_click_paths = {}
   tabline_click_next_id = 0
 
-  -- Collect visible (open) entries.
-  local visible = {}
-  for _, e in ipairs(entries) do
-    if e.open then table.insert(visible, e) end
-  end
-  if #visible == 0 then return "" end
-
   local parts = {}
-  for i, e in ipairs(visible) do
+  for i, e in ipairs(entries) do
     local char = status_char(e.status)
     local kind = e.current and "sel" or "wt"
     local bg_hl = e.current and "NeoviaWtSel" or "NeoviaWt"
@@ -237,8 +229,8 @@ function M.build(entries)
 
     -- Powerline separator after this entry.
     local next_kind = "fill"
-    if i < #visible then
-      next_kind = visible[i + 1].current and "sel" or "wt"
+    if i < #entries then
+      next_kind = entries[i + 1].current and "sel" or "wt"
     end
     local sep = "%#" .. trans_hl(kind, next_kind) .. "#\u{e0b0}"
 
@@ -255,60 +247,32 @@ end
 --- Build parallel arrays of display entries and paths for fzf-lua picker.
 --- @param worktrees table[]
 --- @param cwd string
---- @param state table<string, table>  Per-dir state (status, open).
+--- @param state table<string, table>  Per-dir state (status).
 --- @return string[] entries  ANSI-coloured display strings.
 --- @return string[] paths    Parallel array of absolute worktree paths.
 function M.build_picker_entries(worktrees, cwd, state)
-  local dim = status_ansi.unknown
-
   local entries = {} --- @type string[]
   local paths = {} --- @type string[]
   for _, wt in ipairs(worktrees) do
-    local entry = state[wt.path] or { status = "unknown", open = true }
-    local is_open = entry.open ~= false
-    local colour = is_open and (status_ansi[entry.status] or status_ansi.unknown) or dim
-    local icon = is_open and (status_icon[entry.status] or "") or "[closed]"
+    local entry = state[wt.path] or { status = "unknown" }
+    local colour = status_ansi[entry.status] or status_ansi.unknown
+    local icon = status_icon[entry.status] or ""
     local marker = wt.path == cwd and " *" or ""
 
     local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
 
     local line = string.format(
-      "%s%-20s%s  %s%s%s%s",
+      "%s%-20s%s  %s%s%s",
       colour, wt.branch, ansi_reset,
-      is_open and display_path or (dim .. display_path .. ansi_reset),
+      display_path,
       marker,
-      icon ~= "" and ("  " .. colour .. icon .. ansi_reset) or "",
-      ""
+      icon ~= "" and ("  " .. colour .. icon .. ansi_reset) or ""
     )
     table.insert(entries, line)
     table.insert(paths, wt.path)
   end
 
   return entries, paths
-end
-
---- Build candidate list for the close picker.
---- @param worktrees table[]
---- @param cwd string
---- @param state table<string, table>
---- @return string[] candidates
---- @return table<string, table> line_to_wt
-function M.build_close_candidates(worktrees, cwd, state)
-  local candidates = {}
-  local line_to_wt = {}
-  for i, wt in ipairs(worktrees) do
-    if i > 1 and not wt.bare then
-      local entry = state[wt.path] or { open = true }
-      if entry.open ~= false then
-        local marker = wt.path == cwd and " (current)" or ""
-        local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
-        local line = string.format("%s  %s%s", wt.branch, display_path, marker)
-        table.insert(candidates, line)
-        line_to_wt[line] = wt
-      end
-    end
-  end
-  return candidates, line_to_wt
 end
 
 ------------------------------------------------------------------------

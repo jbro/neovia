@@ -1,5 +1,5 @@
 -- neovia worktree module
--- Worktree lifecycle (create/switch/close/delete), status tracking via SSE,
+-- Worktree lifecycle (create/switch/delete), status tracking via SSE,
 -- and picker. Rendering lives in lua/plugins/ui.lua (decision 0009).
 
 local M = {}
@@ -22,7 +22,6 @@ local M = {}
 --- @field subscription table|nil  curl job handle from subscribe_to_events
 --- @field pending_permissions table<string, boolean>  permission IDs awaiting reply
 --- @field buffer_paths string[]  saved file paths (for switch restore)
---- @field open boolean  whether this worktree is actively tracked (vs closed)
 --- @field session_id string|nil  cached opencode session ID (used by resync and fork)
 --- @field model_state neovia.ModelState|nil  saved model/variant/mode for restore on switch
 
@@ -391,9 +390,9 @@ function M.resync()
     state[cwd].session_id = oc_state.active_session.id
   end
 
-  -- Query the API for each other open worktree
+  -- Query the API for each other worktree
   for dir, entry in pairs(state) do
-    if entry.open and dir ~= cwd then
+    if dir ~= cwd then
       oc_state.api_client
         :list_sessions(dir)
         :and_then(function(sessions)
@@ -485,7 +484,6 @@ end
 --- Switch to a worktree directory.
 --- Saves current file buffer paths (unlist), tcd to target,
 --- restores saved buffers (relist) or opens scratch on first visit.
---- If the target is closed, reopens it (re-subscribes SSE).
 --- Session switching is left to opencode.nvim's DirChanged autocmd
 --- (fires synchronously during tcd) so that SSE reconnection and
 --- session loading happen atomically.
@@ -523,21 +521,13 @@ function M.switch_to(dir)
       branch = "",
       pending_permissions = {},
       buffer_paths = {},
-      open = true,
       session_id = nil,
       model_state = nil,
     }
   end
 
-  local target = state[dir]
-
-  -- Reopen if closed
-  if not target.open then
-    target.open = true
-    subscribe_one(dir)
-  end
-
   -- Restore saved buffers or open scratch
+  local target = state[dir]
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if ok_nav then
     if #target.buffer_paths > 0 then
@@ -590,66 +580,6 @@ function M.switch_to(dir)
   end, 100)
 
   vim.notify("Switched to " .. dir, vim.log.levels.INFO)
-end
-
---- Close a worktree: wipeout its buffers, tear down SSE, mark closed.
---- The git worktree stays on disk. Sessions are untouched.
---- @param dir? string  Absolute path to the worktree (defaults to tab-level cwd).
-function M.close(dir)
-  M.setup()
-  dir = dir or tab_cwd()
-
-  local entry = state[dir]
-  if not entry then return end
-
-  -- If this is the current worktree, switch to main first
-  local cwd = tab_cwd()
-  if cwd == dir then
-    local worktrees = list_worktrees()
-    local main_path = nil
-    for _, wt in ipairs(worktrees) do
-      if wt.path ~= dir and not wt.bare then
-        main_path = wt.path
-        break
-      end
-    end
-    if main_path then
-      M.switch_to(main_path)
-    else
-      vim.notify("Cannot close the only worktree", vim.log.levels.WARN)
-      return
-    end
-  end
-
-  -- Save and wipe scratch buffer
-  local ok_scratch, scratch = pcall(require, "neovia.scratch")
-  if ok_scratch then
-    scratch.save(dir)
-    scratch.wipe(dir)
-  end
-
-  -- Wipeout saved buffers
-  wipeout_buffers_for_dir(dir)
-
-  -- Tear down SSE subscription
-  if entry.subscription and type(entry.subscription.shutdown) == "function" then
-    pcall(entry.subscription.shutdown)
-  end
-  entry.subscription = nil
-
-  -- Mark closed
-  entry.open = false
-  entry.status = "unknown"
-
-  -- Deferred redraw: switch_to (called above when closing the current worktree)
-  -- triggers a debounced DirChanged that redraws the tabline before our state
-  -- mutation is visible. Schedule the redraw so it runs after pending events.
-  vim.schedule(function()
-    vim.cmd.redrawstatus()
-    vim.cmd.redrawtabline()
-  end)
-
-  vim.notify("Closed worktree " .. (entry.branch ~= "" and entry.branch or dir), vim.log.levels.INFO)
 end
 
 ------------------------------------------------------------------------
@@ -805,10 +735,35 @@ function M._delete_continue(wt)
       :catch(function() end) -- best-effort
   end
 
-  -- Close the worktree (switch away if current, wipeout buffers, tear down SSE)
+  -- Switch away if deleting the current worktree
+  local cwd = tab_cwd()
+  if cwd == wt.path then
+    local worktrees = list_worktrees()
+    local main_path = nil
+    for _, w in ipairs(worktrees) do
+      if w.path ~= wt.path and not w.bare then
+        main_path = w.path
+        break
+      end
+    end
+    if main_path then
+      M.switch_to(main_path)
+    end
+  end
+
+  -- Wipeout buffers and tear down SSE for this worktree
   local entry = state[wt.path]
-  if entry and entry.open then
-    M.close(wt.path)
+  if entry then
+    local ok_scratch, scratch_mod = pcall(require, "neovia.scratch")
+    if ok_scratch then
+      scratch_mod.save(wt.path)
+      scratch_mod.wipe(wt.path)
+    end
+    wipeout_buffers_for_dir(wt.path)
+    if entry.subscription and type(entry.subscription.shutdown) == "function" then
+      pcall(entry.subscription.shutdown)
+    end
+    entry.subscription = nil
   end
 
   -- git worktree remove (try clean first, then force)
@@ -877,43 +832,6 @@ function M._delete_continue(wt)
   vim.notify("Deleted worktree " .. wt.branch, vim.log.levels.INFO)
 end
 
---- Close a worktree via fzf picker.
---- Shows open, non-main worktrees. Selecting one calls M.close(path).
-function M.close_picker()
-  M.setup()
-
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then
-    vim.notify("worktree.close_picker: fzf-lua not available", vim.log.levels.ERROR)
-    return
-  end
-
-  local worktrees = list_worktrees()
-  local cwd = tab_cwd()
-  local ok_tl, tl = pcall(require, "neovia.tabline")
-  if not ok_tl then return end
-  local candidates, line_to_wt = tl.build_close_candidates(worktrees, cwd, state)
-
-  if #candidates == 0 then
-    vim.notify("No open worktrees to close", vim.log.levels.WARN)
-    return
-  end
-
-  fzf.fzf_exec(candidates, {
-    prompt = "Close worktree> ",
-    fzf_opts = { ["--no-multi"] = "" },
-    actions = {
-      ["default"] = function(selected)
-        if not selected or #selected == 0 then return end
-        local wt = line_to_wt[selected[1]]
-        if wt then
-          M.close(wt.path)
-        end
-      end,
-    },
-  })
-end
-
 --- Delete the current worktree directly (with confirmation).
 --- Warns if on the main worktree. Shows vim.ui.select confirmation.
 function M.delete_current()
@@ -945,67 +863,52 @@ end
 -- Public API: worktree navigation (next / prev / next_attention)
 ------------------------------------------------------------------------
 
---- Collect open worktree paths in order, returning the list and the
+--- Collect worktree paths in order, returning the list and the
 --- 1-based index of the current worktree within it.
---- @return string[] open_paths
+--- @return string[] paths
 --- @return integer? current_idx  nil if cwd is not in the list.
-local function open_worktree_list()
+local function worktree_path_list()
   local worktrees = list_worktrees()
   local cwd = tab_cwd()
-  local open_paths = {}
+  local paths = {}
   local current_idx = nil
   for _, wt in ipairs(worktrees) do
-    local entry = state[wt.path]
-    if not entry or entry.open ~= false then
-      table.insert(open_paths, wt.path)
-      if wt.path == cwd then current_idx = #open_paths end
-    end
+    table.insert(paths, wt.path)
+    if wt.path == cwd then current_idx = #paths end
   end
-  return open_paths, current_idx
+  return paths, current_idx
 end
 
---- Switch to the next open worktree (wraps around).
+--- Switch to the next worktree (wraps around).
 function M.next()
   M.setup()
-  local paths, idx = open_worktree_list()
+  local paths, idx = worktree_path_list()
   if not idx or #paths <= 1 then return end
   local next_idx = (idx % #paths) + 1
   M.switch_to(paths[next_idx])
 end
 
---- Switch to the previous open worktree (wraps around).
+--- Switch to the previous worktree (wraps around).
 function M.prev()
   M.setup()
-  local paths, idx = open_worktree_list()
+  local paths, idx = worktree_path_list()
   if not idx or #paths <= 1 then return end
   local prev_idx = ((idx - 2) % #paths) + 1
   M.switch_to(paths[prev_idx])
 end
 
---- Cycle forward to the next open worktree with needs_attention status.
+--- Cycle forward to the next worktree with needs_attention status.
 --- Wraps around. No-op if no worktree needs attention.
 function M.next_attention()
   M.setup()
-  local worktrees = list_worktrees()
-  local cwd = tab_cwd()
+  local paths, current_idx = worktree_path_list()
 
-  -- Build ordered list of open worktree paths
-  local open_paths = {}
-  local current_idx = nil
-  for _, wt in ipairs(worktrees) do
-    local entry = state[wt.path]
-    if not entry or entry.open ~= false then
-      table.insert(open_paths, wt.path)
-      if wt.path == cwd then current_idx = #open_paths end
-    end
-  end
-
-  if not current_idx or #open_paths == 0 then return end
+  if not current_idx or #paths == 0 then return end
 
   -- Search forward from current+1, wrapping around
-  for offset = 1, #open_paths - 1 do
-    local i = ((current_idx - 1 + offset) % #open_paths) + 1
-    local path = open_paths[i]
+  for offset = 1, #paths - 1 do
+    local i = ((current_idx - 1 + offset) % #paths) + 1
+    local path = paths[i]
     local entry = state[path]
     if entry and entry.status == "needs_attention" then
       M.switch_to(path)
@@ -1043,8 +946,7 @@ prompt_branch = function(callback)
 end
 
 --- Open the worktree picker.
---- Shows all worktrees (open and closed). Closed worktrees are dimmed.
---- Selecting a worktree switches to it (reopening if closed).
+--- Shows all worktrees. Selecting a worktree switches to it.
 function M.pick()
   M.setup()
 
@@ -1101,7 +1003,7 @@ end
 ------------------------------------------------------------------------
 
 --- Return tabline-style entries for all worktrees.
---- Each entry has: branch, status, current (bool), open (bool).
+--- Each entry has: branch, status, current (bool).
 --- Accepts an optional worktree list override for testing.
 --- @param worktrees? neovia.WorktreeEntry[]
 --- @return neovia.TablineEntry[]
@@ -1113,7 +1015,6 @@ function M.get_entries(worktrees)
 
   for _, wt in ipairs(worktrees) do
     local entry = state[wt.path]
-    local is_open = entry == nil or entry.open ~= false
     local pr_info = ok_pr and pr_mod.get(wt.branch) or nil
     -- Use the snapshotted branch from state (stable across rebases);
     -- fall back to the live git branch for worktrees not yet in state.
@@ -1123,7 +1024,6 @@ function M.get_entries(worktrees)
       path = wt.path,
       status = entry and entry.status or "unknown",
       current = wt.path == cwd,
-      open = is_open,
       pr = pr_info,
     })
   end
@@ -1217,7 +1117,6 @@ M._internal = {
       branch = "main",
       pending_permissions = {},
       buffer_paths = {},
-      open = true,
       session_id = nil,
       model_state = nil,
     }, overrides or {})

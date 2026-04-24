@@ -205,7 +205,7 @@ describe("build", function()
 
   it("renders a single current entry with NeoviaWtSel highlight", function()
     local result = tabline.build({
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
     })
     assert.is_truthy(result:find("main"))
     assert.is_truthy(result:find("%%#NeoviaWtSel#"))
@@ -214,8 +214,8 @@ describe("build", function()
 
   it("renders non-current entries with NeoviaWt highlight", function()
     local entries = {
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
     }
     local result = tabline.build(entries)
     assert.is_truthy(result:find("%%#NeoviaWt#"))
@@ -223,8 +223,8 @@ describe("build", function()
 
   it("includes powerline separator", function()
     local entries = {
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
     }
     local result = tabline.build(entries)
     assert.is_truthy(result:find("\u{e0b0}", 1, true))
@@ -232,8 +232,8 @@ describe("build", function()
 
   it("uses transitional highlights between entries", function()
     local entries = {
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
     }
     local result = tabline.build(entries)
     assert.is_truthy(result:find("NeoviaWtSel_to_wt", 1, true))
@@ -242,26 +242,17 @@ describe("build", function()
 
   it("wraps non-current entries with click handler", function()
     local entries = {
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
     }
     local result = tabline.build(entries)
     assert.is_truthy(result:find("@NeoviaWorktreeSwitch@"))
     assert.is_truthy(result:find("%%T"))
   end)
 
-  it("hides closed worktrees", function()
-    local entries = {
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "closed", status = "unknown", current = false, open = false, path = "/proj/closed" },
-    }
-    local result = tabline.build(entries)
-    assert.is_falsy(result:find("closed"))
-  end)
-
   it("shows alert icon for needs_attention", function()
     local entries = {
-      { branch = "attn", status = "needs_attention", current = true, open = true, path = "/proj/attn" },
+      { branch = "attn", status = "needs_attention", current = true, path = "/proj/attn" },
     }
     local result = tabline.build(entries)
     assert.is_truthy(result:find("󰀦", 1, true))
@@ -269,7 +260,7 @@ describe("build", function()
 
   it("shows braille spinner for responding", function()
     local entries = {
-      { branch = "busy", status = "responding", current = true, open = true, path = "/proj/busy" },
+      { branch = "busy", status = "responding", current = true, path = "/proj/busy" },
     }
     local result = tabline.build(entries)
     local braille = { "⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾" }
@@ -282,7 +273,7 @@ describe("build", function()
 
   it("prefixes branch with PR icon when pr field is set", function()
     local entries = {
-      { branch = "feat", status = "idle", current = true, open = true, path = "/proj/feat",
+      { branch = "feat", status = "idle", current = true, path = "/proj/feat",
         pr = { state = "open", number = 42, url = "" } },
     }
     local result = tabline.build(entries)
@@ -291,9 +282,9 @@ describe("build", function()
 
   it("registers click paths for non-current entries", function()
     local entries = {
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
-      { branch = "attn", status = "needs_attention", current = false, open = true, path = "/proj/attn" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
+      { branch = "attn", status = "needs_attention", current = false, path = "/proj/attn" },
     }
     tabline.build(entries)
     local click_paths = I.get_click_paths()
@@ -305,8 +296,8 @@ describe("build", function()
 
   it("resets click paths on each call", function()
     local entries = {
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
     }
     tabline.build(entries)
     assert.equals(1, vim.tbl_count(I.get_click_paths()))
@@ -325,8 +316,8 @@ describe("handle_tabline_click", function()
     tabline.set_click_handler(function(path) switched_to = path end)
 
     tabline.build({
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
     })
 
     I.handle_tabline_click(1)
@@ -338,7 +329,7 @@ describe("handle_tabline_click", function()
     local switched_to = nil
     tabline.set_click_handler(function(path) switched_to = path end)
     tabline.build({
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
     })
     I.handle_tabline_click(999)
     assert.is_nil(switched_to)
@@ -357,8 +348,8 @@ describe("build_picker_entries", function()
       { path = "/proj/feat", branch = "feat-a" },
     }
     local state = {
-      ["/proj/main"] = { status = "idle", open = true },
-      ["/proj/feat"] = { status = "responding", open = true },
+      ["/proj/main"] = { status = "idle" },
+      ["/proj/feat"] = { status = "responding" },
     }
     local entries, paths = tabline.build_picker_entries(worktrees, "/proj/main", state)
     assert.equals(2, #entries)
@@ -373,78 +364,14 @@ describe("build_picker_entries", function()
       { path = "/proj/feat", branch = "feat-a" },
     }
     local state = {
-      ["/proj/main"] = { status = "idle", open = true },
-      ["/proj/feat"] = { status = "responding", open = true },
+      ["/proj/main"] = { status = "idle" },
+      ["/proj/feat"] = { status = "responding" },
     }
     local entries, _ = tabline.build_picker_entries(worktrees, "/proj/main", state)
     local stripped = entries[1]:gsub("\27%[[%d;]*m", "")
     assert.is_truthy(stripped:find("%*"))
   end)
 
-  it("shows [closed] for closed worktrees", function()
-    local worktrees = {
-      { path = "/proj/main", branch = "main" },
-      { path = "/proj/closed", branch = "closed-one" },
-    }
-    local state = {
-      ["/proj/main"] = { status = "idle", open = true },
-      ["/proj/closed"] = { status = "unknown", open = false },
-    }
-    local entries, _ = tabline.build_picker_entries(worktrees, "/proj/main", state)
-    local stripped = entries[2]:gsub("\27%[[%d;]*m", "")
-    assert.is_truthy(stripped:find("%[closed%]"))
-  end)
-end)
-
-------------------------------------------------------------------------
--- build_close_candidates
-------------------------------------------------------------------------
-
-describe("build_close_candidates", function()
-  it("excludes main worktree (first entry)", function()
-    local worktrees = {
-      { path = "/proj/main", branch = "main", bare = false },
-      { path = "/proj/feat", branch = "feat", bare = false },
-    }
-    local state = {
-      ["/proj/main"] = { open = true },
-      ["/proj/feat"] = { open = true },
-    }
-    local candidates, _ = tabline.build_close_candidates(worktrees, "/proj/main", state)
-    assert.equals(1, #candidates)
-    assert.is_truthy(candidates[1]:find("feat"))
-  end)
-
-  it("excludes closed worktrees", function()
-    local worktrees = {
-      { path = "/proj/main", branch = "main", bare = false },
-      { path = "/proj/feat", branch = "feat", bare = false },
-      { path = "/proj/closed", branch = "closed", bare = false },
-    }
-    local state = {
-      ["/proj/main"] = { open = true },
-      ["/proj/feat"] = { open = true },
-      ["/proj/closed"] = { open = false },
-    }
-    local candidates, _ = tabline.build_close_candidates(worktrees, "/proj/main", state)
-    assert.equals(1, #candidates)
-  end)
-
-  it("returns lookup table from line to worktree entry", function()
-    local worktrees = {
-      { path = "/proj/main", branch = "main", bare = false },
-      { path = "/proj/feat", branch = "feat", bare = false },
-    }
-    local state = {
-      ["/proj/main"] = { open = true },
-      ["/proj/feat"] = { open = true },
-    }
-    local candidates, line_to_wt = tabline.build_close_candidates(worktrees, "/proj/main", state)
-    assert.equals(1, #candidates)
-    local entry = line_to_wt[candidates[1]]
-    assert.is_not_nil(entry)
-    assert.equals("/proj/feat", entry.path)
-  end)
 end)
 
 ------------------------------------------------------------------------
@@ -454,8 +381,8 @@ end)
 describe("reset", function()
   it("clears click paths", function()
     tabline.build({
-      { branch = "main", status = "idle", current = true, open = true, path = "/proj/main" },
-      { branch = "feat", status = "idle", current = false, open = true, path = "/proj/feat" },
+      { branch = "main", status = "idle", current = true, path = "/proj/main" },
+      { branch = "feat", status = "idle", current = false, path = "/proj/feat" },
     })
     assert.is_true(vim.tbl_count(I.get_click_paths()) > 0)
     I.reset()

@@ -16,7 +16,6 @@ local function make_entry(overrides)
     branch = "main",
     pending_permissions = {},
     buffer_paths = {},
-    open = true,
     subscription = nil,
     session_id = nil,
   }, overrides or {})

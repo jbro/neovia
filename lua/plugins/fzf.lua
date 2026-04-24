@@ -16,8 +16,6 @@ return {
       { "<leader>wc", function() require("neovia.worktree").create() end, desc = "Create worktree" },
       { "<leader>wC", function() require("neovia.worktree").create({ from_current = true }) end, desc = "Create from current" },
       { "<leader>wf", function() require("neovia.worktree").create({ fork = true }) end, desc = "Fork worktree" },
-      { "<leader>wq", function() require("neovia.worktree").close_picker() end, desc = "Close worktree" },
-      { "<leader>wQ", function() require("neovia.worktree").close() end, desc = "Close current worktree" },
       { "<leader>wd", function() require("neovia.worktree").delete() end, desc = "Delete worktree" },
       { "<leader>wD", function() require("neovia.worktree").delete_current() end, desc = "Delete current worktree" },
       { "<leader>wn", function() require("neovia.worktree").next() end, desc = "Next worktree" },

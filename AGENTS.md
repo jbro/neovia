@@ -60,14 +60,14 @@ Run this checklist after every implementation, before considering work done.
 These rules define what neovia is. They guide design and implementation decisions.
 
 - Optimized for an AI-driven coding workflow: OpenCode writes project code, the user reviews, navigates, and orchestrates. Plugin choices follow from this.
-- One opencode server per git repo, running as an independent process that survives Neovim restarts. `neovia.zsh` starts the server before Neovim; state (port, PID) persists in `stdpath("state")/server/<hash>/`. The plugin connects via `config.server.url` + `port` instead of spawning. Server management keymaps live under `<leader>oS` (status, restart, shutdown, redraw).
+- One opencode server per git repo, running as an independent process that survives Neovim restarts. `neovia.zsh` starts the server before Neovim; state (port, PID) persists in `stdpath("state")/server/<hash>/`. The plugin connects via `config.server.url` + `port` instead of spawning. Server management keymaps live under `<leader>oS` (status, restart, shutdown).
 - Worktree switching uses `tcd` to scope all plugins to that directory.
 - Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. opencode.nvim detects the directory change and swaps sessions automatically. Background sessions keep running server-side.
-- Worktree lifecycle: `<leader>wc` (create from main), `<leader>wC` (create from current HEAD), `<leader>wf` (fork: branch from current HEAD + fork opencode session), `<leader>ww` (switch picker), `<leader>wn` (next), `<leader>wp` (previous), `<leader>wa` (next needing attention), `<leader>wq` (close picker), `<leader>wQ` (close current), `<leader>wd` (delete picker), `<leader>wD` (delete current). Pickers use fzf-lua; current-worktree shortcuts act directly. Session forking bridges context across worktrees.
+- Worktree lifecycle: `<leader>wc` (create from main), `<leader>wC` (create from current HEAD), `<leader>wf` (fork: branch from current HEAD + fork opencode session), `<leader>ww` (switch picker), `<leader>wn` (next), `<leader>wp` (previous), `<leader>wa` (next needing attention), `<leader>wd` (delete picker), `<leader>wD` (delete current). Pickers use fzf-lua; current-worktree shortcuts act directly. Session forking bridges context across worktrees.
 - netrw is disabled. Neo-tree is the sole file navigator (always visible, far left). The code window shows a per-worktree scratch buffer when no file is open. Layout: neo-tree (left) | code/scratch (centre) | opencode (right).
 - Scratch buffer: per-worktree persistent markdown notes. Storage: `stdpath("state")/scratch/<sha256(dir)>.md`. Listed, exempt from read-only mode, saved on BufLeave. Scratch buffers are excluded from `buffer_paths` (managed separately from file buffers).
-- Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, tells neo-tree the new root, and relists saved buffers (or opens scratch on first visit). Closing saves and wipes scratch, wipes file buffers, and tears down SSE but keeps the git worktree on disk. Deleting also removes scratch storage from disk. Tombstone sessions ensure reused paths start clean.
-- Lualine tabline shows open worktree branches with status indicators. Current branch highlighted. Closed worktrees are hidden from the tabline (reopen via `<leader>ww`). Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
+- Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, tells neo-tree the new root, and relists saved buffers (or opens scratch on first visit). Deleting wipes buffers, tears down SSE, removes scratch storage from disk, and removes the git worktree. Tombstone sessions ensure reused paths start clean.
+- Lualine tabline shows worktree branches with status indicators. Current branch highlighted. Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
 
 ## Decision Log
 
@@ -135,7 +135,7 @@ wires it into lualine config and defines highlight groups.
 detached so Neovim restarts are instant and non-disruptive. State
 (port, PID) persists on disk; the plugin connects via `server.url` +
 `port` in attach mode (`auto_kill = false`). `<leader>oS` provides
-server management (status `s`, restart `r`, shutdown `q`, redraw `d`).
+server management (status `s`, restart `r`, shutdown `q`).
 The worktree module's `OpencodeEvent:server.connected` autocmd is
 repeating (not `once`) so server restarts trigger SSE re-subscription.
 

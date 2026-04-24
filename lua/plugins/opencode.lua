@@ -45,8 +45,24 @@ return {
         },
         keymap = {
           editor = {
-            -- Disable close; toggle_focus is sufficient for switching panes
-            ["<leader>oq"] = false,
+            -- Disable actions that conflict with neovia's fixed layout
+            ["<leader>oq"] = false,  -- close (always visible)
+            ["<leader>oi"] = false,  -- open input (use og to toggle focus)
+            ["<leader>oI"] = false,  -- open input new session (use on)
+            ["<leader>oo"] = false,  -- open output (always visible)
+            ["<leader>ot"] = false,  -- toggle focus (use og)
+            ["<leader>oz"] = false,  -- zoom (breaks fixed layout)
+            ["<leader>ox"] = false,  -- swap position (breaks fixed layout)
+            ["<leader>od"] = false,  -- diff open (use git)
+            ["<leader>o]"] = false,  -- diff next (use git)
+            ["<leader>o["] = false,  -- diff prev (use git)
+            ["<leader>oc"] = false,  -- diff close (use git)
+            ["<leader>ora"] = false, -- revert all last prompt (use git)
+            ["<leader>ort"] = false, -- revert this last prompt (use git)
+            ["<leader>orA"] = false, -- revert all (use git)
+            ["<leader>orT"] = false, -- revert this (use git)
+            ["<leader>orr"] = false, -- restore file snapshot (use git)
+            ["<leader>orR"] = false, -- restore all snapshots (use git)
             ["<leader>og"] = { "toggle_focus", desc = "Toggle OpenCode focus" },
             ["<leader>on"] = { "open_input_new_session", desc = "New session" },
           },
