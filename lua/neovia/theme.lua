@@ -16,6 +16,10 @@ local initialised = false
 -- Pure helpers
 ------------------------------------------------------------------------
 
+local ok_fs, fs = pcall(require, "neovia.fs")
+local write_file = ok_fs and fs.write_file or function() end
+local read_file = ok_fs and fs.read_file or function() return nil end
+
 --- Return the path to the state file.
 --- @return string
 local function state_path()
@@ -28,15 +32,19 @@ local function save()
   local dir = vim.fn.fnamemodify(path, ":h")
   vim.fn.mkdir(dir, "p")
   local content = string.format("return { background = %q }\n", vim.o.background)
-  vim.fn.writefile(vim.split(content, "\n", { plain = true }), path)
+  write_file(path, content)
 end
 
 --- Load saved state from disk.
 --- @return { background: string }|nil
 local function load()
   local path = state_path()
-  if vim.fn.filereadable(path) ~= 1 then return nil end
-  local ok, result = pcall(dofile, path)
+  local raw = read_file(path)
+  if not raw then return nil end
+  -- Evaluate the Lua content to get the table
+  local chunk, err = loadstring(raw)
+  if not chunk then return nil end
+  local ok, result = pcall(chunk)
   if ok and type(result) == "table" then return result end
   return nil
 end
@@ -68,88 +76,6 @@ function M.apply()
 end
 
 ------------------------------------------------------------------------
--- Highlight helpers
-------------------------------------------------------------------------
-
---- Extract bg color from a highlight group.
---- @param name string
---- @return integer|nil
-local function hl_bg(name)
-  local hl = vim.api.nvim_get_hl(0, { name = name, link = false })
-  return hl and hl.bg
-end
-
---- Extract fg color from a highlight group.
---- @param name string
---- @return integer|nil
-local function hl_fg(name)
-  local hl = vim.api.nvim_get_hl(0, { name = name, link = false })
-  return hl and hl.fg
-end
-
-------------------------------------------------------------------------
--- Worktree highlight definitions
-------------------------------------------------------------------------
-
---- Status indicator colours (authoritative source).
---- Used by define_worktree_highlights() and consumed by worktree.lua
---- via M.status_colors.
---- @type table<string, string>
-local status_colors = {
-  idle = "#9ece6a",
-  responding = "#e0af68",
-  needs_attention = "#f7768e",
-  unknown = "#565f89",
-}
-
---- Define highlight groups used by the worktree tabline.
---- Derives tab backgrounds from lualine's theme groups so colors follow
---- the colorscheme. Creates transitional groups for powerline separators.
-local function define_worktree_highlights()
-  -- Status indicator colors (used inline in tabline for the icon)
-  vim.api.nvim_set_hl(0, "NeoviaWt_idle", { fg = status_colors.idle })
-  vim.api.nvim_set_hl(0, "NeoviaWt_responding", { fg = status_colors.responding })
-  vim.api.nvim_set_hl(0, "NeoviaWt_needs_attention", { fg = status_colors.needs_attention })
-  vim.api.nvim_set_hl(0, "NeoviaWt_unknown", { fg = status_colors.unknown })
-
-  -- Tab background groups: selected = lualine_a style, non-selected = lualine_b style.
-  local a_bg = hl_bg("lualine_a_normal")
-  local a_fg = hl_fg("lualine_a_normal")
-  local b_bg = hl_bg("lualine_b_normal")
-  local b_fg = hl_fg("lualine_b_normal")
-  local fill_bg = hl_bg("TabLineFill") or hl_bg("lualine_c_normal")
-
-  if a_bg then
-    vim.api.nvim_set_hl(0, "NeoviaWtSel", { bg = a_bg, fg = a_fg, bold = true })
-  end
-  if b_bg then
-    vim.api.nvim_set_hl(0, "NeoviaWt", { bg = b_bg, fg = b_fg })
-  end
-
-  -- Transitional highlights for powerline separators (fg = left bg, bg = right bg).
-  if a_bg and b_bg then
-    vim.api.nvim_set_hl(0, "NeoviaWtSel_to_wt", { fg = a_bg, bg = b_bg })
-    vim.api.nvim_set_hl(0, "NeoviaWt_to_sel", { fg = b_bg, bg = a_bg })
-  end
-  if a_bg and fill_bg then
-    vim.api.nvim_set_hl(0, "NeoviaWtSel_to_fill", { fg = a_bg, bg = fill_bg })
-  end
-  if b_bg and fill_bg then
-    vim.api.nvim_set_hl(0, "NeoviaWt_to_fill", { fg = b_bg, bg = fill_bg })
-  end
-  if b_bg and a_bg then
-    vim.api.nvim_set_hl(0, "NeoviaWt_to_wt", { fg = b_bg, bg = b_bg })
-  end
-end
-
---- Public: define worktree highlights (called by ui.lua after lualine loads).
-M.define_worktree_highlights = define_worktree_highlights
-
---- Public: status indicator colours (authoritative source).
---- @type table<string, string>
-M.status_colors = status_colors
-
-------------------------------------------------------------------------
 -- Test internals
 ------------------------------------------------------------------------
 
@@ -157,9 +83,6 @@ M._internal = {
   state_path = state_path,
   save = save,
   load = load,
-  hl_bg = hl_bg,
-  hl_fg = hl_fg,
-  define_worktree_highlights = define_worktree_highlights,
 
   --- Reset module state (for test isolation).
   reset = function()

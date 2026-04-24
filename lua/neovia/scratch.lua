@@ -21,6 +21,8 @@ local state_dir = ""
 -- Pure helpers
 ------------------------------------------------------------------------
 
+local ok_fs, fs = pcall(require, "neovia.fs")
+
 --- Compute the on-disk storage path for a worktree's scratch file.
 --- @param dir string  Absolute worktree path.
 --- @param sdir string  State directory root.
@@ -36,13 +38,22 @@ end
 local function save_to_disk(path, lines)
   local parent = vim.fn.fnamemodify(path, ":h")
   vim.fn.mkdir(parent, "p")
-  vim.fn.writefile(lines, path)
+  if ok_fs then
+    fs.write_file(path, table.concat(lines, "\n"))
+  else
+    vim.fn.writefile(lines, path)
+  end
 end
 
 --- Read lines from a file. Returns nil if the file does not exist.
 --- @param path string
 --- @return string[]?
 local function load_from_disk(path)
+  if ok_fs then
+    local raw = fs.read_file(path)
+    if not raw then return nil end
+    return vim.split(raw, "\n", { plain = true })
+  end
   if vim.fn.filereadable(path) ~= 1 then return nil end
   return vim.fn.readfile(path)
 end

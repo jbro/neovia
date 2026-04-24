@@ -4,9 +4,9 @@
 -- builds the tabline string (including click handlers); this file
 -- wires it into lualine config and defines highlight groups.
 
---- Define worktree highlights, delegating to the theme module.
+--- Define worktree highlights, delegating to the tabline module.
 local function define_wt_highlights()
-  local ok, t = pcall(require, "neovia.theme")
+  local ok, t = pcall(require, "neovia.tabline")
   if ok then t.define_worktree_highlights() end
 end
 

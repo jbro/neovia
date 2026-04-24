@@ -150,19 +150,26 @@ function M.get(branch)
   return pr_cache[branch]
 end
 
+--- Resolve the current branch name via git.
+--- @return string|nil
+local function current_branch()
+  local result = vim.system(
+    { "git", "rev-parse", "--abbrev-ref", "HEAD" },
+    { text = true }
+  ):wait()
+  if result.code ~= 0 then return nil end
+  local branch = vim.trim(result.stdout or "")
+  if branch == "" or branch == "HEAD" then return nil end
+  return branch
+end
+
 --- Return PR info for the current worktree's branch, or nil.
---- Uses the worktree module to find the current branch.
+--- Resolves the branch directly via `git rev-parse`.
 --- @return neovia.PrInfo|nil
 function M.get_current()
-  local ok, wt = pcall(require, "neovia.worktree")
-  if not ok then return nil end
-  local status = wt.get_current_status()
-  if not status then return nil end
-  -- get_current_status doesn't expose branch; look it up from state
-  local cwd = vim.fn.getcwd(-1, 0)
-  local st = wt._internal.get_state()[cwd]
-  if not st then return nil end
-  return pr_cache[st.branch]
+  local branch = current_branch()
+  if not branch then return nil end
+  return pr_cache[branch]
 end
 
 --- Return the icon string for a PR state.
@@ -202,6 +209,7 @@ M._internal = {
   pr_icon = pr_icon,
   build_gh_cmd = build_gh_cmd,
   fetch_pr_status = fetch_pr_status,
+  current_branch = current_branch,
 
   --- Get the current cache (for assertions).
   --- @return table<string, neovia.PrInfo>

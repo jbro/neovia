@@ -31,8 +31,8 @@ local initialised = false
 local dir_timer = nil
 
 -- Forward declarations
-local ensure_subscriptions, list_worktrees, unsubscribe_all, build_picker_entries
-local build_close_candidates, find_current_worktree, prompt_branch
+local ensure_subscriptions, list_worktrees, unsubscribe_all
+local find_current_worktree, prompt_branch
 
 ------------------------------------------------------------------------
 -- Directory helpers
@@ -47,84 +47,19 @@ local function tab_cwd()
 end
 
 ------------------------------------------------------------------------
--- Buffer helpers
+-- Buffer helpers (delegated to neovia.session)
 ------------------------------------------------------------------------
 
---- Collect file paths of all listed, normal file buffers.
---- Excludes scratch buffers (they are managed separately).
---- @return string[]
-local function collect_file_buffers()
-  local paths = {}
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(buf)
-      and vim.bo[buf].buflisted
-      and vim.bo[buf].buftype == ""
-      and not vim.b[buf].neovia_scratch
-    then
-      local name = vim.api.nvim_buf_get_name(buf)
-      if name ~= "" then
-        table.insert(paths, name)
-      end
-    end
-  end
-  return paths
-end
-
---- Unlist all listed file buffers (buftype="" and buflisted).
-local function unlist_file_buffers()
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(buf)
-      and vim.bo[buf].buflisted
-      and vim.bo[buf].buftype == ""
-    then
-      local name = vim.api.nvim_buf_get_name(buf)
-      if name ~= "" then
-        -- Stop treesitter before unlisting to prevent async fold callbacks
-        -- from firing on a stale buffer (Neovim _foldupdate race, #35312).
-        vim.treesitter.stop(buf)
-        vim.bo[buf].buflisted = false
-      end
-    end
-  end
-end
-
---- Re-list buffers by path. If a buffer for the path already exists
---- (unlisted), re-list it. Otherwise create a new buffer.
---- @param paths string[]
---- @return integer[] bufs  Buffer handles of restored buffers.
-local function relist_buffers(paths)
-  local bufs = {}
-  for _, path in ipairs(paths) do
-    -- Check if a buffer with this name already exists
-    local existing = vim.fn.bufnr(path)
-    if existing ~= -1 and vim.api.nvim_buf_is_valid(existing) then
-      vim.bo[existing].buflisted = true
-      table.insert(bufs, existing)
-    else
-      -- Create a new buffer for this path
-      local buf = vim.fn.bufadd(path)
-      vim.bo[buf].buflisted = true
-      table.insert(bufs, buf)
-    end
-  end
-  return bufs
-end
-
---- Wipeout all unlisted buffers matching saved paths for a directory.
---- Also clears buffer_paths from state.
---- @param dir string
+local ok_session, session_mod = pcall(require, "neovia.session")
+local collect_file_buffers = ok_session and session_mod.collect_file_buffers or function() return {} end
+local unlist_file_buffers = ok_session and session_mod.unlist_file_buffers or function() end
+local relist_buffers = ok_session and session_mod.relist_buffers or function() return {} end
 local function wipeout_buffers_for_dir(dir)
   local entry = state[dir]
   if not entry then return end
-
-  for _, path in ipairs(entry.buffer_paths) do
-    local bufnr = vim.fn.bufnr(path)
-    if bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
-      vim.api.nvim_buf_delete(bufnr, { force = true })
-    end
+  if ok_session then
+    session_mod.wipeout_buffers_for_dir(entry)
   end
-
-  entry.buffer_paths = {}
 end
 
 ------------------------------------------------------------------------
@@ -188,16 +123,6 @@ list_worktrees = function()
   return vim.tbl_filter(function(e) return not e.bare end, entries)
 end
 
---- ANSI colour codes for status.
---- @type table<string, string>
-local status_ansi = {
-  idle = "\27[32m",            -- green
-  responding = "\27[33m",      -- yellow
-  needs_attention = "\27[31m", -- red
-  unknown = "\27[90m",         -- dim grey
-}
-local ansi_reset = "\27[0m"
-
 --- Derive the worktree directory path for a new branch.
 --- Convention:
 ---   - If all linked worktrees are siblings of the main worktree → sibling.
@@ -252,28 +177,6 @@ local function derive_worktree_path(worktrees, branch)
 
   -- Mixed or nested: fall back to .worktrees/
   return main_path .. "/.worktrees/" .. safe_branch
-end
-
---- Status icons (text, no emoji per AGENTS.md).
---- @type table<string, string>
-local status_icon = {
-  idle = "[idle]",
-  responding = "[working]",
-  needs_attention = "[needs you]",
-  unknown = "[idle]",
-}
-
---- Build a lualine-compatible color table from the theme's authoritative colours.
---- Uses pcall because the theme module may not be loaded yet during early require.
---- @param status string
---- @return table
-local function status_hl_for(status)
-  local ok, theme = pcall(require, "neovia.theme")
-  if ok and theme.status_colors then
-    return { fg = theme.status_colors[status] or theme.status_colors.unknown }
-  end
-  -- Fallback: neutral dim grey if theme is unavailable
-  return { fg = "#565f89" }
 end
 
 ------------------------------------------------------------------------
@@ -333,97 +236,40 @@ local function apply_event(entry, event)
   return entry.status ~= prev
 end
 
---- Process a single SSE event and update state for the given directory.
---- @param dir string
---- @param event table  decoded JSON event {type, properties}
-local function process_event(dir, event)
-  local entry = state[dir]
-  if not entry then return end
+------------------------------------------------------------------------
+-- SSE delegation (delegated to neovia.sse)
+------------------------------------------------------------------------
 
-  if apply_event(entry, event) then
-    vim.cmd.redrawstatus()
-    vim.cmd.redrawtabline()
+local ok_sse, sse_mod = pcall(require, "neovia.sse")
+
+--- SSE event callback: process event using apply_event.
+--- @param dir string
+--- @param event table
+local function process_event(dir, event)
+  if ok_sse then
+    sse_mod.process_event(state, dir, event, apply_event)
   end
 end
 
 --- Subscribe to SSE events for a single worktree directory.
 --- @param dir string
 local function subscribe_one(dir)
-  local oc_state = package.loaded["opencode.state"]
-  if not oc_state then return end
-
-  local api_client = oc_state.api_client
-  if not api_client then return end
-
-  local handle = api_client:subscribe_to_events(dir, function(event)
-    vim.schedule(function()
-      process_event(dir, event)
-    end)
-  end)
-
-  if state[dir] then
-    state[dir].subscription = handle
+  if ok_sse then
+    sse_mod.subscribe_one(state, dir, process_event)
   end
 end
 
 --- Ensure every known worktree has an active SSE subscription.
---- Called on pick() open, DirChanged, and initial setup.
 ensure_subscriptions = function()
-  local worktrees = list_worktrees()
-  if #worktrees == 0 then return end
-
-  -- Track which dirs are still valid
-  local valid = {} --- @type table<string, boolean>
-
-  for _, wt in ipairs(worktrees) do
-    valid[wt.path] = true
-
-    if not state[wt.path] then
-      state[wt.path] = {
-        status = "unknown",
-        branch = wt.branch,
-        pending_permissions = {},
-        buffer_paths = {},
-        open = true,
-      }
-    end
-
-    -- Subscribe if open and not already subscribed (or if subscription died)
-    local entry = state[wt.path]
-    if entry.open then
-      local alive = entry.subscription
-        and type(entry.subscription.is_running) == "function"
-        and entry.subscription.is_running()
-      if not alive then
-        -- Clean up dead handle
-        if entry.subscription and type(entry.subscription.shutdown) == "function" then
-          pcall(entry.subscription.shutdown)
-        end
-        entry.subscription = nil
-        subscribe_one(wt.path)
-      end
-    end
-  end
-
-  -- Remove state for worktrees that no longer exist on disk
-  -- (but keep closed worktrees -- they are intentionally retained)
-  for dir, entry in pairs(state) do
-    if not valid[dir] and entry.open then
-      if entry.subscription and type(entry.subscription.shutdown) == "function" then
-        pcall(entry.subscription.shutdown)
-      end
-      state[dir] = nil
-    end
+  if ok_sse then
+    sse_mod.ensure_subscriptions(state, list_worktrees(), process_event)
   end
 end
 
 --- Shut down all SSE subscriptions.
 unsubscribe_all = function()
-  for dir, entry in pairs(state) do
-    if entry.subscription and type(entry.subscription.shutdown) == "function" then
-      pcall(entry.subscription.shutdown)
-    end
-    entry.subscription = nil
+  if ok_sse then
+    sse_mod.unsubscribe_all(state)
   end
 end
 
@@ -487,14 +333,21 @@ function M.setup()
     end
   end, 2000)
 
-  -- Global click handler for worktree tabline entries.
-  -- Defined as VimScript so it is callable from %@FuncName@ statusline syntax.
-  -- function! is idempotent (overwrites on reload).
-  vim.cmd([[
-    function! NeoviaWorktreeSwitch(id, clicks, button, modifiers)
-      call v:lua.require('neovia.worktree')._internal.handle_tabline_click(a:id)
-    endfunction
-  ]])
+  -- Wire the tabline click handler to switch worktrees.
+  local ok_tl, tl = pcall(require, "neovia.tabline")
+  if ok_tl then
+    tl.set_click_handler(function(path)
+      M.switch_to(path)
+    end)
+
+    -- Global VimScript click handler for %@FuncName@ statusline syntax.
+    -- function! is idempotent (overwrites on reload).
+    vim.cmd([[
+      function! NeoviaWorktreeSwitch(id, clicks, button, modifiers)
+        call v:lua.require('neovia.tabline')._internal.handle_tabline_click(a:id)
+      endfunction
+    ]])
+  end
 end
 
 ------------------------------------------------------------------------
@@ -777,7 +630,12 @@ function M.create_from(opts)
   end
 
   local cwd = tab_cwd()
-  local entries, paths = build_picker_entries(worktrees, cwd)
+  local ok_tl, tl = pcall(require, "neovia.tabline")
+  if not ok_tl then
+    vim.notify("worktree.create_from: tabline module not available", vim.log.levels.ERROR)
+    return
+  end
+  local entries, paths = tl.build_picker_entries(worktrees, cwd, state)
 
   fzf.fzf_exec(entries, {
     prompt = "Source worktree> ",
@@ -1077,7 +935,9 @@ function M.close_picker()
 
   local worktrees = list_worktrees()
   local cwd = tab_cwd()
-  local candidates, line_to_wt = build_close_candidates(worktrees, cwd)
+  local ok_tl, tl = pcall(require, "neovia.tabline")
+  if not ok_tl then return end
+  local candidates, line_to_wt = tl.build_close_candidates(worktrees, cwd, state)
 
   if #candidates == 0 then
     vim.notify("No open worktrees to close", vim.log.levels.WARN)
@@ -1203,68 +1063,6 @@ end
 -- Picker
 ------------------------------------------------------------------------
 
---- Build parallel arrays of display entries and worktree paths for the picker.
---- Entries contain ANSI colour codes for fzf-lua display. Paths are indexed
---- in parallel so lookup works by position (not by string key, since fzf-lua
---- strips ANSI codes from the returned selection).
---- @param worktrees neovia.WorktreeEntry[]
---- @param cwd string  Current working directory (for marking the current entry).
---- @return string[] entries  ANSI-coloured display strings.
---- @return string[] paths    Parallel array of absolute worktree paths.
-build_picker_entries = function(worktrees, cwd)
-  local dim = status_ansi.unknown -- dim grey for closed worktrees
-
-  local entries = {} --- @type string[]
-  local paths = {} --- @type string[]
-  for _, wt in ipairs(worktrees) do
-    local entry = state[wt.path] or { status = "unknown", open = true }
-    local is_open = entry.open ~= false
-    local colour = is_open and (status_ansi[entry.status] or status_ansi.unknown) or dim
-    local icon = is_open and (status_icon[entry.status] or "") or "[closed]"
-    local marker = wt.path == cwd and " *" or ""
-
-    -- Show path relative to home for readability
-    local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
-
-    local line = string.format(
-      "%s%-20s%s  %s%s%s%s",
-      colour, wt.branch, ansi_reset,
-      is_open and display_path or (dim .. display_path .. ansi_reset),
-      marker,
-      icon ~= "" and ("  " .. colour .. icon .. ansi_reset) or "",
-      ""
-    )
-    table.insert(entries, line)
-    table.insert(paths, wt.path)
-  end
-
-  return entries, paths
-end
-
---- Build candidate list for the close picker.
---- Returns open, non-bare, non-main worktrees as display lines plus a lookup table.
---- @param worktrees neovia.WorktreeEntry[]
---- @param cwd string
---- @return string[] candidates  Display lines for fzf-lua.
---- @return table<string, neovia.WorktreeEntry> line_to_wt  Lookup from line to entry.
-build_close_candidates = function(worktrees, cwd)
-  local candidates = {}
-  local line_to_wt = {}
-  for i, wt in ipairs(worktrees) do
-    if i > 1 and not wt.bare then -- skip main worktree (first entry)
-      local entry = state[wt.path] or { open = true }
-      if entry.open ~= false then
-        local marker = wt.path == cwd and " (current)" or ""
-        local display_path = wt.path:gsub("^" .. vim.pesc(vim.env.HOME), "~")
-        local line = string.format("%s  %s%s", wt.branch, display_path, marker)
-        table.insert(candidates, line)
-        line_to_wt[line] = wt
-      end
-    end
-  end
-  return candidates, line_to_wt
-end
-
 --- Find the worktree entry matching a given directory.
 --- @param worktrees neovia.WorktreeEntry[]
 --- @param cwd string
@@ -1311,7 +1109,9 @@ function M.pick()
   end
 
   local cwd = tab_cwd()
-  local entries, paths = build_picker_entries(worktrees, cwd)
+  local ok_tl, tl = pcall(require, "neovia.tabline")
+  if not ok_tl then return end
+  local entries, paths = tl.build_picker_entries(worktrees, cwd, state)
 
   fzf.fzf_exec(entries, {
     prompt = "Worktrees> ",
@@ -1384,138 +1184,25 @@ function M.get_current_status()
   local entry = state[cwd]
   if not entry then return nil end
 
+  local ok_tl, tl = pcall(require, "neovia.tabline")
+  local si = ok_tl and tl._internal.status_icon or {}
+  local hl_fn = ok_tl and tl._internal.status_hl_for or function() return { fg = "#565f89" } end
+
   return {
     status = entry.status,
-    icon = status_icon[entry.status] or status_icon.unknown,
-    hl = status_hl_for(entry.status),
+    icon = (si[entry.status] or si.unknown or "[idle]"),
+    hl = hl_fn(entry.status),
   }
 end
 
---- @class neovia.TablineEntry
---- @field branch string
---- @field path string
---- @field status string
---- @field current boolean
---- @field open boolean
---- @field pr neovia.PrInfo|nil
-
-------------------------------------------------------------------------
--- Tabline builder
-------------------------------------------------------------------------
-
---- Spinner frames for "responding" status in the tabline.
---- Full braille block with rotating gap -- vertically centered in the cell.
-local spinner_frames = { "⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾" }
-local spinner_idx = 0
-
---- Return a single-character status indicator.
---- Every status returns an icon so the tabline width stays stable.
---- @param s string  One of "idle", "responding", "needs_attention", "unknown".
---- @return string
-local function status_char(s)
-  if s == "needs_attention" then return "󰀦" end
-  if s == "responding" then
-    spinner_idx = (spinner_idx % #spinner_frames) + 1
-    return spinner_frames[spinner_idx]
-  end
-  if s == "unknown" then return "󰇘" end
-  return "󰒲" -- idle: sleep/zzz
-end
-
---- Worktree paths indexed by tabline click ID.
---- Populated on each render so the click handler can resolve the target.
---- @type table<integer, string>
-local tabline_click_paths = {}
-local tabline_click_next_id = 0
-
---- Lua-side click handler; called from the VimScript shim registered in setup().
---- @param id integer  Click ID (index into tabline_click_paths)
-local function handle_tabline_click(id)
-  local path = tabline_click_paths[id]
-  if not path then return end
-  M.switch_to(path)
-end
-
---- Build the worktree tabline statusline string.
---- Non-current entries are clickable (switch worktree on click).
---- Returns "" when there are no visible (open) entries.
---- @param entries neovia.TablineEntry[]
---- @return string
---- Transitional highlight group name for a powerline separator between two sections.
---- @param from string  "sel", "wt", or "fill"
---- @param to string    "sel", "wt", or "fill"
---- @return string
-local function trans_hl(from, to)
-  if from == "sel" and to == "wt"   then return "NeoviaWtSel_to_wt" end
-  if from == "sel" and to == "fill" then return "NeoviaWtSel_to_fill" end
-  if from == "wt"  and to == "sel"  then return "NeoviaWt_to_sel" end
-  if from == "wt"  and to == "wt"   then return "NeoviaWt_to_wt" end
-  if from == "wt"  and to == "fill" then return "NeoviaWt_to_fill" end
-  return "TabLineFill"
-end
-
-local function build_tabline(entries)
-  if #entries == 0 then return "" end
-
-  -- Reset click ID table each render cycle.
-  tabline_click_paths = {}
-  tabline_click_next_id = 0
-
-  -- Collect visible entries first so we can look ahead for transitions.
-  local visible = {}
-  for _, e in ipairs(entries) do
-    if e.open then table.insert(visible, e) end
-  end
-  if #visible == 0 then return "" end
-
-  local parts = {}
-  for i, e in ipairs(visible) do
-    local char = status_char(e.status)
-    local kind = e.current and "sel" or "wt"
-    local bg_hl = e.current and "NeoviaWtSel" or "NeoviaWt"
-
-    -- Build the tab content: [PR icon] branch name + status icon, all on bg_hl.
-    -- Only the selected tab gets colored status icons; non-selected
-    -- tabs keep the tab's own fg so they don't stand out.
-    local pr_prefix = ""
-    if e.pr then
-      local ok_pr, pr_mod = pcall(require, "neovia.pr")
-      if ok_pr then
-        local icon = pr_mod.icon(e.pr.state)
-        if icon ~= "" then
-          pr_prefix = icon .. " "
-        end
-      end
-    end
-    local content = "%#" .. bg_hl .. "# " .. pr_prefix .. e.branch .. " " .. char .. " "
-
-    -- Wrap non-current entries with click handler.
-    if not e.current then
-      tabline_click_next_id = tabline_click_next_id + 1
-      local click_id = tabline_click_next_id
-      tabline_click_paths[click_id] = e.path
-      content = "%" .. click_id .. "@NeoviaWorktreeSwitch@" .. content .. "%T"
-    end
-
-    -- Powerline separator  after this entry.
-    local next_kind = "fill"
-    if i < #visible then
-      next_kind = visible[i + 1].current and "sel" or "wt"
-    end
-    local sep = "%#" .. trans_hl(kind, next_kind) .. "#\u{e0b0}"
-
-    table.insert(parts, content .. sep)
-  end
-
-  return table.concat(parts) .. "%#TabLineFill#"
-end
-
 --- Build the worktree tabline string from current state.
---- Convenience wrapper that calls get_entries() then build_tabline().
+--- Convenience wrapper that calls get_entries() then tabline.build().
 --- @param worktrees? neovia.WorktreeEntry[]
 --- @return string
 function M.build_tabline(worktrees)
-  return build_tabline(M.get_entries(worktrees))
+  local ok_tl, tl = pcall(require, "neovia.tabline")
+  if not ok_tl then return "" end
+  return tl.build(M.get_entries(worktrees))
 end
 
 ------------------------------------------------------------------------
@@ -1537,18 +1224,10 @@ M._internal = {
   unsubscribe_all = unsubscribe_all,
   resolve_git_common_dir = resolve_git_common_dir,
   list_worktrees = list_worktrees,
-  build_picker_entries = build_picker_entries,
-  build_close_candidates = build_close_candidates,
   find_current_worktree = find_current_worktree,
   prompt_branch = prompt_branch,
   tab_cwd = tab_cwd,
   save_session_id = save_session_id,
-  build_tabline = build_tabline,
-  handle_tabline_click = handle_tabline_click,
-
-  --- Get the current click path lookup table (for assertions).
-  --- @return table<integer, string>
-  get_click_paths = function() return tabline_click_paths end,
 
   --- Get the raw state table (for assertions).
   --- @return table<string, neovia.WorktreeState>

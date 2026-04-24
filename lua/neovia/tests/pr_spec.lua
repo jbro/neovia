@@ -281,19 +281,25 @@ end)
 ------------------------------------------------------------------------
 
 describe("get_current", function()
+  local orig_system
+
+  before_each(function()
+    orig_system = vim.system
+  end)
+
   after_each(function()
+    vim.system = orig_system
     I.reset()
   end)
 
-  it("returns PR info for the current worktree branch", function()
-    -- Set up worktree state for the current cwd
-    local ok, wt = pcall(require, "neovia.worktree")
-    if not ok then return end
-
-    local cwd = vim.fn.getcwd(-1, 0)
-    wt._internal.set_state({
-      [cwd] = wt._internal.make_entry({ branch = "my-branch", status = "idle" }),
-    })
+  it("returns PR info for the current branch via git", function()
+    -- Mock git rev-parse to return a known branch
+    vim.system = function(cmd, opts, on_exit)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        return { wait = function() return { code = 0, stdout = "my-branch\n" } end }
+      end
+      return orig_system(cmd, opts, on_exit)
+    end
 
     I.set_cache({
       ["my-branch"] = { state = "open", number = 55, url = "https://example.com/55" },
@@ -303,15 +309,16 @@ describe("get_current", function()
     assert.is_not_nil(info)
     assert.equals("open", info.state)
     assert.equals(55, info.number)
-
-    wt._internal.set_state({})
   end)
 
-  it("returns nil when no worktree state exists", function()
-    local ok, wt = pcall(require, "neovia.worktree")
-    if not ok then return end
+  it("returns nil when git rev-parse fails", function()
+    vim.system = function(cmd, opts, on_exit)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        return { wait = function() return { code = 1, stdout = "" } end }
+      end
+      return orig_system(cmd, opts, on_exit)
+    end
 
-    wt._internal.set_state({})
     I.set_cache({
       ["any-branch"] = { state = "open", number = 1, url = "" },
     })
@@ -321,20 +328,79 @@ describe("get_current", function()
   end)
 
   it("returns nil when branch has no PR", function()
-    local ok, wt = pcall(require, "neovia.worktree")
-    if not ok then return end
-
-    local cwd = vim.fn.getcwd(-1, 0)
-    wt._internal.set_state({
-      [cwd] = wt._internal.make_entry({ branch = "no-pr-branch", status = "idle" }),
-    })
+    vim.system = function(cmd, opts, on_exit)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        return { wait = function() return { code = 0, stdout = "no-pr-branch\n" } end }
+      end
+      return orig_system(cmd, opts, on_exit)
+    end
 
     I.set_cache({})
 
     local info = pr.get_current()
     assert.is_nil(info)
+  end)
 
-    wt._internal.set_state({})
+  it("returns nil for detached HEAD", function()
+    vim.system = function(cmd, opts, on_exit)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        return { wait = function() return { code = 0, stdout = "HEAD\n" } end }
+      end
+      return orig_system(cmd, opts, on_exit)
+    end
+
+    I.set_cache({
+      ["HEAD"] = { state = "open", number = 1, url = "" },
+    })
+
+    local info = pr.get_current()
+    assert.is_nil(info)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- current_branch (internal: git rev-parse wrapper)
+------------------------------------------------------------------------
+
+describe("current_branch", function()
+  local orig_system
+
+  before_each(function()
+    orig_system = vim.system
+  end)
+
+  after_each(function()
+    vim.system = orig_system
+  end)
+
+  it("returns the branch name from git", function()
+    vim.system = function(cmd)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        return { wait = function() return { code = 0, stdout = "feat-x\n" } end }
+      end
+      return orig_system(cmd)
+    end
+    assert.equals("feat-x", I.current_branch())
+  end)
+
+  it("returns nil when git fails", function()
+    vim.system = function(cmd)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        return { wait = function() return { code = 128, stdout = "" } end }
+      end
+      return orig_system(cmd)
+    end
+    assert.is_nil(I.current_branch())
+  end)
+
+  it("returns nil for detached HEAD", function()
+    vim.system = function(cmd)
+      if cmd[1] == "git" and cmd[2] == "rev-parse" then
+        return { wait = function() return { code = 0, stdout = "HEAD\n" } end }
+      end
+      return orig_system(cmd)
+    end
+    assert.is_nil(I.current_branch())
   end)
 end)
 
