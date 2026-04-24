@@ -1193,17 +1193,17 @@ describe("switch_to", function()
       [dir_b] = I.make_entry({ branch = "feat" }),
     })
 
-    local neotree_cmd = nil
+    local neotree_dir_cmd = nil
     local orig_cmd = vim.cmd
     local mt = getmetatable(vim.cmd) or {}
-    -- Wrap vim.cmd to capture Neotree calls
+    -- Wrap vim.cmd to capture the Neotree dir= call specifically
     vim.cmd = setmetatable({}, {
       __call = function(_, c)
-        if type(c) == "string" and c:find("Neotree") then
-          neotree_cmd = c
-        else
-          orig_cmd(c)
+        if type(c) == "string" and c:find("Neotree") and c:find("dir=") then
+          neotree_dir_cmd = c
         end
+        -- Always delegate so ensure_layout etc. still work
+        orig_cmd(c)
       end,
       __index = function(_, k)
         return mt.__index and mt.__index(vim.cmd, k) or rawget(orig_cmd, k)
@@ -1212,10 +1212,15 @@ describe("switch_to", function()
 
     wt.switch_to(dir_b)
 
+    -- Neotree dir= is deferred via vim.schedule; flush pending callbacks
+    -- (keep the wrapper active during the wait so the scheduled call is captured)
+    vim.wait(200, function() return neotree_dir_cmd ~= nil end)
+
+    -- Restore vim.cmd before assertions so cleanup works
     vim.cmd = orig_cmd
 
-    assert.is_truthy(neotree_cmd, "expected a Neotree command after switch")
-    assert.is_truthy(neotree_cmd:find("dir="), "expected Neotree dir= argument")
+    assert.is_truthy(neotree_dir_cmd, "expected a Neotree dir= command after switch")
+    assert.is_truthy(neotree_dir_cmd:find("dir="), "expected Neotree dir= argument")
   end)
 
   it("does not include scratch buffer in saved buffer_paths", function()
