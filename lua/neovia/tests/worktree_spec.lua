@@ -1832,80 +1832,7 @@ describe("_create_continue", function()
     assert.is_truthy(captured_fork_path:find("fork%-from%-other"))
   end)
 
-  it("forks the source worktree's session when source_path is provided", function()
-    vim.system = function()
-      return { wait = function() return { code = 0, stdout = "" } end }
-    end
-
-    local orig_schedule = vim.schedule
-    vim.schedule = function(fn) fn() end
-
-    -- Track which session ID is forked
-    local forked_session_id = nil
-    local fork_promise = {}
-    fork_promise.and_then = function(self, cb)
-      -- Simulate successful fork
-      cb({ id = "forked-from-source" })
-      return self
-    end
-    fork_promise.catch = function(self) return self end
-
-    -- list_sessions returns sessions for the source directory
-    local list_promise = {}
-    list_promise.and_then = function(self, cb)
-      -- Return a session list for the source worktree
-      cb({
-        { id = "source-session-99", parentID = nil, time = { updated = 100 } },
-        { id = "source-child", parentID = "source-session-99", time = { updated = 200 } },
-      })
-      return self
-    end
-    list_promise.catch = function(self) return self end
-
-    local list_sessions_dir = nil
-    package.loaded["opencode.state"] = {
-      api_client = {
-        list_sessions = function(_, dir)
-          list_sessions_dir = dir
-          return list_promise
-        end,
-        fork_session = function(_, session_id)
-          forked_session_id = session_id
-          return fork_promise
-        end,
-      },
-      active_session = { id = "current-session-1" },
-      context = { set_current_cwd = function() end },
-    }
-
-    package.loaded["opencode.core"] = {
-      switch_session = function() end,
-    }
-
-    I.set_state({
-      [orig_cwd] = I.make_entry({ branch = "main" }),
-    })
-
-    local orig_switch = wt.switch_to
-    wt.switch_to = function() end
-
-    -- source_path = "/some/source" triggers list_sessions lookup
-    wt._create_continue("fork-from-source", true, "source-branch", "/some/source")
-
-    wt.switch_to = orig_switch
-    vim.schedule = orig_schedule
-    package.loaded["opencode.state"] = nil
-    package.loaded["opencode.core"] = nil
-
-    -- list_sessions should be called with the source path
-    assert.equals("/some/source", list_sessions_dir,
-      "list_sessions should query the source worktree directory")
-    -- fork_session should use the source's parent session, not the active one
-    assert.equals("source-session-99", forked_session_id,
-      "fork_session should use the source worktree's session, not the active one")
-  end)
-
-  it("forks the active session when no source_path is provided", function()
+  it("forks the active session", function()
     vim.system = function()
       return { wait = function() return { code = 0, stdout = "" } end }
     end
@@ -1932,14 +1859,13 @@ describe("_create_continue", function()
     local orig_switch = wt.switch_to
     wt.switch_to = function() end
 
-    -- No source_path (4th arg) -- this is the wf case
     wt._create_continue("fork-current", true)
 
     wt.switch_to = orig_switch
     package.loaded["opencode.state"] = nil
 
     assert.equals("current-session-1", forked_session_id,
-      "fork_session should use the current active session when no source_path")
+      "fork_session should use the current active session")
   end)
 end)
 
@@ -1948,85 +1874,101 @@ end)
 ------------------------------------------------------------------------
 
 describe("create", function()
+  local orig_list, orig_continue, orig_input
+
+  before_each(function()
+    I.reset()
+    I.set_initialised(true)
+    orig_list = I.list_worktrees
+    orig_continue = wt._create_continue
+    orig_input = vim.ui.input
+  end)
+
+  after_each(function()
+    I.list_worktrees = orig_list
+    wt._create_continue = orig_continue
+    vim.ui.input = orig_input
+    I.reset()
+  end)
+
   it("is a function on the public API", function()
     assert.is_function(wt.create)
+  end)
+
+  it("passes the main branch as start_point by default", function()
+    I.list_worktrees = function()
+      return {
+        { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+        { path = "/proj/.worktrees/feat", branch = "feat", head = "def5678", bare = false },
+      }
+    end
+
+    local captured_args = nil
+    wt._create_continue = function(branch, do_fork, start_point)
+      captured_args = { branch = branch, do_fork = do_fork, start_point = start_point }
+    end
+
+    vim.ui.input = function(opts, cb) cb("new-feature") end
+
+    wt.create()
+
+    assert.is_not_nil(captured_args, "_create_continue should have been called")
+    assert.equals("new-feature", captured_args.branch)
+    assert.is_false(captured_args.do_fork)
+    assert.equals("main", captured_args.start_point,
+      "create() should pass the main branch as start_point")
+  end)
+
+  it("does not pass start_point when from_current is true", function()
+    I.list_worktrees = function()
+      return {
+        { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      }
+    end
+
+    local captured_args = nil
+    wt._create_continue = function(branch, do_fork, start_point)
+      captured_args = { branch = branch, do_fork = do_fork, start_point = start_point }
+    end
+
+    vim.ui.input = function(opts, cb) cb("from-current") end
+
+    wt.create({ from_current = true })
+
+    assert.is_not_nil(captured_args, "_create_continue should have been called")
+    assert.equals("from-current", captured_args.branch)
+    assert.is_false(captured_args.do_fork)
+    assert.is_nil(captured_args.start_point,
+      "from_current should not pass start_point (branches from current HEAD)")
+  end)
+
+  it("does not pass start_point when fork is true", function()
+    I.list_worktrees = function()
+      return {
+        { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      }
+    end
+
+    local captured_args = nil
+    wt._create_continue = function(branch, do_fork, start_point)
+      captured_args = { branch = branch, do_fork = do_fork, start_point = start_point }
+    end
+
+    vim.ui.input = function(opts, cb) cb("fork-branch") end
+
+    wt.create({ fork = true })
+
+    assert.is_not_nil(captured_args, "_create_continue should have been called")
+    assert.equals("fork-branch", captured_args.branch)
+    assert.is_true(captured_args.do_fork)
+    assert.is_nil(captured_args.start_point,
+      "fork should not pass start_point (branches from current HEAD)")
   end)
 end)
 
 describe("create_from", function()
-  it("is a function on the public API", function()
-    assert.is_function(wt.create_from)
-  end)
-
-  it("errors when fzf-lua is not available", function()
-    I.set_initialised(true)
-    package.loaded["fzf-lua"] = nil
-
-    local notified_msg = nil
-    local orig_notify = vim.notify
-    vim.notify = function(msg, level)
-      if level == vim.log.levels.ERROR then notified_msg = msg end
-    end
-
-    wt.create_from({ fork = true })
-
-    vim.notify = orig_notify
-    I.reset()
-    assert.is_not_nil(notified_msg)
-    assert.is_truthy(notified_msg:find("fzf%-lua not available"))
-  end)
-
-  it("defers prompt_branch after fzf picker closes", function()
-    I.set_initialised(true)
-
-    -- Set up state so build_picker_entries works
-    I.set_state({
-      ["/proj/main"] = I.make_entry({ branch = "main", status = "idle" }),
-    })
-
-    -- Mock fzf-lua to invoke the default action immediately (simulating pick)
-    local prompt_called_synchronously = false
-    package.loaded["fzf-lua"] = {
-      fzf_exec = function(entries, opts)
-        -- Simulate selecting the first entry
-        if opts.actions and opts.actions["default"] then
-          -- Strip ANSI from entries[1] to simulate what fzf returns
-          local stripped = entries[1]:gsub("\27%[[%d;]*m", "")
-          opts.actions["default"]({ stripped })
-        end
-        -- Check if prompt_branch was called during the fzf action (synchronously)
-        -- If so, prompt_called_synchronously will be true
-      end,
-    }
-
-    -- Mock list_worktrees
-    local orig_list = I.list_worktrees
-    I.list_worktrees = function()
-      return {
-        { path = "/proj/main", branch = "main", head = "abc", bare = false },
-      }
-    end
-
-    -- Track whether vim.ui.input is called synchronously vs deferred
-    local input_called = false
-    local orig_input = vim.ui.input
-    vim.ui.input = function(opts, cb)
-      input_called = true
-    end
-
-    wt.create_from({ fork = false })
-
-    -- prompt_branch should NOT have been called yet (it should be deferred)
-    assert.is_false(input_called, "prompt_branch should be deferred via vim.schedule, not called synchronously inside fzf action")
-
-    -- Flush deferred callbacks (vim.defer_fn uses a short delay)
-    vim.wait(200, function() return input_called end)
-    assert.is_true(input_called, "prompt_branch should run after deferred callback")
-
-    vim.ui.input = orig_input
-    I.list_worktrees = orig_list
-    package.loaded["fzf-lua"] = nil
-    I.reset()
+  it("is not on the public API (removed: use wC for create-from-source)", function()
+    assert.is_nil(wt.create_from)
   end)
 end)
 

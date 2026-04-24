@@ -159,6 +159,24 @@ describe("get_or_create", function()
     cleanup_buf(buf)
   end)
 
+  it("is not locked by mode module's FileType autocmd", function()
+    -- When mode.setup() is active, setting filetype fires a FileType autocmd
+    -- that calls apply_lock(). The scratch buffer must have buftype and
+    -- neovia_scratch set BEFORE filetype so that should_lock() exempts it.
+    local mode = require("neovia.mode")
+    mode._internal.reset()
+    mode.setup({ auto_relock = true })
+
+    local buf = scratch.get_or_create("/tmp/wt_mode_lock", test_state_dir)
+
+    -- Scratch buffer must remain modifiable and not readonly.
+    assert.is_true(vim.bo[buf].modifiable, "scratch buffer should be modifiable")
+    assert.is_false(vim.bo[buf].readonly, "scratch buffer should not be readonly")
+
+    cleanup_buf(buf)
+    mode._internal.reset()
+  end)
+
   it("creates a buffer for the same dir if previous was wiped", function()
     local buf1 = scratch.get_or_create("/tmp/wt1", test_state_dir)
     vim.api.nvim_buf_delete(buf1, { force = true })

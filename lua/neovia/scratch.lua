@@ -96,8 +96,11 @@ function M.get_or_create(dir, sdir)
   end
 
   -- Configure buffer.
-  vim.bo[buf].filetype = "markdown"
+  -- Set scratch flag BEFORE filetype: setting filetype fires the FileType
+  -- autocmd, and mode.apply_lock() must see this exemption to avoid locking
+  -- the scratch buffer.
   vim.b[buf].neovia_scratch = true
+  vim.bo[buf].filetype = "markdown"
 
   -- Mark as not modified (content matches disk or is empty).
   vim.bo[buf].modified = false

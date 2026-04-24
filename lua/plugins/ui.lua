@@ -139,6 +139,7 @@ return {
     "folke/which-key.nvim",
     event = "VeryLazy",
     opts = {
+      sort = { "local", "order", "alphanum", "group", "mod" },
       triggers = {
         { "<leader>", mode = { "n", "v" } },
       },

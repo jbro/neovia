@@ -656,95 +656,36 @@ end
 -- Public API: worktree create / delete
 ------------------------------------------------------------------------
 
---- Create a new worktree from the current HEAD.
---- @param opts? { fork?: boolean }
+--- Create a new worktree.
+--- By default branches from the main branch. Pass `from_current = true` to
+--- branch from the current HEAD, or `fork = true` to branch from current HEAD
+--- and fork the opencode session.
+--- @param opts? { fork?: boolean, from_current?: boolean }
 function M.create(opts)
   M.setup()
   opts = opts or {}
   local do_fork = opts.fork or false
+  local from_current = opts.from_current or false
+
+  -- Resolve start_point: branch from main unless forking or from_current.
+  local start_point = nil
+  if not do_fork and not from_current then
+    local worktrees = list_worktrees()
+    if #worktrees > 0 then
+      start_point = worktrees[1].branch
+    end
+  end
 
   prompt_branch(function(branch)
-    M._create_continue(branch, do_fork)
+    M._create_continue(branch, do_fork, start_point)
   end)
-end
-
---- Create a new worktree from a picked source worktree.
---- Shows an fzf picker to select the source, then prompts for a branch name.
---- @param opts? { fork?: boolean }
-function M.create_from(opts)
-  M.setup()
-  opts = opts or {}
-  local do_fork = opts.fork or false
-
-  local ok, fzf = pcall(require, "fzf-lua")
-  if not ok then
-    vim.notify("worktree.create_from: fzf-lua not available", vim.log.levels.ERROR)
-    return
-  end
-
-  local worktrees = list_worktrees()
-  if #worktrees == 0 then
-    vim.notify("No git worktrees found", vim.log.levels.WARN)
-    return
-  end
-
-  local cwd = tab_cwd()
-  local ok_tl, tl = pcall(require, "neovia.tabline")
-  if not ok_tl then
-    vim.notify("worktree.create_from: tabline module not available", vim.log.levels.ERROR)
-    return
-  end
-  local entries, paths = tl.build_picker_entries(worktrees, cwd, state)
-
-  fzf.fzf_exec(entries, {
-    prompt = "Source worktree> ",
-    fzf_opts = {
-      ["--ansi"] = "",
-      ["--no-multi"] = "",
-    },
-    actions = {
-      ["default"] = function(selected)
-        if not selected or #selected == 0 then return end
-        -- Resolve path from selection
-        local source_path = nil
-        local source_branch = nil
-        for i, e in ipairs(entries) do
-          local stripped = e:gsub("\27%[[%d;]*m", "")
-          if stripped == selected[1] then
-            source_path = paths[i]
-            break
-          end
-        end
-        if not source_path then return end
-
-        -- Find the branch name for the source
-        for _, w in ipairs(worktrees) do
-          if w.path == source_path then
-            source_branch = w.branch
-            break
-          end
-        end
-
-        -- Defer so fzf-lua's window teardown completes before dressing opens.
-        -- A short delay is needed because vim.schedule alone can fire before
-        -- fzf-lua finishes restoring focus, which prevents dressing from
-        -- gaining focus and entering insert mode.
-        vim.defer_fn(function()
-          prompt_branch(function(branch)
-            M._create_continue(branch, do_fork, source_branch, source_path)
-          end)
-        end, 50)
-      end,
-    },
-  })
 end
 
 --- Internal: continue worktree creation after prompts.
 --- @param branch string
 --- @param do_fork boolean
 --- @param start_point? string  Git ref to base the new branch on (default: HEAD).
---- @param source_path? string  Absolute path to the source worktree (for fork-from).
-function M._create_continue(branch, do_fork, start_point, source_path)
+function M._create_continue(branch, do_fork, start_point)
   local worktrees = list_worktrees()
   local path = derive_worktree_path(worktrees, branch)
 
@@ -765,81 +706,36 @@ function M._create_continue(branch, do_fork, start_point, source_path)
   -- worktree's opencode session exists before DirChanged fires.
   if do_fork then
     local oc_state = package.loaded["opencode.state"]
-    if oc_state and oc_state.api_client then
-      -- Resolve which session to fork:
-      -- - wf (no source_path): fork the current active session
-      -- - wF (source_path): find the source worktree's session via API
-      local function do_fork_session(session_id)
-        local fork_data = vim.empty_dict()
-        oc_state.api_client
-          :fork_session(session_id, fork_data, path)
-          :and_then(function(response)
-            vim.schedule(function()
-              if response and response.id then
-                -- Pre-set opencode's current_cwd so the DirChanged autocmd
-                -- (fired by tcd inside switch_to) short-circuits and does
-                -- not race with switch_session.
-                if oc_state.context and oc_state.context.set_current_cwd then
-                  oc_state.context.set_current_cwd(path)
-                end
-                M.switch_to(path)
-                vim.notify("Session forked for " .. branch, vim.log.levels.INFO)
-                local ok_core, core = pcall(require, "opencode.core")
-                if ok_core and core.switch_session then
-                  core.switch_session(response.id)
-                end
-              else
-                M.switch_to(path)
+    if oc_state and oc_state.api_client and oc_state.active_session then
+      local fork_data = vim.empty_dict()
+      oc_state.api_client
+        :fork_session(oc_state.active_session.id, fork_data, path)
+        :and_then(function(response)
+          vim.schedule(function()
+            if response and response.id then
+              -- Pre-set opencode's current_cwd so the DirChanged autocmd
+              -- (fired by tcd inside switch_to) short-circuits and does
+              -- not race with switch_session.
+              if oc_state.context and oc_state.context.set_current_cwd then
+                oc_state.context.set_current_cwd(path)
               end
-            end)
-          end)
-          :catch(function(err)
-            vim.schedule(function()
-              vim.notify("Session fork failed: " .. vim.inspect(err), vim.log.levels.WARN)
               M.switch_to(path)
-            end)
-          end)
-      end
-
-      if source_path then
-        -- Fork-from: look up the most recent session for the source worktree
-        oc_state.api_client
-          :list_sessions(source_path)
-          :and_then(function(sessions)
-            vim.schedule(function()
-              if not sessions or type(sessions) ~= "table" or #sessions == 0 then
-                vim.notify("No session found for source worktree", vim.log.levels.WARN)
-                M.switch_to(path)
-                return
+              vim.notify("Session forked for " .. branch, vim.log.levels.INFO)
+              local ok_core, core = pcall(require, "opencode.core")
+              if ok_core and core.switch_session then
+                core.switch_session(response.id)
               end
-              -- Sort by updated time descending, pick the most recent parent session
-              table.sort(sessions, function(a, b)
-                return a.time.updated > b.time.updated
-              end)
-              local target = nil
-              for _, s in ipairs(sessions) do
-                if s.parentID == nil then
-                  target = s
-                  break
-                end
-              end
-              -- Fall back to any session if no parent sessions exist
-              target = target or sessions[1]
-              do_fork_session(target.id)
-            end)
-          end)
-          :catch(function(err)
-            vim.schedule(function()
-              vim.notify("Failed to find source session: " .. vim.inspect(err), vim.log.levels.WARN)
+            else
               M.switch_to(path)
-            end)
+            end
           end)
-      elseif oc_state.active_session then
-        -- Fork current: use the active session directly
-        do_fork_session(oc_state.active_session.id)
-      else
-        M.switch_to(path)
-      end
+        end)
+        :catch(function(err)
+          vim.schedule(function()
+            vim.notify("Session fork failed: " .. vim.inspect(err), vim.log.levels.WARN)
+            M.switch_to(path)
+          end)
+        end)
       return
     end
   end
