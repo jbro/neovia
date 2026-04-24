@@ -124,6 +124,13 @@ describe("get_or_create", function()
     cleanup_buf(buf)
   end)
 
+  it("does not create a swap file", function()
+    local buf = scratch.get_or_create("/tmp/wt1", test_state_dir)
+    local swapname = vim.fn.swapname(buf)
+    assert.equals("", swapname, "scratch buffer should not have a swap file")
+    cleanup_buf(buf)
+  end)
+
   it("returns the same buffer on repeated calls for the same dir", function()
     local buf1 = scratch.get_or_create("/tmp/wt1", test_state_dir)
     local buf2 = scratch.get_or_create("/tmp/wt1", test_state_dir)

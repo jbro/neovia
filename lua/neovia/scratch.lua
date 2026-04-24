@@ -79,6 +79,12 @@ function M.get_or_create(dir, sdir)
   -- Create a new listed buffer.
   local buf = vim.api.nvim_create_buf(true, false)
 
+  -- Set buftype and disable swap BEFORE setting the name.
+  -- If the name is set first, Neovim creates a swap file for it;
+  -- a stale swap from a previous session then triggers E325.
+  vim.bo[buf].buftype = "acwrite"
+  vim.bo[buf].swapfile = false
+
   -- Set a virtual name so lualine and :ls show [scratch].
   vim.api.nvim_buf_set_name(buf, dir .. "/[scratch]")
 
@@ -91,7 +97,6 @@ function M.get_or_create(dir, sdir)
 
   -- Configure buffer.
   vim.bo[buf].filetype = "markdown"
-  vim.bo[buf].buftype = "acwrite"
   vim.b[buf].neovia_scratch = true
 
   -- Mark as not modified (content matches disk or is empty).
