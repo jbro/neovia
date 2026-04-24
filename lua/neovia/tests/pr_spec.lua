@@ -555,7 +555,7 @@ describe("setup", function()
     assert.equals(count1, call_count, "second setup should not make additional calls")
   end)
 
-  it("does not start timer when repo detection fails", function()
+  it("starts retry timer when repo detection fails", function()
     vim.system = function(cmd, opts, on_exit)
       if on_exit then
         on_exit({ code = 1, stdout = "" })
@@ -564,8 +564,95 @@ describe("setup", function()
       return { wait = function() return { code = 1, stdout = "" } end }
     end
 
+    -- Suppress vim.notify in test
+    local orig_notify = vim.notify
+    vim.notify = function() end
     pr.setup()
-    assert.is_nil(I.get_poll_timer())
+    vim.notify = orig_notify
+
+    assert.is_nil(I.get_poll_timer(), "poll timer should not start on failure")
+    assert.is_not_nil(I.get_retry_timer(), "retry timer should start on failure")
+  end)
+
+  it("notifies user when repo detection fails", function()
+    vim.system = function(cmd, opts, on_exit)
+      if on_exit then
+        on_exit({ code = 1, stdout = "" })
+        return
+      end
+      return { wait = function() return { code = 1, stdout = "" } end }
+    end
+
+    local notified_msg, notified_level
+    local orig_notify = vim.notify
+    vim.notify = function(msg, level)
+      notified_msg = msg
+      notified_level = level
+    end
+
+    pr.setup()
+    vim.notify = orig_notify
+
+    assert.is_not_nil(notified_msg, "should notify user")
+    assert.is_truthy(notified_msg:find("PR"), "message should mention PR")
+    assert.equals(vim.log.levels.WARN, notified_level)
+  end)
+
+  it("retry resolves repo and starts poll timer", function()
+    local resolve_count = 0
+    vim.system = function(cmd, opts, on_exit)
+      if on_exit then
+        on_exit({ code = 1, stdout = "" })
+        return
+      end
+      if cmd[1] == "gh" and cmd[2] == "repo" then
+        resolve_count = resolve_count + 1
+        -- Fail first time, succeed second time
+        if resolve_count == 1 then
+          return { wait = function() return { code = 1, stdout = "" } end }
+        else
+          return { wait = function() return { code = 0, stdout = "owner/repo\n" } end }
+        end
+      end
+      return { wait = function() return { code = 1, stdout = "" } end }
+    end
+
+    local orig_notify = vim.notify
+    vim.notify = function() end
+    pr.setup()
+    vim.notify = orig_notify
+
+    assert.is_not_nil(I.get_retry_timer(), "retry timer should exist")
+    assert.is_nil(I.get_poll_timer(), "poll timer should not exist yet")
+
+    -- Simulate retry callback firing
+    I.attempt_resolve()
+
+    assert.is_nil(I.get_retry_timer(), "retry timer should be stopped after success")
+    assert.is_not_nil(I.get_poll_timer(), "poll timer should start after successful resolve")
+    assert.equals("owner/repo", I.get_repo_nwo())
+  end)
+
+  it("retry keeps retrying while resolve fails", function()
+    vim.system = function(cmd, opts, on_exit)
+      if on_exit then
+        on_exit({ code = 1, stdout = "" })
+        return
+      end
+      return { wait = function() return { code = 1, stdout = "" } end }
+    end
+
+    local orig_notify = vim.notify
+    vim.notify = function() end
+    pr.setup()
+    vim.notify = orig_notify
+
+    -- Simulate retry callback - still fails
+    I.attempt_resolve()
+
+    assert.is_not_nil(I.get_retry_timer(), "retry timer should still be running")
+    assert.is_nil(I.get_poll_timer(), "poll timer should not start")
+    assert.is_nil(I.get_repo_nwo())
   end)
 
   it("starts poll timer when repo is detected", function()
@@ -611,6 +698,26 @@ describe("reset", function()
     I.set_repo_nwo("owner/repo")
     I.reset()
     assert.is_nil(I.get_repo_nwo())
+  end)
+
+  it("stops and closes retry timer", function()
+    vim.system = function(cmd, opts, on_exit)
+      if on_exit then
+        on_exit({ code = 1, stdout = "" })
+        return
+      end
+      return { wait = function() return { code = 1, stdout = "" } end }
+    end
+
+    local orig_notify = vim.notify
+    vim.notify = function() end
+    pr.setup()
+    vim.notify = orig_notify
+
+    assert.is_not_nil(I.get_retry_timer())
+
+    I.reset()
+    assert.is_nil(I.get_retry_timer(), "retry timer should be cleared on reset")
   end)
 
   it("stops and closes poll timer", function()

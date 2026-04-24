@@ -123,7 +123,14 @@ return {
           "diff",
           "diagnostics",
         },
-        lualine_c = { "filename" },
+        lualine_c = {
+          {
+            "filename",
+            cond = function()
+              return vim.bo.filetype ~= "neo-tree"
+            end,
+          },
+        },
         lualine_x = {
           { opencode_status, color = opencode_status_color },
           "filetype",

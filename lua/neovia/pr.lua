@@ -24,6 +24,10 @@ local initialised = false
 --- @type uv_timer_t|nil
 local poll_timer = nil
 
+--- Retry timer handle (retries resolve_repo_nwo on failure).
+--- @type uv_timer_t|nil
+local retry_timer = nil
+
 --- PR status icons (nerd font).
 --- @type table<string, string>
 local pr_icons = {
@@ -179,6 +183,37 @@ function M.icon(state)
   return pr_icon(state)
 end
 
+--- Stop and close a timer, returning nil.
+--- @param timer uv_timer_t|nil
+--- @return nil
+local function stop_timer(timer)
+  if not timer then return nil end
+  timer:stop()
+  if not timer:is_closing() then timer:close() end
+  return nil
+end
+
+--- Start the poll timer (normal operation after successful resolve).
+local function start_poll_timer()
+  poll_timer = vim.uv.new_timer()
+  poll_timer:start(60000, 60000, vim.schedule_wrap(function()
+    fetch_pr_status()
+  end))
+end
+
+--- Attempt to resolve repo_nwo. On success, stop retry timer,
+--- do first fetch, and start poll timer. On failure, no-op (retry
+--- timer keeps running).
+local function attempt_resolve()
+  repo_nwo = resolve_repo_nwo()
+  if not repo_nwo then return end
+
+  -- Success: stop retrying, start normal operation
+  retry_timer = stop_timer(retry_timer)
+  fetch_pr_status()
+  start_poll_timer()
+end
+
 --- Initialise the module. Idempotent.
 function M.setup()
   if initialised then return end
@@ -186,16 +221,18 @@ function M.setup()
 
   -- Resolve repo nwo (synchronous, runs once)
   repo_nwo = resolve_repo_nwo()
-  if not repo_nwo then return end
+  if not repo_nwo then
+    vim.notify("neovia: PR status unavailable (gh repo detection failed), retrying...", vim.log.levels.WARN)
+    retry_timer = vim.uv.new_timer()
+    retry_timer:start(10000, 10000, vim.schedule_wrap(attempt_resolve))
+    return
+  end
 
   -- Immediate first fetch
   fetch_pr_status()
 
   -- Start poll timer (60s interval)
-  poll_timer = vim.uv.new_timer()
-  poll_timer:start(60000, 60000, vim.schedule_wrap(function()
-    fetch_pr_status()
-  end))
+  start_poll_timer()
 end
 
 ------------------------------------------------------------------------
@@ -210,6 +247,7 @@ M._internal = {
   build_gh_cmd = build_gh_cmd,
   fetch_pr_status = fetch_pr_status,
   current_branch = current_branch,
+  attempt_resolve = attempt_resolve,
 
   --- Get the current cache (for assertions).
   --- @return table<string, neovia.PrInfo>
@@ -233,13 +271,13 @@ M._internal = {
   --- Get the poll timer (for assertions).
   get_poll_timer = function() return poll_timer end,
 
+  --- Get the retry timer (for assertions).
+  get_retry_timer = function() return retry_timer end,
+
   --- Reset module to uninitialised state.
   reset = function()
-    if poll_timer then
-      poll_timer:stop()
-      if not poll_timer:is_closing() then poll_timer:close() end
-      poll_timer = nil
-    end
+    poll_timer = stop_timer(poll_timer)
+    retry_timer = stop_timer(retry_timer)
     pr_cache = {}
     repo_nwo = nil
     initialised = false
