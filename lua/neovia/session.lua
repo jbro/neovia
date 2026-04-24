@@ -24,7 +24,11 @@ function M.collect_file_buffers()
 end
 
 --- Unlist all listed file buffers (buftype="" and buflisted).
+--- Suppresses autocmds during the bulk operation for performance.
 function M.unlist_file_buffers()
+  local saved_ei = vim.o.eventignore
+  vim.o.eventignore = "all"
+
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(buf)
       and vim.bo[buf].buflisted
@@ -39,13 +43,19 @@ function M.unlist_file_buffers()
       end
     end
   end
+
+  vim.o.eventignore = saved_ei
 end
 
 --- Re-list buffers by path. If a buffer for the path already exists
 --- (unlisted), re-list it. Otherwise create a new buffer.
+--- Suppresses autocmds during the bulk operation for performance.
 --- @param paths string[]
 --- @return integer[] bufs  Buffer handles of restored buffers.
 function M.relist_buffers(paths)
+  local saved_ei = vim.o.eventignore
+  vim.o.eventignore = "all"
+
   local bufs = {}
   for _, path in ipairs(paths) do
     local existing = vim.fn.bufnr(path)
@@ -58,6 +68,8 @@ function M.relist_buffers(paths)
       table.insert(bufs, buf)
     end
   end
+
+  vim.o.eventignore = saved_ei
   return bufs
 end
 

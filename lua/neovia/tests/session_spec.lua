@@ -105,6 +105,35 @@ describe("unlist_file_buffers", function()
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
+
+  it("restores eventignore after unlisting", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/sess_ei_unlist.lua")
+
+    vim.o.eventignore = ""
+    session.unlist_file_buffers()
+    assert.equals("", vim.o.eventignore)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("suppresses autocmds during unlisting", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/sess_ei_suppress.lua")
+
+    local autocmd_fired = false
+    local group = vim.api.nvim_create_augroup("sess_test_unlist_ei", { clear = true })
+    vim.api.nvim_create_autocmd("BufLeave", {
+      group = group,
+      callback = function() autocmd_fired = true end,
+    })
+
+    session.unlist_file_buffers()
+    assert.is_false(autocmd_fired)
+
+    vim.api.nvim_del_augroup_by_name("sess_test_unlist_ei")
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -133,6 +162,33 @@ describe("relist_buffers", function()
 
   it("returns empty for empty path list", function()
     assert.equals(0, #session.relist_buffers({}))
+  end)
+
+  it("restores eventignore after relisting", function()
+    vim.o.eventignore = ""
+    local restored = session.relist_buffers({ "/tmp/sess_ei_relist_" .. os.time() .. ".lua" })
+    assert.equals("", vim.o.eventignore)
+
+    for _, buf in ipairs(restored) do
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+  end)
+
+  it("suppresses autocmds during relisting", function()
+    local autocmd_fired = false
+    local group = vim.api.nvim_create_augroup("sess_test_relist_ei", { clear = true })
+    vim.api.nvim_create_autocmd("BufAdd", {
+      group = group,
+      callback = function() autocmd_fired = true end,
+    })
+
+    local restored = session.relist_buffers({ "/tmp/sess_ei_relist_supp_" .. os.time() .. ".lua" })
+    assert.is_false(autocmd_fired)
+
+    vim.api.nvim_del_augroup_by_name("sess_test_relist_ei")
+    for _, buf in ipairs(restored) do
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
   end)
 end)
 

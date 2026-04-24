@@ -546,20 +546,24 @@ function M.switch_to(dir)
     end
   end
 
-  -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly)
-  pcall(vim.cmd, "Neotree dir=" .. vim.fn.fnameescape(dir))
-
   -- Immediate tabline update so the current-worktree highlight is visible
   -- without waiting for the debounced DirChanged handler.
   vim.cmd.redrawtabline()
 
-  -- Deferred layout check: opencode.nvim's session swap is async, so if
-  -- it disrupts the output window, ensure_layout repairs it.
+  -- Defer neo-tree root update and layout check.  The Neotree dir= command
+  -- rescans the filesystem synchronously and is the most expensive single
+  -- call in the switch path.  Running it in vim.schedule moves it out of the
+  -- critical path so the UI feels instant.
   -- SSE re-subscribe for pending permissions/questions is handled by the
   -- on_session_loaded hook (see lua/plugins/opencode.lua) which fires
   -- after renderer.reset() and _render_full_session_data complete,
   -- guaranteeing that re-delivered events are not wiped.
-  vim.defer_fn(function()
+  vim.schedule(function()
+    -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly)
+    pcall(vim.cmd, "Neotree dir=" .. vim.fn.fnameescape(dir))
+
+    -- Layout check: opencode.nvim's session swap is async, so if
+    -- it disrupts the output window, ensure_layout repairs it.
     local ok, layout = pcall(require, "neovia.layout")
     if ok and layout._internal and layout._internal.ensure_layout then
       layout._internal.ensure_layout()
@@ -569,7 +573,7 @@ function M.switch_to(dir)
     -- settled.  set_model auto-clears variant (via a subscriber), so
     -- restore_model_state calls set_variant last.
     restore_model_state(dir)
-  end, 100)
+  end)
 
   vim.notify("Switched to " .. dir, vim.log.levels.INFO)
 end
