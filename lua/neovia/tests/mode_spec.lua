@@ -549,4 +549,36 @@ describe("M.toggle()", function()
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
+
+  it("toggles the code buffer when current buffer is a float (e.g. which-key)", function()
+    -- Simulate the which-key scenario: code buffer is in a normal window,
+    -- but a floating nofile buffer has focus when toggle() is called.
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.bo[code_buf].modifiable = false
+    vim.bo[code_buf].readonly = true
+    local code_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(code_win, code_buf)
+
+    -- Open a floating window (simulates which-key popup)
+    local float_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[float_buf].buftype = "nofile"
+    local float_win = vim.api.nvim_open_win(float_buf, true, {
+      relative = "editor", width = 10, height = 5, row = 0, col = 0,
+    })
+
+    -- Current buffer is the float, not the code buffer
+    assert.equals(float_buf, vim.api.nvim_get_current_buf())
+
+    mode.toggle()
+
+    -- The code buffer should have been unlocked, not the float
+    assert.is_true(vim.bo[code_buf].modifiable,
+      "code buffer should be unlocked")
+    assert.is_false(vim.bo[code_buf].readonly,
+      "code buffer should not be readonly")
+
+    vim.api.nvim_win_close(float_win, true)
+    vim.api.nvim_buf_delete(float_buf, { force = true })
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+  end)
 end)

@@ -1,5 +1,5 @@
 -- neovia mode module
--- Read-only mode: buffers open locked by default, toggle with <leader>u.
+-- Read-only mode: buffers open locked by default, toggle with <leader>bu.
 
 local M = {}
 
@@ -158,8 +158,27 @@ function M.setup(user_opts)
 end
 
 --- Toggle read-only mode on the current buffer.
+--- When called from a floating or special-buftype window (e.g. which-key
+--- popup), falls back to the code window's buffer so the toggle reaches
+--- the file the user is looking at.
 function M.toggle()
-  toggle(vim.api.nvim_get_current_buf())
+  local buf = vim.api.nvim_get_current_buf()
+  local info = {
+    buftype = vim.bo[buf].buftype,
+    filetype = vim.bo[buf].filetype,
+    neovia_scratch = vim.b[buf].neovia_scratch or false,
+  }
+  if not should_lock(info) then
+    -- Current buffer is special (float, nofile, etc.).  Try the code window.
+    local ok, nav = pcall(require, "neovia.navigate")
+    if ok then
+      local code_win = nav.find_code_win()
+      if code_win then
+        buf = vim.api.nvim_win_get_buf(code_win)
+      end
+    end
+  end
+  toggle(buf)
 end
 
 --- Check whether a buffer is currently locked.

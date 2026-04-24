@@ -105,6 +105,17 @@ function M.get_or_create(dir, sdir)
   -- Mark as not modified (content matches disk or is empty).
   vim.bo[buf].modified = false
 
+  -- Handle :w on this scratch buffer (buftype=acwrite requires BufWriteCmd).
+  -- Registered per-buffer so normal file writes are not intercepted.
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    group = vim.api.nvim_create_augroup("neovia_scratch", { clear = false }),
+    buffer = buf,
+    callback = function()
+      local d = buf_to_dir[buf]
+      if d then M.save(d) end
+    end,
+  })
+
   buffers[dir] = buf
   buf_to_dir[buf] = dir
   return buf
@@ -185,14 +196,9 @@ function M.setup(opts)
     end,
   })
 
-  -- Handle :w / :wall on scratch buffers (buftype=acwrite).
-  vim.api.nvim_create_autocmd("BufWriteCmd", {
-    group = group,
-    callback = function(ev)
-      local dir = buf_to_dir[ev.buf]
-      if dir then M.save(dir) end
-    end,
-  })
+  -- NOTE: BufWriteCmd for scratch buffers is registered per-buffer in
+  -- get_or_create(), not globally.  A global BufWriteCmd would swallow
+  -- :w on every buffer, preventing normal file writes.
 end
 
 ------------------------------------------------------------------------

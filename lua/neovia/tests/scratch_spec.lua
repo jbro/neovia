@@ -406,4 +406,25 @@ describe("setup", function()
 
     cleanup_buf(buf)
   end)
+
+  it("does not intercept :w on normal file buffers", function()
+    scratch.setup({ state_dir = test_state_dir })
+
+    local tmp = vim.fn.tempname() .. ".txt"
+    vim.fn.writefile({ "original" }, tmp)
+
+    local buf = vim.fn.bufadd(tmp)
+    vim.fn.bufload(buf)
+    vim.api.nvim_win_set_buf(0, buf)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "modified" })
+
+    vim.cmd("write")
+
+    local lines = vim.fn.readfile(tmp)
+    assert.same({ "modified" }, lines,
+      "BufWriteCmd should not swallow :w on normal files")
+
+    cleanup_buf(buf)
+    vim.fn.delete(tmp)
+  end)
 end)
