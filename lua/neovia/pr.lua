@@ -8,6 +8,7 @@ local M = {}
 --- @field state "open"|"draft"|"merged"
 --- @field number integer
 --- @field url string
+--- @field title string
 
 --- PR cache keyed by branch name.
 --- @type table<string, neovia.PrInfo>
@@ -67,6 +68,7 @@ local function parse_pr_graphql(data)
         state = st,
         number = pr.number,
         url = pr.url or "",
+        title = pr.title or "",
       }
     end
   end
@@ -95,6 +97,16 @@ local function pr_icon(state)
   return pr_icons[state] or ""
 end
 
+--- Truncate a PR title to a maximum length, appending "..." when trimmed.
+--- @param title string|nil
+--- @param max_len integer
+--- @return string
+local function truncate_title(title, max_len)
+  if not title or title == "" then return "" end
+  if #title <= max_len then return title end
+  return title:sub(1, max_len - 3) .. "..."
+end
+
 ------------------------------------------------------------------------
 -- Fetch
 ------------------------------------------------------------------------
@@ -115,6 +127,7 @@ local function build_gh_cmd(nwo)
             isDraft
             number
             url
+            title
           }
         }
       }
@@ -183,6 +196,14 @@ function M.icon(state)
   return pr_icon(state)
 end
 
+--- Truncate a PR title to fit the statusline.
+--- @param title string|nil
+--- @param max_len integer|nil  Defaults to 30.
+--- @return string
+function M.truncate_title(title, max_len)
+  return truncate_title(title, max_len or 30)
+end
+
 --- Stop and close a timer, returning nil.
 --- @param timer uv_timer_t|nil
 --- @return nil
@@ -247,6 +268,7 @@ M._internal = {
   build_gh_cmd = build_gh_cmd,
   fetch_pr_status = fetch_pr_status,
   current_branch = current_branch,
+  truncate_title = truncate_title,
   attempt_resolve = attempt_resolve,
 
   --- Get the current cache (for assertions).

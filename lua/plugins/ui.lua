@@ -43,8 +43,9 @@ local function opencode_status_color()
   return info.hl
 end
 
---- Build the PR number string for the statusline (e.g. "#42").
---- Returns empty string when the current branch has no PR.
+--- Build the PR string for the statusline (e.g. "#42 Fix login bug").
+--- Title is truncated to 30 characters. Returns empty string when
+--- the current branch has no PR.
 --- @return string
 local function pr_number()
   local ok, pr = pcall(require, "neovia.pr")
@@ -53,7 +54,12 @@ local function pr_number()
   local info = pr.get_current()
   if not info then return "" end
 
-  return "#" .. info.number
+  local s = "#" .. info.number
+  local title = pr.truncate_title(info.title)
+  if title ~= "" then
+    s = s .. " " .. title
+  end
+  return s
 end
 
 return {

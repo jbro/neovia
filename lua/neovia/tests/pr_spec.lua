@@ -175,6 +175,45 @@ describe("parse_pr_graphql", function()
     local cache = I.parse_pr_graphql(data)
     assert.equals("", cache["no-url"].url)
   end)
+
+  it("parses title into PrInfo", function()
+    local data = {
+      data = {
+        repository = {
+          pullRequests = {
+            nodes = {
+              {
+                headRefName = "feat-title",
+                state = "OPEN",
+                isDraft = false,
+                number = 50,
+                url = "https://github.com/owner/repo/pull/50",
+                title = "Add login page",
+              },
+            },
+          },
+        },
+      },
+    }
+    local cache = I.parse_pr_graphql(data)
+    assert.equals("Add login page", cache["feat-title"].title)
+  end)
+
+  it("defaults title to empty string when missing", function()
+    local data = {
+      data = {
+        repository = {
+          pullRequests = {
+            nodes = {
+              { headRefName = "no-title", state = "OPEN", isDraft = false, number = 1, url = "" },
+            },
+          },
+        },
+      },
+    }
+    local cache = I.parse_pr_graphql(data)
+    assert.equals("", cache["no-title"].title)
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -233,6 +272,71 @@ describe("build_gh_cmd", function()
     assert.is_truthy(cmd[5]:find("isDraft"))
     assert.is_truthy(cmd[5]:find("number"))
     assert.is_truthy(cmd[5]:find("url"))
+  end)
+
+  it("includes title in the GraphQL query", function()
+    local cmd = I.build_gh_cmd("a/b")
+    assert.is_truthy(cmd[5]:find("title"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- truncate_title
+------------------------------------------------------------------------
+
+describe("truncate_title", function()
+  it("returns the title unchanged when within limit", function()
+    assert.equals("Short title", I.truncate_title("Short title", 30))
+  end)
+
+  it("truncates and adds ellipsis when title exceeds limit", function()
+    local long = "This is a very long pull request title that exceeds the limit"
+    local result = I.truncate_title(long, 30)
+    assert.equals(30, #result)
+    assert.is_truthy(result:find("%.%.%.$"))
+  end)
+
+  it("returns empty string for nil", function()
+    assert.equals("", I.truncate_title(nil, 30))
+  end)
+
+  it("returns empty string for empty string", function()
+    assert.equals("", I.truncate_title("", 30))
+  end)
+
+  it("handles title exactly at the limit", function()
+    local exact = string.rep("x", 30)
+    assert.equals(exact, I.truncate_title(exact, 30))
+  end)
+
+  it("handles title one character over the limit", function()
+    local over = string.rep("x", 31)
+    local result = I.truncate_title(over, 30)
+    assert.equals(30, #result)
+    assert.equals(string.rep("x", 27) .. "...", result)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- M.truncate_title (public API)
+------------------------------------------------------------------------
+
+describe("M.truncate_title", function()
+  it("delegates to truncate_title with default max_len of 30", function()
+    local long = string.rep("a", 40)
+    local result = pr.truncate_title(long)
+    assert.equals(30, #result)
+    assert.is_truthy(result:find("%.%.%.$"))
+  end)
+
+  it("accepts a custom max_len", function()
+    local long = string.rep("b", 25)
+    local result = pr.truncate_title(long, 20)
+    assert.equals(20, #result)
+  end)
+
+  it("returns empty string for nil", function()
+    assert.equals("", pr.truncate_title(nil))
   end)
 end)
 
