@@ -191,6 +191,7 @@ require("neovia.scratch").setup()
 ------------------------------------------------------------------------
 require("neovia.mode").setup({ auto_relock = true })
 vim.keymap.set("n", "<leader>bu", function() require("neovia.mode").toggle() end, { desc = "Unlock/lock buffer" })
+vim.keymap.set("n", "<leader>bw", function() vim.wo.wrap = not vim.wo.wrap end, { desc = "Toggle wrap" })
 vim.keymap.set("n", "<leader>pp", function()
   local view = require("lazy.view")
   if view.visible() then
