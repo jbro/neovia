@@ -14,7 +14,8 @@ end
 
 return {
   {
-    "sudo-tee/opencode.nvim",
+    "jbro/opencode.nvim",
+    branch = "fix/preserve-permissions-on-session-switch",
     dependencies = {
       "nvim-lua/plenary.nvim",
       {
