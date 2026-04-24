@@ -3554,6 +3554,121 @@ describe("switch_to session switching", function()
     assert.equals(mock_server, resubscribe_server,
       "event manager should be re-subscribed with the opencode server")
   end)
+
+  it("saves model state before switching away", function()
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      current_model = "anthropic/claude-opus-4-6",
+      current_variant = "high",
+      current_mode = "build",
+      user_mode_model_map = { build = "anthropic/claude-opus-4-6", plan = "openai/o3" },
+      model = {
+        set_model = function() end,
+        set_variant = function() end,
+        set_mode_model_map = function() end,
+      },
+    }
+    package.loaded["opencode.core"] = {}
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    local saved = I.get_state()[dir_a].model_state
+    assert.is_table(saved, "model_state should be saved for the worktree we left")
+    assert.equals("anthropic/claude-opus-4-6", saved.model)
+    assert.equals("high", saved.variant)
+    assert.equals("build", saved.mode)
+    assert.same({ build = "anthropic/claude-opus-4-6", plan = "openai/o3" }, saved.mode_model_map)
+  end)
+
+  it("does not save model state when opencode is not loaded", function()
+    package.loaded["opencode.state"] = nil
+    package.loaded["opencode.core"] = nil
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.is_nil(I.get_state()[dir_a].model_state)
+  end)
+
+  it("restores model state after switching to a worktree that has it", function()
+    local set_model_calls = {}
+    local set_variant_calls = {}
+    local set_map_calls = {}
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      current_model = "openai/o3",
+      current_variant = nil,
+      current_mode = "build",
+      user_mode_model_map = {},
+      model = {
+        set_model = function(m) table.insert(set_model_calls, m) end,
+        set_variant = function(v) table.insert(set_variant_calls, v) end,
+        set_mode_model_map = function(map) table.insert(set_map_calls, map) end,
+      },
+    }
+    package.loaded["opencode.core"] = {}
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", model_state = {
+        model = "anthropic/claude-opus-4-6",
+        variant = "high",
+        mode = "plan",
+        mode_model_map = { plan = "anthropic/claude-opus-4-6" },
+      }}),
+    })
+
+    wt.switch_to(dir_b)
+
+    -- Restore is deferred (100ms, same as layout/SSE resubscribe)
+    vim.wait(200, function() return #set_model_calls > 0 end)
+
+    assert.equals(1, #set_model_calls)
+    assert.equals("anthropic/claude-opus-4-6", set_model_calls[1])
+    assert.equals(1, #set_variant_calls)
+    assert.equals("high", set_variant_calls[1])
+    assert.equals(1, #set_map_calls)
+    assert.same({ plan = "anthropic/claude-opus-4-6" }, set_map_calls[1])
+  end)
+
+  it("does not restore model state when target has no saved model_state", function()
+    local set_model_calls = {}
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      current_model = "openai/o3",
+      model = {
+        set_model = function(m) table.insert(set_model_calls, m) end,
+        set_variant = function() end,
+        set_mode_model_map = function() end,
+      },
+    }
+    package.loaded["opencode.core"] = {}
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),  -- no model_state
+    })
+
+    wt.switch_to(dir_b)
+
+    vim.wait(200, function() return false end)  -- let any deferred callbacks fire
+
+    assert.equals(0, #set_model_calls,
+      "should not call set_model when target has no saved model_state")
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -3569,6 +3684,17 @@ describe("make_entry", function()
   it("accepts session_id override", function()
     local entry = I.make_entry({ session_id = "custom-id" })
     assert.equals("custom-id", entry.session_id)
+  end)
+
+  it("includes model_state as nil by default", function()
+    local entry = I.make_entry()
+    assert.is_nil(entry.model_state)
+  end)
+
+  it("accepts model_state override", function()
+    local ms = { model = "anthropic/claude-opus-4-6", variant = "high", mode_model_map = {} }
+    local entry = I.make_entry({ model_state = ms })
+    assert.same(ms, entry.model_state)
   end)
 end)
 

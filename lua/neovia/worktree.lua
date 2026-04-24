@@ -10,6 +10,12 @@ local M = {}
 --- @field head string Short SHA
 --- @field bare boolean
 
+--- @class neovia.ModelState
+--- @field model string|nil  "provider/model" string
+--- @field variant string|nil  reasoning level ("high", "medium", "low")
+--- @field mode string|nil  agent mode ("build", "plan", etc.)
+--- @field mode_model_map table<string, string>|nil  per-mode model overrides
+
 --- @class neovia.WorktreeState
 --- @field status "unknown"|"idle"|"responding"|"needs_attention"
 --- @field branch string
@@ -18,6 +24,7 @@ local M = {}
 --- @field buffer_paths string[]  saved file paths (for switch restore)
 --- @field open boolean  whether this worktree is actively tracked (vs closed)
 --- @field session_id string|nil  cached opencode session ID (used by resync and fork)
+--- @field model_state neovia.ModelState|nil  saved model/variant/mode for restore on switch
 
 --- Per-directory state. Keyed by absolute path.
 --- @type table<string, neovia.WorktreeState>
@@ -430,6 +437,51 @@ local function save_session_id(dir)
   end
 end
 
+--- Save the current opencode model/variant/mode into state for a directory.
+--- @param dir string
+local function save_model_state(dir)
+  local entry = state[dir]
+  if not entry then return end
+  local ok, oc_state = pcall(require, "opencode.state")
+  if not ok or not oc_state then return end
+  if not oc_state.current_model then return end
+
+  entry.model_state = {
+    model = oc_state.current_model,
+    variant = oc_state.current_variant,
+    mode = oc_state.current_mode,
+    mode_model_map = oc_state.user_mode_model_map
+      and vim.deepcopy(oc_state.user_mode_model_map) or nil,
+  }
+end
+
+--- Restore saved model/variant/mode from state for a directory.
+--- Must be called after set_model auto-clears variant (so set_variant comes last).
+--- @param dir string
+local function restore_model_state(dir)
+  local entry = state[dir]
+  if not entry or not entry.model_state then return end
+
+  local ok, oc_state = pcall(require, "opencode.state")
+  if not ok or not oc_state or not oc_state.model then return end
+
+  local ms = entry.model_state
+
+  if ms.mode_model_map then
+    oc_state.model.set_mode_model_map(ms.mode_model_map)
+  end
+
+  -- set_model triggers a subscriber that auto-clears variant and loads
+  -- the disk-persisted one, so we call set_variant after set_model.
+  if ms.model then
+    oc_state.model.set_model(ms.model)
+  end
+
+  if ms.variant then
+    oc_state.model.set_variant(ms.variant)
+  end
+end
+
 --- Switch to a worktree directory.
 --- Saves current file buffer paths (unlist), tcd to target,
 --- restores saved buffers (relist) or opens scratch on first visit.
@@ -445,11 +497,12 @@ function M.switch_to(dir)
   local cwd = tab_cwd()
   if cwd == dir then return end
 
-  -- Save current buffers and session ID
+  -- Save current buffers, session ID, and model state
   local current_entry = state[cwd]
   if current_entry then
     current_entry.buffer_paths = collect_file_buffers()
     save_session_id(cwd)
+    save_model_state(cwd)
   end
 
   -- Unlist current file buffers
@@ -472,6 +525,7 @@ function M.switch_to(dir)
       buffer_paths = {},
       open = true,
       session_id = nil,
+      model_state = nil,
     }
   end
 
@@ -528,6 +582,11 @@ function M.switch_to(dir)
       and oc_state.opencode_server then
       oc_state.event_manager:_subscribe_to_server_events(oc_state.opencode_server)
     end
+
+    -- Restore saved model/variant/mode after the session switch has
+    -- settled.  set_model auto-clears variant (via a subscriber), so
+    -- restore_model_state calls set_variant last.
+    restore_model_state(dir)
   end, 100)
 
   vim.notify("Switched to " .. dir, vim.log.levels.INFO)
@@ -1264,6 +1323,7 @@ M._internal = {
       buffer_paths = {},
       open = true,
       session_id = nil,
+      model_state = nil,
     }, overrides or {})
   end,
 }
