@@ -555,22 +555,14 @@ function M.switch_to(dir)
 
   -- Deferred layout check: opencode.nvim's session swap is async, so if
   -- it disrupts the output window, ensure_layout repairs it.
-  -- Also re-subscribe the event manager's SSE so the server re-emits
-  -- pending permission state.  renderer.reset() clears permissions
-  -- before render_full_session runs, so permissions delivered on the
-  -- first SSE connection are lost.  The deferred re-subscribe ensures
-  -- they arrive after the session switch has settled.
+  -- SSE re-subscribe for pending permissions/questions is handled by the
+  -- on_session_loaded hook (see lua/plugins/opencode.lua) which fires
+  -- after renderer.reset() and _render_full_session_data complete,
+  -- guaranteeing that re-delivered events are not wiped.
   vim.defer_fn(function()
     local ok, layout = pcall(require, "neovia.layout")
     if ok and layout._internal and layout._internal.ensure_layout then
       layout._internal.ensure_layout()
-    end
-
-    local ok_oc, oc_state = pcall(require, "opencode.state")
-    if ok_oc and oc_state.event_manager
-      and oc_state.event_manager._subscribe_to_server_events
-      and oc_state.opencode_server then
-      oc_state.event_manager:_subscribe_to_server_events(oc_state.opencode_server)
     end
 
     -- Restore saved model/variant/mode after the session switch has

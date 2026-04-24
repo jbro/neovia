@@ -100,23 +100,37 @@ function M.restore_layout()
     code_buf = vim.api.nvim_win_get_buf(code_win)
   end
 
-  -- Collapse to one window, then rebuild all panels.
-  -- open_opencode may clobber the current buffer, so we restore
-  -- the code buffer *after* it finishes.
+  -- Tear down opencode windows cleanly before collapsing so
+  -- opencode.nvim does not hold stale window references.
+  local ok_oc_ui, oc_ui = pcall(require, "opencode.ui.ui")
+  local ok_oc_state, oc_state = pcall(require, "opencode.state")
+  if ok_oc_ui and ok_oc_state and oc_state.windows then
+    pcall(oc_ui.teardown_visible_windows, oc_state.windows)
+  end
+
+  -- Collapse to one window then rebuild all panels.
   vim.cmd("only")
+
+  -- After "only" the surviving window may show an opencode or neo-tree
+  -- buffer.  Replace it with the code buffer (or scratch) so the
+  -- window order comes out correct: neo-tree inserts to its left,
+  -- opencode opens to its right.
+  if code_buf and vim.api.nvim_buf_is_valid(code_buf) then
+    vim.api.nvim_win_set_buf(0, code_buf)
+  else
+    local ok_scratch, scratch = pcall(require, "neovia.scratch")
+    if ok_scratch then
+      local sbuf = scratch.get_or_create(vim.fn.getcwd())
+      vim.api.nvim_win_set_buf(0, sbuf)
+    end
+  end
+
   pcall(vim.cmd, "Neotree show")
   open_opencode()
 
-  -- Find or create the code window, then put the remembered buffer in it.
+  -- Ensure focus lands on the code window.
   local new_code_win = navigate.find_code_win()
-  if not new_code_win then
-    navigate.open_scratch_in_code_win(vim.fn.getcwd())
-    new_code_win = navigate.find_code_win()
-  end
   if new_code_win then
-    if code_buf and vim.api.nvim_buf_is_valid(code_buf) then
-      vim.api.nvim_win_set_buf(new_code_win, code_buf)
-    end
     vim.api.nvim_set_current_win(new_code_win)
   end
 

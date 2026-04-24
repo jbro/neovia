@@ -3102,20 +3102,22 @@ describe("switch_to session switching", function()
       "Session ID should be saved for the worktree we switched away from")
   end)
 
-  it("schedules deferred event manager re-subscribe after switch", function()
-    -- opencode.nvim's renderer.reset() clears pending permissions before
-    -- render_full_session runs. If the SSE already delivered permission
-    -- events they get wiped. A deferred re-subscribe forces the server
-    -- to re-emit pending state after the session switch has settled.
-    local resubscribe_server = nil
+  it("does not re-subscribe SSE from switch_to (handled by on_session_loaded hook)", function()
+    -- SSE re-subscribe was moved from the deferred callback in switch_to
+    -- to the on_session_loaded hook (lua/plugins/opencode.lua).  This
+    -- guarantees re-delivered permission/question events arrive after
+    -- renderer.reset() has completed, preventing the race condition
+    -- where reset() wipes events that arrived from a premature SSE
+    -- re-subscribe.
+    local resubscribe_called = false
     local mock_server = { url = "http://localhost:1234" }
     package.loaded["opencode.state"] = {
       active_session = { id = "s1" },
       context = { set_current_cwd = function() end },
       opencode_server = mock_server,
       event_manager = {
-        _subscribe_to_server_events = function(_, server)
-          resubscribe_server = server
+        _subscribe_to_server_events = function()
+          resubscribe_called = true
         end,
       },
     }
@@ -3129,14 +3131,11 @@ describe("switch_to session switching", function()
 
     wt.switch_to(dir_b)
 
-    -- Should not have fired yet (deferred)
-    assert.is_nil(resubscribe_server)
+    -- Wait well past the deferred callback window
+    vim.wait(200, function() return resubscribe_called end)
 
-    -- Flush the deferred callback (100ms defer + margin)
-    vim.wait(200, function() return resubscribe_server ~= nil end)
-
-    assert.equals(mock_server, resubscribe_server,
-      "event manager should be re-subscribed with the opencode server")
+    assert.is_false(resubscribe_called,
+      "switch_to should not re-subscribe SSE; on_session_loaded hook handles it")
   end)
 
   it("saves model state before switching away", function()
