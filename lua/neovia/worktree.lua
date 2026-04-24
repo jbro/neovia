@@ -546,7 +546,19 @@ function M.switch_to(dir)
     end
   end
 
-  -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly)
+  -- Clear neo-tree's git worktree cache before switching roots.
+  -- The cache is global and retains the parent repo's "!" (gitignored)
+  -- status for .worktrees/. Without clearing, find_existing_worktree()
+  -- may match the parent entry (undefined pairs() order) and dim all
+  -- filenames until the child worktree's async status arrives.
+  local ok_git, neo_git = pcall(require, "neo-tree.git")
+  if ok_git then
+    neo_git.worktrees = {}
+    neo_git._upward_worktree_cache = setmetatable({}, { __mode = "kv" })
+  end
+
+  -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly).
+  -- This triggers status_async which re-populates the cache for the new path.
   pcall(vim.cmd, "Neotree dir=" .. vim.fn.fnameescape(dir))
 
   -- Immediate tabline update so the current-worktree highlight is visible
