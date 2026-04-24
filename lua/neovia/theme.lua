@@ -37,12 +37,12 @@ end
 
 --- Load saved state from disk.
 --- @return { background: string }|nil
-local function load()
+local function load_state()
   local path = state_path()
   local raw = read_file(path)
   if not raw then return nil end
   -- Evaluate the Lua content to get the table
-  local chunk, err = loadstring(raw)
+  local chunk, err = load(raw)
   if not chunk then return nil end
   local ok, result = pcall(chunk)
   if ok and type(result) == "table" then return result end
@@ -69,7 +69,7 @@ end
 
 --- Apply the persisted background. No-op if no state file exists.
 function M.apply()
-  local state = load()
+  local state = load_state()
   if state and state.background then
     vim.o.background = state.background
   end
@@ -82,7 +82,7 @@ end
 M._internal = {
   state_path = state_path,
   save = save,
-  load = load,
+  load = load_state,
 
   --- Reset module state (for test isolation).
   reset = function()

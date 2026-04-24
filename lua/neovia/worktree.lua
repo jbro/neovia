@@ -1185,13 +1185,13 @@ function M.get_current_status()
   if not entry then return nil end
 
   local ok_tl, tl = pcall(require, "neovia.tabline")
-  local si = ok_tl and tl._internal.status_icon or {}
-  local hl_fn = ok_tl and tl._internal.status_hl_for or function() return { fg = "#565f89" } end
+  local display = ok_tl and tl.status_display(entry.status)
+    or { icon = "[idle]", hl = { fg = "#565f89" } }
 
   return {
     status = entry.status,
-    icon = (si[entry.status] or si.unknown or "[idle]"),
-    hl = hl_fn(entry.status),
+    icon = display.icon,
+    hl = display.hl,
   }
 end
 

@@ -44,6 +44,17 @@ local function status_hl_for(status)
   return { fg = status_colors[status] or status_colors.unknown }
 end
 
+--- Return display info (icon + highlight) for a status string.
+--- Public API for consumers like worktree.get_current_status().
+--- @param status string
+--- @return { icon: string, hl: table }
+function M.status_display(status)
+  return {
+    icon = status_icon[status] or status_icon.unknown,
+    hl = status_hl_for(status),
+  }
+end
+
 ------------------------------------------------------------------------
 -- Spinner / status character
 ------------------------------------------------------------------------

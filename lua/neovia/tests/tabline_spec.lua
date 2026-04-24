@@ -65,6 +65,31 @@ describe("status_hl_for", function()
 end)
 
 ------------------------------------------------------------------------
+-- status_display (public API)
+------------------------------------------------------------------------
+
+describe("status_display", function()
+  it("returns icon and hl for a known status", function()
+    local result = tabline.status_display("idle")
+    assert.is_table(result)
+    assert.equals("[idle]", result.icon)
+    assert.is_table(result.hl)
+    assert.is_not_nil(result.hl.fg)
+  end)
+
+  it("returns icon and hl for needs_attention", function()
+    local result = tabline.status_display("needs_attention")
+    assert.equals("[needs you]", result.icon)
+  end)
+
+  it("falls back to unknown for unrecognised status", function()
+    local result = tabline.status_display("something_else")
+    assert.equals("[idle]", result.icon)
+    assert.is_not_nil(result.hl.fg)
+  end)
+end)
+
+------------------------------------------------------------------------
 -- status_ansi
 ------------------------------------------------------------------------
 
