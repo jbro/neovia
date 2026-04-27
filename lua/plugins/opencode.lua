@@ -12,6 +12,43 @@ local function resolve_server_port()
   return nil
 end
 
+--- Build system prompt constraining table width to output window columns.
+--- Uses caveman compression: strip grammar, keep facts, save tokens.
+--- @param columns integer  Usable text columns in the output window.
+--- @return string
+local function table_width_prompt(columns)
+  return string.format("Tables: max %d columns wide.", columns)
+end
+
+--- Compute usable text columns in the opencode output window.
+--- Accounts for signcolumn offset when the window exists, otherwise
+--- estimates from layout constants (ratio + sidebar).
+--- @return integer
+local function output_text_columns()
+  local ok_state, state = pcall(require, "opencode.state")
+  if ok_state and state.windows and state.windows.output_win
+    and vim.api.nvim_win_is_valid(state.windows.output_win) then
+    local info = vim.fn.getwininfo(state.windows.output_win)
+    local textoff = info and info[1] and info[1].textoff or 0
+    return vim.api.nvim_win_get_width(state.windows.output_win) - textoff
+  end
+  -- Fallback: estimate from layout constants.
+  local ok_layout, layout = pcall(require, "neovia.layout")
+  if ok_layout then
+    local cols = math.floor(vim.o.columns * layout.opencode_width_ratio())
+    return cols - 2 -- signcolumn ≈ 2
+  end
+  return 80
+end
+
+--- Update opencode's default_system_prompt with current window width.
+local function refresh_table_width_prompt()
+  local ok_cfg, cfg = pcall(require, "opencode.config")
+  if ok_cfg then
+    cfg.default_system_prompt = table_width_prompt(output_text_columns())
+  end
+end
+
 return {
   {
     "jbro/opencode.nvim",
@@ -34,6 +71,7 @@ return {
       local layout = require("neovia.layout")
       require("opencode").setup({
         preferred_picker = "fzf",
+        default_system_prompt = table_width_prompt(output_text_columns()),
         server = port and {
           url = "http://127.0.0.1",
           port = port,
@@ -98,6 +136,13 @@ return {
             require("neovia.navigate").open()
           end, { buffer = ev.buf, desc = "Open file in code window" })
         end,
+      })
+
+      -- Keep table-width system prompt in sync with window size.
+      local resize_group = vim.api.nvim_create_augroup("neovia_opencode_table_width", { clear = true })
+      vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+        group = resize_group,
+        callback = refresh_table_width_prompt,
       })
     end,
   },
