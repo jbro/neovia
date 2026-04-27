@@ -6,6 +6,50 @@ local I = layout._internal
 local navigate = require("neovia.navigate")
 
 ------------------------------------------------------------------------
+-- Layout constants
+------------------------------------------------------------------------
+
+describe("layout constants", function()
+  it("exposes sidebar_width as a positive integer", function()
+    assert.is_number(layout.sidebar_width)
+    assert.is_true(layout.sidebar_width > 0)
+    assert.equals(math.floor(layout.sidebar_width), layout.sidebar_width)
+  end)
+
+  it("exposes opencode_ratio as a fraction between 0 and 1", function()
+    assert.is_number(layout.opencode_ratio)
+    assert.is_true(layout.opencode_ratio > 0)
+    assert.is_true(layout.opencode_ratio < 1)
+  end)
+end)
+
+describe("opencode_width_ratio", function()
+  it("returns a ratio that subtracts sidebar_width from the opencode share", function()
+    -- For a 200-column editor with sidebar=35 and ratio=0.50:
+    -- opencode gets 0.50 * (200 - 35) / 200 = 82.5/200 = 0.4125
+    local ratio = layout.opencode_width_ratio(200)
+    local expected = layout.opencode_ratio * (200 - layout.sidebar_width) / 200
+    assert.near(expected, ratio, 0.0001)
+  end)
+
+  it("defaults to vim.o.columns when no argument given", function()
+    local ratio = layout.opencode_width_ratio()
+    local expected = layout.opencode_ratio * (vim.o.columns - layout.sidebar_width) / vim.o.columns
+    assert.near(expected, ratio, 0.0001)
+  end)
+
+  it("returns a value less than opencode_ratio", function()
+    local ratio = layout.opencode_width_ratio(200)
+    assert.is_true(ratio < layout.opencode_ratio)
+  end)
+
+  it("returns a value greater than 0 for reasonable screen widths", function()
+    local ratio = layout.opencode_width_ratio(120)
+    assert.is_true(ratio > 0)
+  end)
+end)
+
+------------------------------------------------------------------------
 -- find_opencode_win
 ------------------------------------------------------------------------
 

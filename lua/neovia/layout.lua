@@ -4,6 +4,28 @@
 
 local M = {}
 
+------------------------------------------------------------------------
+-- Layout constants
+------------------------------------------------------------------------
+
+--- Neo-tree sidebar width in columns.
+M.sidebar_width = 35
+
+--- Opencode's share of the available space (after sidebar) as a fraction.
+M.opencode_ratio = 0.50
+
+--- Compute the opencode window_width ratio relative to total editor columns.
+--- opencode.nvim interprets window_width as a fraction of vim.o.columns,
+--- so we convert: opencode gets opencode_ratio of (columns - sidebar_width).
+--- @param columns? integer  Total editor columns (defaults to vim.o.columns).
+--- @return number  Ratio suitable for opencode's window_width config.
+function M.opencode_width_ratio(columns)
+  columns = columns or vim.o.columns
+  return M.opencode_ratio * (columns - M.sidebar_width) / columns
+end
+
+------------------------------------------------------------------------
+
 local initialised = false
 local opencode_opener = nil
 
