@@ -557,26 +557,18 @@ function M.switch_to(dir)
    -- Pending permissions/questions are restored by opencode.nvim's
    -- render_full_session() via REST API calls after renderer.reset().
    vim.schedule(function()
-    -- Invalidate neo-tree's upward worktree cache and remove only
-    -- parent-repo entries that are strict ancestors of `dir`.  The
-    -- previous approach wiped all of M.worktrees, but that races with
-    -- in-flight async git-status callbacks that still reference the
-    -- old worktree root (causing "Could not find worktree" asserts).
-    -- Removing only strict-ancestor entries prevents
-    -- find_existing_worktree() from matching the parent repo first
-    -- (undefined pairs() order) while leaving entries for the
-    -- previous worktree intact for any in-flight callbacks.
-    local ok_git, neo_git = pcall(require, "neo-tree.git")
-    if ok_git then
-      neo_git._upward_worktree_cache = setmetatable({}, { __mode = "kv" })
-      for root, _ in pairs(neo_git.worktrees) do
-        -- Remove entries whose root is a strict prefix of dir (i.e.
-        -- the parent repo whose .worktrees/ directory contains dir).
-        if root ~= dir and vim.startswith(dir, root .. "/") then
-          neo_git.worktrees[root] = nil
-        end
-      end
-    end
+    -- Invalidate neo-tree's upward worktree cache so the next lookup
+     -- re-discovers the correct git root for the new directory.
+     -- We must NOT remove entries from neo_git.worktrees: async git
+     -- status jobs reference those entries by root path, and deleting
+     -- an entry while a job is in flight causes "Could not find
+     -- worktree" assertion crashes in change_worktree_git_status.
+     -- Clearing only the lookup cache is safe — Neotree dir= below
+     -- re-registers the target directory via try_register_worktree.
+     local ok_git, neo_git = pcall(require, "neo-tree.git")
+     if ok_git then
+       neo_git._upward_worktree_cache = setmetatable({}, { __mode = "kv" })
+     end
 
     -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly).
     -- This triggers status_async which re-populates the cache for the new path.
