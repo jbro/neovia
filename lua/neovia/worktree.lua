@@ -557,15 +557,25 @@ function M.switch_to(dir)
    -- Pending permissions/questions are restored by opencode.nvim's
    -- render_full_session() via REST API calls after renderer.reset().
    vim.schedule(function()
-    -- Clear neo-tree's git worktree cache before switching roots.
-    -- The cache is global and retains the parent repo's "!" (gitignored)
-    -- status for .worktrees/. Without clearing, find_existing_worktree()
-    -- may match the parent entry (undefined pairs() order) and dim all
-    -- filenames until the child worktree's async status arrives.
+    -- Invalidate neo-tree's upward worktree cache and remove only
+    -- parent-repo entries that are strict ancestors of `dir`.  The
+    -- previous approach wiped all of M.worktrees, but that races with
+    -- in-flight async git-status callbacks that still reference the
+    -- old worktree root (causing "Could not find worktree" asserts).
+    -- Removing only strict-ancestor entries prevents
+    -- find_existing_worktree() from matching the parent repo first
+    -- (undefined pairs() order) while leaving entries for the
+    -- previous worktree intact for any in-flight callbacks.
     local ok_git, neo_git = pcall(require, "neo-tree.git")
     if ok_git then
-      neo_git.worktrees = {}
       neo_git._upward_worktree_cache = setmetatable({}, { __mode = "kv" })
+      for root, _ in pairs(neo_git.worktrees) do
+        -- Remove entries whose root is a strict prefix of dir (i.e.
+        -- the parent repo whose .worktrees/ directory contains dir).
+        if root ~= dir and vim.startswith(dir, root .. "/") then
+          neo_git.worktrees[root] = nil
+        end
+      end
     end
 
     -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly).
