@@ -38,7 +38,8 @@ function M.unlist_file_buffers()
       if name ~= "" then
         -- Stop treesitter before unlisting to prevent async fold callbacks
         -- from firing on a stale buffer (Neovim _foldupdate race, #35312).
-        vim.treesitter.stop(buf)
+        local ok_ts, ts = pcall(require, "vim.treesitter")
+        if ok_ts then ts.stop(buf) end
         vim.bo[buf].buflisted = false
       end
     end
