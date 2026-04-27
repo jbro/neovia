@@ -554,11 +554,9 @@ function M.switch_to(dir)
   -- rescans the filesystem synchronously and is the most expensive single
   -- call in the switch path.  Running it in vim.schedule moves it out of the
   -- critical path so the UI feels instant.
-  -- SSE re-subscribe for pending permissions/questions is handled by the
-  -- on_session_loaded hook (see lua/plugins/opencode.lua) which fires
-  -- after renderer.reset() and _render_full_session_data complete,
-  -- guaranteeing that re-delivered events are not wiped.
-  vim.schedule(function()
+   -- Pending permissions/questions are restored by opencode.nvim's
+   -- render_full_session() via REST API calls after renderer.reset().
+   vim.schedule(function()
     -- Clear neo-tree's git worktree cache before switching roots.
     -- The cache is global and retains the parent repo's "!" (gitignored)
     -- status for .worktrees/. Without clearing, find_existing_worktree()

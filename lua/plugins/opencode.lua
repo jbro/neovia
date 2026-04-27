@@ -15,7 +15,7 @@ end
 return {
   {
     "jbro/opencode.nvim",
-    branch = "fix/preserve-permissions-on-session-switch",
+    branch = "neovia",
     dependencies = {
       "nvim-lua/plenary.nvim",
       {
@@ -84,20 +84,7 @@ return {
             local dir = session and session.directory or vim.fn.getcwd(-1, 0)
             require("neovia.worktree").set_status(dir, "needs_attention")
           end,
-          on_session_loaded = function()
-            -- Re-subscribe the event manager's SSE so the server re-emits
-            -- pending permission/question state.  renderer.reset() (called
-            -- at the start of _render_full_session_data) clears all
-            -- permissions and questions.  By re-subscribing here -- after
-            -- the session is fully loaded -- we guarantee that re-delivered
-            -- events are not wiped by a subsequent reset.
-            local ok, oc_state = pcall(require, "opencode.state")
-            if ok and oc_state.event_manager
-              and oc_state.event_manager._subscribe_to_server_events
-              and oc_state.opencode_server then
-              oc_state.event_manager:_subscribe_to_server_events(oc_state.opencode_server)
-            end
-          end,
+
         },
       })
 
