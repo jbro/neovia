@@ -1,4 +1,6 @@
 -- neo-tree: read-only directory tree sidebar (always visible, far left)
+local layout = require("neovia.layout")
+
 return {
   {
     "nvim-neo-tree/neo-tree.nvim",
@@ -34,7 +36,7 @@ return {
       },
       window = {
         position = "left",
-        width = 35,
+        width = layout.sidebar_width,
         mappings = {
           -- Read-only: disable file-editing actions
           ["a"] = "none",

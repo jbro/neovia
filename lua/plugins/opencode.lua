@@ -31,6 +31,7 @@ return {
     },
     config = function()
       local port = resolve_server_port()
+      local layout = require("neovia.layout")
       require("opencode").setup({
         preferred_picker = "fzf",
         server = port and {
@@ -39,7 +40,7 @@ return {
           auto_kill = false,
         } or {},
         ui = {
-          window_width = 0.50,
+          window_width = layout.opencode_width_ratio(),
           input = {
             text = { wrap = true },
           },
