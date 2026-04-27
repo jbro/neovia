@@ -1,6 +1,15 @@
 -- tests/neovia/worktree_spec.lua
 -- Unit tests for lua/neovia/worktree.lua
 
+-- Ensure vim.ui is available (not loadable in nvim -l test runner).
+-- Use rawset to bypass vim's __newindex metamethod.
+if not pcall(require, "vim.ui") then
+  rawset(vim, "ui", {
+    input = function(_, cb) cb(nil) end,
+    select = function(_, _, cb) cb(nil) end,
+  })
+end
+
 local wt = require("neovia.worktree")
 local I = wt._internal
 
@@ -616,19 +625,22 @@ describe("unlist_file_buffers", function()
   end)
 
   it("stops treesitter on buffers before unlisting (fold race workaround)", function()
+    local ok_ts, ts = pcall(require, "vim.treesitter")
+    if not ok_ts then return pending("vim.treesitter unavailable in test runner") end
+
     local buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_buf_set_name(buf, "/tmp/test_unlist_ts.lua")
     -- Seed buffer with valid Lua so treesitter can parse it.
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "local x = 1" })
-    vim.treesitter.start(buf, "lua")
+    ts.start(buf, "lua")
     -- Sanity: highlighter should be active before unlist.
-    assert.is_truthy(vim.treesitter.highlighter.active[buf])
+    assert.is_truthy(ts.highlighter.active[buf])
 
     I.unlist_file_buffers()
 
     assert.is_false(vim.bo[buf].buflisted)
     -- After unlist, treesitter highlighter should have been stopped.
-    assert.is_falsy(vim.treesitter.highlighter.active[buf])
+    assert.is_falsy(ts.highlighter.active[buf])
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
@@ -3107,13 +3119,10 @@ describe("switch_to session switching", function()
       "Session ID should be saved for the worktree we switched away from")
   end)
 
-  it("does not re-subscribe SSE from switch_to (handled by on_session_loaded hook)", function()
-    -- SSE re-subscribe was moved from the deferred callback in switch_to
-    -- to the on_session_loaded hook (lua/plugins/opencode.lua).  This
-    -- guarantees re-delivered permission/question events arrive after
-    -- renderer.reset() has completed, preventing the race condition
-    -- where reset() wipes events that arrived from a premature SSE
-    -- re-subscribe.
+   it("does not re-subscribe SSE from switch_to (plugin restores via REST)", function()
+    -- Pending permissions/questions are restored by opencode.nvim's
+    -- render_full_session() via REST API calls after renderer.reset().
+    -- switch_to must not touch SSE subscriptions.
     local resubscribe_called = false
     local mock_server = { url = "http://localhost:1234" }
     package.loaded["opencode.state"] = {
@@ -3140,7 +3149,7 @@ describe("switch_to session switching", function()
     vim.wait(200, function() return resubscribe_called end)
 
     assert.is_false(resubscribe_called,
-      "switch_to should not re-subscribe SSE; on_session_loaded hook handles it")
+      "switch_to should not re-subscribe SSE; plugin restores via REST API")
   end)
 
   it("saves model state before switching away", function()
