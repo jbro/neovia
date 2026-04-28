@@ -1068,6 +1068,37 @@ function M.build_tabline(worktrees)
   return tl.build(M.get_entries(worktrees))
 end
 
+--- Remove "!" (ignored) entries for .worktrees paths from a neo-tree
+--- git status table. The parent repo's .gitignore lists .worktrees/,
+--- so neo-tree's status_async marks everything under it as ignored.
+--- This strips those entries so child worktrees render with correct
+--- git status from their own status_async call.
+--- Mutates the table in-place.
+--- @param status table<string, string> neo-tree git status table (path -> code)
+--- @param git_root string absolute path to the repo root (no trailing slash)
+local function strip_worktrees_ignored(status, git_root)
+  local worktrees_dir = git_root .. "/.worktrees"
+  local to_remove = {}
+  for path, code in pairs(status) do
+    if
+      code == "!"
+      and (path == worktrees_dir or vim.startswith(path, worktrees_dir .. "/"))
+    then
+      to_remove[#to_remove + 1] = path
+    end
+  end
+  for _, path in ipairs(to_remove) do
+    status[path] = nil
+  end
+end
+
+--- Public wrapper for neo-tree event_handlers config.
+--- @param status table<string, string>
+--- @param git_root string
+function M.strip_worktrees_ignored(status, git_root)
+  strip_worktrees_ignored(status, git_root)
+end
+
 ------------------------------------------------------------------------
 -- Test internals (exposed for unit tests only)
 ------------------------------------------------------------------------
@@ -1086,6 +1117,7 @@ M._internal = {
   ensure_subscriptions = ensure_subscriptions,
   unsubscribe_all = unsubscribe_all,
   resolve_git_common_dir = resolve_git_common_dir,
+  strip_worktrees_ignored = strip_worktrees_ignored,
   list_worktrees = list_worktrees,
   find_current_worktree = find_current_worktree,
   prompt_branch = prompt_branch,

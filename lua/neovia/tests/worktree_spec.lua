@@ -3373,3 +3373,83 @@ describe("resync", function()
     assert.equals("/proj/feat", queried_dirs[1])
   end)
 end)
+
+------------------------------------------------------------------------
+-- strip_worktrees_ignored
+------------------------------------------------------------------------
+
+describe("strip_worktrees_ignored", function()
+  it("removes ignored status for .worktrees directory itself", function()
+    local root = "/home/user/project"
+    local status = {
+      [root .. "/.worktrees"] = "!",
+      [root .. "/src/main.lua"] = ".M",
+    }
+
+    I.strip_worktrees_ignored(status, root)
+
+    assert.is_nil(status[root .. "/.worktrees"])
+    assert.equals(".M", status[root .. "/src/main.lua"])
+  end)
+
+  it("removes ignored status for paths under .worktrees/", function()
+    local root = "/home/user/project"
+    local status = {
+      [root .. "/.worktrees/feat-foo"] = "!",
+      [root .. "/.worktrees/feat-foo/src"] = "!",
+      [root .. "/.worktrees/feat-foo/src/main.lua"] = "!",
+      [root .. "/node_modules"] = "!",
+    }
+
+    I.strip_worktrees_ignored(status, root)
+
+    assert.is_nil(status[root .. "/.worktrees/feat-foo"])
+    assert.is_nil(status[root .. "/.worktrees/feat-foo/src"])
+    assert.is_nil(status[root .. "/.worktrees/feat-foo/src/main.lua"])
+    assert.equals("!", status[root .. "/node_modules"])
+  end)
+
+  it("preserves non-ignored statuses under .worktrees/", function()
+    local root = "/home/user/project"
+    local status = {
+      [root .. "/.worktrees/feat-foo/src/main.lua"] = ".M",
+    }
+
+    I.strip_worktrees_ignored(status, root)
+
+    assert.equals(".M", status[root .. "/.worktrees/feat-foo/src/main.lua"])
+  end)
+
+  it("does nothing when status table is empty", function()
+    local status = {}
+    I.strip_worktrees_ignored(status, "/home/user/project")
+    assert.same({}, status)
+  end)
+
+  it("does nothing when no .worktrees entries exist", function()
+    local root = "/home/user/project"
+    local status = {
+      [root .. "/node_modules"] = "!",
+      [root .. "/.env"] = "!",
+      [root .. "/src/main.lua"] = ".M",
+    }
+    local original = vim.deepcopy(status)
+
+    I.strip_worktrees_ignored(status, root)
+
+    assert.same(original, status)
+  end)
+
+  it("does not match paths that merely start with .worktrees", function()
+    local root = "/home/user/project"
+    local status = {
+      [root .. "/.worktrees_backup"] = "!",
+      [root .. "/.worktreesomething"] = "!",
+    }
+    local original = vim.deepcopy(status)
+
+    I.strip_worktrees_ignored(status, root)
+
+    assert.same(original, status)
+  end)
+end)

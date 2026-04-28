@@ -20,11 +20,6 @@ return {
         -- neo-tree's navigate_up/set_root from interfering with tcd-based
         -- worktree switching.
         bind_to_cwd = false,
-        -- Disable gitignore hiding: worktree directories live under
-        -- .worktrees/ which is gitignored in the main repo. Neo-tree's
-        -- mark_gitignored checks ALL known worktree roots, so files
-        -- inside a child worktree inherit the parent's "!" status and
-        -- get hidden. Dotfiles (.gitignore) should also be visible.
         filtered_items = {
           hide_dotfiles = false,
           hide_gitignored = false,
@@ -32,6 +27,22 @@ return {
             ".git",
             ".worktrees",
           },
+        },
+      },
+      -- Strip .worktrees/ from the parent repo's git status so child
+      -- worktrees don't inherit the "ignored" marker. Without this,
+      -- the parent's .gitignore entry for .worktrees/ causes neo-tree
+      -- to mark every file in a child worktree as gitignored (dimmed
+      -- icons and names). Child worktrees still get their own correct
+      -- git status via their own status_async call.
+      event_handlers = {
+        {
+          event = "git_status_changed",
+          handler = function(args)
+            if not args.git_status then return end
+            local ok, wt = pcall(require, "neovia.worktree")
+            if ok then wt.strip_worktrees_ignored(args.git_status, args.git_root) end
+          end,
         },
       },
       window = {
