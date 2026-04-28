@@ -51,8 +51,7 @@ end
 
 return {
   {
-    "jbro/opencode.nvim",
-    branch = "neovia",
+    "sudo-tee/opencode.nvim",
     dependencies = {
       "nvim-lua/plenary.nvim",
       {
