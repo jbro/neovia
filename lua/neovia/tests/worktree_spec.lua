@@ -1271,6 +1271,111 @@ describe("switch_to", function()
     scratch._internal.reset()
     vim.fn.delete(test_state_dir, "rf")
   end)
+
+  it("saves neo-tree expanded nodes before switching away", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Stub neo-tree renderer to return fake expanded nodes
+    local fake_expanded = { dir_a .. "/src", dir_a .. "/src/lib" }
+    local fake_tree = {}
+    package.loaded["neo-tree.ui.renderer"] = {
+      get_expanded_nodes = function() return fake_expanded end,
+    }
+    package.loaded["neo-tree.sources.manager"] = {
+      get_state = function() return { tree = fake_tree } end,
+    }
+
+    wt.switch_to(dir_b)
+
+    local saved = I.get_state()[dir_a].neo_tree_expanded
+    assert.is_not_nil(saved, "expected neo_tree_expanded to be saved")
+    assert.same(fake_expanded, saved)
+
+    -- Cleanup stubs
+    package.loaded["neo-tree.ui.renderer"] = nil
+    package.loaded["neo-tree.sources.manager"] = nil
+  end)
+
+  it("restores neo-tree expanded nodes via force_open_folders after switching back", function()
+    vim.cmd.tcd(dir_a)
+
+    -- Pre-populate saved expanded state for dir_b
+    local saved_expanded = { dir_b .. "/src", dir_b .. "/src/lib" }
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({
+        branch = "feat",
+        neo_tree_expanded = saved_expanded,
+      }),
+    })
+
+    -- Stub neo-tree modules: track what force_open_folders is set to
+    local captured_force_open = nil
+    package.loaded["neo-tree.ui.renderer"] = {
+      get_expanded_nodes = function() return {} end,
+    }
+    package.loaded["neo-tree.sources.manager"] = {
+      get_state = function()
+        return {
+          tree = {},
+          force_open_folders = captured_force_open,
+        }
+      end,
+    }
+
+    -- Capture the state assignment via the manager stub
+    local real_manager_get_state = package.loaded["neo-tree.sources.manager"].get_state
+    local neo_tree_state = { tree = {} }
+    package.loaded["neo-tree.sources.manager"].get_state = function()
+      return neo_tree_state
+    end
+
+    wt.switch_to(dir_b)
+
+    -- The deferred vim.schedule callback sets force_open_folders; flush it
+    vim.wait(200, function() return neo_tree_state.force_open_folders ~= nil end)
+
+    assert.is_not_nil(neo_tree_state.force_open_folders,
+      "expected force_open_folders to be set on neo-tree state")
+    assert.same(saved_expanded, neo_tree_state.force_open_folders)
+
+    -- Cleanup stubs
+    package.loaded["neo-tree.ui.renderer"] = nil
+    package.loaded["neo-tree.sources.manager"] = nil
+  end)
+
+  it("does not set force_open_folders when no expanded state is saved", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Stub neo-tree modules
+    package.loaded["neo-tree.ui.renderer"] = {
+      get_expanded_nodes = function() return {} end,
+    }
+    local neo_tree_state = { tree = {} }
+    package.loaded["neo-tree.sources.manager"] = {
+      get_state = function() return neo_tree_state end,
+    }
+
+    wt.switch_to(dir_b)
+
+    -- Flush scheduled callbacks
+    vim.wait(200, function() return false end)
+
+    assert.is_nil(neo_tree_state.force_open_folders,
+      "force_open_folders should not be set when there is no saved state")
+
+    -- Cleanup stubs
+    package.loaded["neo-tree.ui.renderer"] = nil
+    package.loaded["neo-tree.sources.manager"] = nil
+  end)
 end)
 
 ------------------------------------------------------------------------

@@ -24,6 +24,7 @@ local M = {}
 --- @field buffer_paths string[]  saved file paths (for switch restore)
 --- @field session_id string|nil  cached opencode session ID (used by resync and fork)
 --- @field model_state neovia.ModelState|nil  saved model/variant/mode for restore on switch
+--- @field neo_tree_expanded string[]|nil  saved expanded node IDs (absolute paths) for restore on switch
 
 --- Per-directory state. Keyed by absolute path.
 --- @type table<string, neovia.WorktreeState>
@@ -481,6 +482,39 @@ local function restore_model_state(dir)
   end
 end
 
+--- Save Neo-tree expanded node IDs into state for the given directory.
+--- Uses neo-tree's renderer API to read the current tree's expanded nodes.
+--- @param dir string
+local function save_neo_tree_expanded(dir)
+  local entry = state[dir]
+  if not entry then return end
+  local ok_mgr, manager = pcall(require, "neo-tree.sources.manager")
+  if not ok_mgr then return end
+  local ok_ren, renderer = pcall(require, "neo-tree.ui.renderer")
+  if not ok_ren then return end
+  local neo_state = manager.get_state("filesystem")
+  if neo_state and neo_state.tree then
+    entry.neo_tree_expanded = renderer.get_expanded_nodes(neo_state.tree)
+  end
+end
+
+--- Restore saved Neo-tree expanded node IDs via force_open_folders.
+--- Must be called BEFORE the Neotree dir= navigate so the renderer
+--- uses the forced list instead of defaulting to root-only.
+--- @param dir string
+local function restore_neo_tree_expanded(dir)
+  local entry = state[dir]
+  if not entry or not entry.neo_tree_expanded or #entry.neo_tree_expanded == 0 then
+    return
+  end
+  local ok_mgr, manager = pcall(require, "neo-tree.sources.manager")
+  if not ok_mgr then return end
+  local neo_state = manager.get_state("filesystem")
+  if neo_state then
+    neo_state.force_open_folders = entry.neo_tree_expanded
+  end
+end
+
 --- Switch to a worktree directory.
 --- Saves current file buffer paths (unlist), tcd to target,
 --- restores saved buffers (relist) or opens scratch on first visit.
@@ -495,12 +529,13 @@ function M.switch_to(dir)
   local cwd = tab_cwd()
   if cwd == dir then return end
 
-  -- Save current buffers, session ID, and model state
+  -- Save current buffers, session ID, model state, and neo-tree expanded nodes
   local current_entry = state[cwd]
   if current_entry then
     current_entry.buffer_paths = collect_file_buffers()
     save_session_id(cwd)
     save_model_state(cwd)
+    save_neo_tree_expanded(cwd)
   end
 
   -- Unlist current file buffers
@@ -523,6 +558,7 @@ function M.switch_to(dir)
       buffer_paths = {},
       session_id = nil,
       model_state = nil,
+      neo_tree_expanded = nil,
     }
   end
 
@@ -569,6 +605,10 @@ function M.switch_to(dir)
      if ok_git then
        neo_git._upward_worktree_cache = setmetatable({}, { __mode = "kv" })
      end
+
+    -- Restore saved expanded nodes before navigating so neo-tree's
+    -- renderer uses force_open_folders instead of collapsing to root.
+    restore_neo_tree_expanded(dir)
 
     -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly).
     -- This triggers status_async which re-populates the cache for the new path.
@@ -1123,6 +1163,8 @@ M._internal = {
   prompt_branch = prompt_branch,
   tab_cwd = tab_cwd,
   save_session_id = save_session_id,
+  save_neo_tree_expanded = save_neo_tree_expanded,
+  restore_neo_tree_expanded = restore_neo_tree_expanded,
 
   --- Get the raw state table (for assertions).
   --- @return table<string, neovia.WorktreeState>
@@ -1159,6 +1201,7 @@ M._internal = {
       buffer_paths = {},
       session_id = nil,
       model_state = nil,
+      neo_tree_expanded = nil,
     }, overrides or {})
   end,
 }
