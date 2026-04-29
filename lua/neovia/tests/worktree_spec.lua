@@ -3453,3 +3453,214 @@ describe("strip_worktrees_ignored", function()
     assert.same(original, status)
   end)
 end)
+
+------------------------------------------------------------------------
+-- strip_all_worktrees_ignored
+------------------------------------------------------------------------
+
+describe("strip_all_worktrees_ignored", function()
+  local saved_neo_git
+
+  before_each(function()
+    saved_neo_git = package.loaded["neo-tree.git"]
+  end)
+
+  after_each(function()
+    package.loaded["neo-tree.git"] = saved_neo_git
+  end)
+
+  it("strips .worktrees/ entries from all registered worktrees", function()
+    local parent_root = "/home/user/project"
+    local child_root = parent_root .. "/.worktrees/feat"
+    package.loaded["neo-tree.git"] = {
+      worktrees = {
+        [parent_root] = {
+          status = {
+            [parent_root .. "/.worktrees"] = "!",
+            [parent_root .. "/.worktrees/feat"] = "!",
+            [parent_root .. "/node_modules"] = "!",
+            [parent_root .. "/src/main.lua"] = ".M",
+          },
+        },
+        [child_root] = {
+          status = {
+            [child_root .. "/src/app.lua"] = ".M",
+          },
+        },
+      },
+    }
+
+    I.strip_all_worktrees_ignored()
+
+    local parent_status = package.loaded["neo-tree.git"].worktrees[parent_root].status
+    assert.is_nil(parent_status[parent_root .. "/.worktrees"])
+    assert.is_nil(parent_status[parent_root .. "/.worktrees/feat"])
+    assert.equals("!", parent_status[parent_root .. "/node_modules"])
+    assert.equals(".M", parent_status[parent_root .. "/src/main.lua"])
+
+    local child_status = package.loaded["neo-tree.git"].worktrees[child_root].status
+    assert.equals(".M", child_status[child_root .. "/src/app.lua"])
+  end)
+
+  it("skips worktrees with nil status", function()
+    package.loaded["neo-tree.git"] = {
+      worktrees = {
+        ["/home/user/project"] = { status = nil },
+      },
+    }
+
+    -- Should not error
+    I.strip_all_worktrees_ignored()
+  end)
+
+  it("handles neo-tree.git not loaded", function()
+    package.loaded["neo-tree.git"] = nil
+
+    -- Should not error
+    I.strip_all_worktrees_ignored()
+  end)
+end)
+
+------------------------------------------------------------------------
+-- patch_neo_tree_git_lookup
+------------------------------------------------------------------------
+
+describe("patch_neo_tree_git_lookup", function()
+  local saved_neo_git, saved_neo_utils
+
+  before_each(function()
+    saved_neo_git = package.loaded["neo-tree.git"]
+    saved_neo_utils = package.loaded["neo-tree.utils"]
+    -- Reset the patch flag so each test gets a clean state
+    I.reset()
+    -- Re-require to pick up the reset
+  end)
+
+  after_each(function()
+    package.loaded["neo-tree.git"] = saved_neo_git
+    package.loaded["neo-tree.utils"] = saved_neo_utils
+  end)
+
+  -- Minimal is_subpath that mirrors neo-tree's behaviour for tests
+  local function mock_is_subpath(base, path, _fast)
+    if base == path then return true end
+    if #path < #base then return false end
+    if path:sub(1, #base) ~= base then return false end
+    return path:byte(#base + 1) == string.byte("/")
+  end
+
+  it("returns the deepest matching worktree root", function()
+    local parent = "/home/user/project"
+    local child = parent .. "/.worktrees/feat"
+    local neo_git = {
+      worktrees = {
+        [parent] = { status = {} },
+        [child] = { status = { [child .. "/src/app.lua"] = ".M" } },
+      },
+      _upward_worktree_cache = setmetatable({}, { __mode = "kv" }),
+    }
+    package.loaded["neo-tree.git"] = neo_git
+    package.loaded["neo-tree.utils"] = { is_subpath = mock_is_subpath }
+
+    I.patch_neo_tree_git_lookup()
+
+    local root, info = neo_git.find_existing_worktree(child .. "/src/app.lua")
+    assert.equals(child, root)
+    assert.equals(".M", info.status[child .. "/src/app.lua"])
+  end)
+
+  it("returns parent when path is not under any child worktree", function()
+    local parent = "/home/user/project"
+    local child = parent .. "/.worktrees/feat"
+    local neo_git = {
+      worktrees = {
+        [parent] = { status = { [parent .. "/README.md"] = ".M" } },
+        [child] = { status = {} },
+      },
+      _upward_worktree_cache = setmetatable({}, { __mode = "kv" }),
+    }
+    package.loaded["neo-tree.git"] = neo_git
+    package.loaded["neo-tree.utils"] = { is_subpath = mock_is_subpath }
+
+    I.patch_neo_tree_git_lookup()
+
+    local root, info = neo_git.find_existing_worktree(parent .. "/README.md")
+    assert.equals(parent, root)
+  end)
+
+  it("returns nil when no worktree matches", function()
+    local neo_git = {
+      worktrees = {
+        ["/home/user/project"] = { status = {} },
+      },
+      _upward_worktree_cache = setmetatable({}, { __mode = "kv" }),
+    }
+    package.loaded["neo-tree.git"] = neo_git
+    package.loaded["neo-tree.utils"] = { is_subpath = mock_is_subpath }
+
+    I.patch_neo_tree_git_lookup()
+
+    local root, info = neo_git.find_existing_worktree("/other/path")
+    assert.is_nil(root)
+    assert.is_nil(info)
+  end)
+
+  it("uses cache for subsequent lookups", function()
+    local parent = "/home/user/project"
+    local child = parent .. "/.worktrees/feat"
+    local call_count = 0
+    local counting_is_subpath = function(base, path, fast)
+      call_count = call_count + 1
+      return mock_is_subpath(base, path, fast)
+    end
+    local neo_git = {
+      worktrees = {
+        [parent] = { status = {} },
+        [child] = { status = {} },
+      },
+      _upward_worktree_cache = setmetatable({}, { __mode = "kv" }),
+    }
+    package.loaded["neo-tree.git"] = neo_git
+    package.loaded["neo-tree.utils"] = { is_subpath = counting_is_subpath }
+
+    I.patch_neo_tree_git_lookup()
+
+    -- First call iterates worktrees
+    neo_git.find_existing_worktree(child .. "/src/app.lua")
+    local first_count = call_count
+
+    -- Second call uses cache, no new is_subpath calls
+    neo_git.find_existing_worktree(child .. "/src/app.lua")
+    assert.equals(first_count, call_count)
+  end)
+
+  it("is idempotent", function()
+    local parent = "/home/user/project"
+    local child = parent .. "/.worktrees/feat"
+    local neo_git = {
+      worktrees = {
+        [parent] = { status = {} },
+        [child] = { status = {} },
+      },
+      _upward_worktree_cache = setmetatable({}, { __mode = "kv" }),
+    }
+    package.loaded["neo-tree.git"] = neo_git
+    package.loaded["neo-tree.utils"] = { is_subpath = mock_is_subpath }
+
+    I.patch_neo_tree_git_lookup()
+    local fn_first = neo_git.find_existing_worktree
+    I.patch_neo_tree_git_lookup()
+    local fn_second = neo_git.find_existing_worktree
+
+    -- Same function reference: second call was a no-op
+    assert.equals(fn_first, fn_second)
+  end)
+
+  it("does not error when neo-tree.git is not available", function()
+    package.loaded["neo-tree.git"] = nil
+    package.loaded["neo-tree.utils"] = nil
+
+    -- Should not error
+    I.patch_neo_tree_git_lookup()
+  end)
+end)

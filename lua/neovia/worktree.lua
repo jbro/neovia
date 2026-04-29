@@ -481,6 +481,101 @@ local function restore_model_state(dir)
   end
 end
 
+------------------------------------------------------------------------
+-- Neo-tree git status helpers
+------------------------------------------------------------------------
+
+--- Remove "!" (ignored) entries for .worktrees paths from a neo-tree
+--- git status table. The parent repo's .gitignore lists .worktrees/,
+--- so neo-tree's status_async marks everything under it as ignored.
+--- This strips those entries so child worktrees render with correct
+--- git status from their own status_async call.
+--- Mutates the table in-place.
+--- @param status table<string, string> neo-tree git status table (path -> code)
+--- @param git_root string absolute path to the repo root (no trailing slash)
+local function strip_worktrees_ignored(status, git_root)
+  local worktrees_dir = git_root .. "/.worktrees"
+  local to_remove = {}
+  for path, code in pairs(status) do
+    if
+      code == "!"
+      and (path == worktrees_dir or vim.startswith(path, worktrees_dir .. "/"))
+    then
+      to_remove[#to_remove + 1] = path
+    end
+  end
+  for _, path in ipairs(to_remove) do
+    status[path] = nil
+  end
+end
+
+--- Strip .worktrees/ ignored entries from ALL registered neo-tree worktrees.
+--- Called from the git_status_changed event handler. Each status_async cycle
+--- can re-populate ignored entries for any registered worktree, not just the
+--- one that fired the event. This ensures no stale "!" entries survive
+--- across worktrees.
+local function strip_all_worktrees_ignored()
+  local ok, neo_git = pcall(require, "neo-tree.git")
+  if not ok then return end
+  for root, wt in pairs(neo_git.worktrees) do
+    if wt.status then
+      strip_worktrees_ignored(wt.status, root)
+    end
+  end
+end
+
+--- Patch neo-tree's find_existing_worktree to always return the deepest
+--- (most specific) matching worktree root.
+---
+--- Neo-tree iterates M.worktrees with pairs() (unordered). When both a
+--- parent repo (e.g. /repo) and a child worktree (e.g. /repo/.worktrees/foo)
+--- are registered, either can match first. If the parent matches, the child's
+--- git status is never consulted and files get the wrong status or no status.
+---
+--- This replaces find_existing_worktree with a version that picks the longest
+--- matching root, then caches the result in _upward_worktree_cache.
+--- Idempotent: safe to call multiple times.
+local neo_tree_patched = false
+local function patch_neo_tree_git_lookup()
+  if neo_tree_patched then return end
+  local ok, neo_git = pcall(require, "neo-tree.git")
+  if not ok then return end
+  local ok_utils, neo_utils = pcall(require, "neo-tree.utils")
+  if not ok_utils then return end
+
+  neo_git.find_existing_worktree = function(path)
+    local cached = neo_git._upward_worktree_cache[path]
+    if cached ~= nil then
+      local wt = cached and neo_git.worktrees[cached]
+      return cached or nil, wt and wt
+    end
+    local best_root, best_wt
+    for root, wt in pairs(neo_git.worktrees) do
+      if neo_utils.is_subpath(root, path, true) then
+        if not best_root or #root > #best_root then
+          best_root = root
+          best_wt = wt
+        end
+      end
+    end
+    neo_git._upward_worktree_cache[path] = best_root or false
+    return best_root, best_wt
+  end
+  neo_tree_patched = true
+end
+
+--- Public entry point for the neo-tree git_status_changed event handler.
+--- Strips .worktrees/ ignored entries from all registered worktrees, then
+--- patches find_existing_worktree to prefer the deepest match.
+function M.on_git_status_changed()
+  strip_all_worktrees_ignored()
+  patch_neo_tree_git_lookup()
+end
+
+------------------------------------------------------------------------
+-- Public API: worktree switch
+------------------------------------------------------------------------
+
 --- Switch to a worktree directory.
 --- Saves current file buffer paths (unlist), tcd to target,
 --- restores saved buffers (relist) or opens scratch on first visit.
@@ -565,10 +660,14 @@ function M.switch_to(dir)
      -- worktree" assertion crashes in change_worktree_git_status.
      -- Clearing only the lookup cache is safe — Neotree dir= below
      -- re-registers the target directory via try_register_worktree.
-     local ok_git, neo_git = pcall(require, "neo-tree.git")
-     if ok_git then
-       neo_git._upward_worktree_cache = setmetatable({}, { __mode = "kv" })
-     end
+      local ok_git, neo_git = pcall(require, "neo-tree.git")
+      if ok_git then
+        neo_git._upward_worktree_cache = setmetatable({}, { __mode = "kv" })
+      end
+      -- Ensure the deepest-match patch is active and strip stale
+      -- .worktrees/ ignored entries before the rescan.
+      patch_neo_tree_git_lookup()
+      strip_all_worktrees_ignored()
 
     -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly).
     -- This triggers status_async which re-populates the cache for the new path.
@@ -1068,37 +1167,6 @@ function M.build_tabline(worktrees)
   return tl.build(M.get_entries(worktrees))
 end
 
---- Remove "!" (ignored) entries for .worktrees paths from a neo-tree
---- git status table. The parent repo's .gitignore lists .worktrees/,
---- so neo-tree's status_async marks everything under it as ignored.
---- This strips those entries so child worktrees render with correct
---- git status from their own status_async call.
---- Mutates the table in-place.
---- @param status table<string, string> neo-tree git status table (path -> code)
---- @param git_root string absolute path to the repo root (no trailing slash)
-local function strip_worktrees_ignored(status, git_root)
-  local worktrees_dir = git_root .. "/.worktrees"
-  local to_remove = {}
-  for path, code in pairs(status) do
-    if
-      code == "!"
-      and (path == worktrees_dir or vim.startswith(path, worktrees_dir .. "/"))
-    then
-      to_remove[#to_remove + 1] = path
-    end
-  end
-  for _, path in ipairs(to_remove) do
-    status[path] = nil
-  end
-end
-
---- Public wrapper for neo-tree event_handlers config.
---- @param status table<string, string>
---- @param git_root string
-function M.strip_worktrees_ignored(status, git_root)
-  strip_worktrees_ignored(status, git_root)
-end
-
 ------------------------------------------------------------------------
 -- Test internals (exposed for unit tests only)
 ------------------------------------------------------------------------
@@ -1118,6 +1186,8 @@ M._internal = {
   unsubscribe_all = unsubscribe_all,
   resolve_git_common_dir = resolve_git_common_dir,
   strip_worktrees_ignored = strip_worktrees_ignored,
+  strip_all_worktrees_ignored = strip_all_worktrees_ignored,
+  patch_neo_tree_git_lookup = patch_neo_tree_git_lookup,
   list_worktrees = list_worktrees,
   find_current_worktree = find_current_worktree,
   prompt_branch = prompt_branch,
@@ -1140,6 +1210,7 @@ M._internal = {
     unsubscribe_all()
     state = {}
     initialised = false
+    neo_tree_patched = false
     if dir_timer then
       dir_timer:stop()
       dir_timer:close()
