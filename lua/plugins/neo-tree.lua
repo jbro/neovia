@@ -29,19 +29,22 @@ return {
           },
         },
       },
-      -- Strip .worktrees/ from the parent repo's git status so child
-      -- worktrees don't inherit the "ignored" marker. Without this,
-      -- the parent's .gitignore entry for .worktrees/ causes neo-tree
-      -- to mark every file in a child worktree as gitignored (dimmed
-      -- icons and names). Child worktrees still get their own correct
-      -- git status via their own status_async call.
+      -- Fix git status in worktrees. Two problems:
+      -- 1. The parent repo's .gitignore lists .worktrees/, so neo-tree
+      --    marks everything under it as ignored ("!"). We strip those
+      --    entries from ALL registered worktrees on every status update.
+      -- 2. Neo-tree's find_existing_worktree uses pairs() (unordered).
+      --    When both parent and child are registered, the wrong one can
+      --    match. We patch it to prefer the deepest (most specific) root.
+      -- The handler runs before neo-tree's own git_status_changed handler
+      -- (registered later via manager.subscribe), so the redraw sees
+      -- clean data.
       event_handlers = {
         {
           event = "git_status_changed",
-          handler = function(args)
-            if not args.git_status then return end
+          handler = function()
             local ok, wt = pcall(require, "neovia.worktree")
-            if ok then wt.strip_worktrees_ignored(args.git_status, args.git_root) end
+            if ok then wt.on_git_status_changed() end
           end,
         },
       },
