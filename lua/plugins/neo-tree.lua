@@ -2,16 +2,16 @@
 local layout = require("neovia.layout")
 
 --- Custom open command: always opens files in the code window.
---- Directories toggle expand/collapse as usual.
+--- Directories use the filesystem source's toggle_directory so that
+--- unloaded directories are scanned and expanded (not just toggled).
 local function open_in_code_win(state)
   local tree = state.tree
   local ok, node = pcall(tree.get_node, tree)
   if not (ok and node) then return end
 
   if node.type == "directory" then
-    -- Toggle directory expansion (default neo-tree behaviour).
-    local cc_ok, cc = pcall(require, "neo-tree.sources.common.commands")
-    if cc_ok then cc.toggle_node(state) end
+    local fs_ok, fs = pcall(require, "neo-tree.sources.filesystem")
+    if fs_ok then fs.toggle_directory(state, node) end
     return
   end
 

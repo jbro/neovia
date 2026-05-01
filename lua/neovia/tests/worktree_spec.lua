@@ -1225,6 +1225,38 @@ describe("switch_to", function()
     assert.is_truthy(neotree_dir_cmd:find("dir="), "expected Neotree dir= argument")
   end)
 
+  it("clears neo-tree git status for target worktree before navigating", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Mock neo-tree.git module with a worktree entry that has cached status
+    local fake_neo_git = {
+      worktrees = {
+        [dir_b] = {
+          status = { ["some/file.lua"] = "M" },
+          git_dir = dir_b .. "/.git",
+        },
+      },
+      _upward_worktree_cache = {},
+    }
+    package.loaded["neo-tree.git"] = fake_neo_git
+
+    wt.switch_to(dir_b)
+
+    -- The vim.schedule callback needs to run
+    vim.wait(200, function()
+      return fake_neo_git.worktrees[dir_b].status == nil
+    end)
+
+    assert.is_nil(fake_neo_git.worktrees[dir_b].status,
+      "git status should be cleared for target worktree before Neotree dir=")
+
+    package.loaded["neo-tree.git"] = nil
+  end)
+
   it("does not include notes buffer in saved buffer_paths", function()
     local notes = require("neovia.notes")
     local test_cache_dir = vim.fn.tempname() .. "_wt_switch_paths_test"

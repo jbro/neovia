@@ -741,6 +741,19 @@ function M.switch_to(dir)
       patch_neo_tree_git_lookup()
       strip_all_worktrees_ignored()
 
+      -- Clear the target worktree's cached git status so neo-tree
+      -- takes the full-scan path instead of short-circuiting on a
+      -- stale raw_status_text_cache match.  We keep the worktree
+      -- entry (deleting it causes assertion crashes in async jobs)
+      -- but nil out its status table.
+      if ok_git and neo_git.worktrees then
+        for root, wt in pairs(neo_git.worktrees) do
+          if vim.startswith(dir, root) then
+            wt.status = nil
+          end
+        end
+      end
+
     -- Restore saved expanded nodes before navigating so neo-tree's
     -- renderer uses force_open_folders instead of collapsing to root.
     restore_neo_tree_expanded(dir)

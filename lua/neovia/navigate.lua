@@ -112,18 +112,33 @@ local function find_notes_win()
   return nil
 end
 
---- Create a code window to the left of the opencode pane.
+--- Find the neo-tree sidebar window. Returns nil if none found.
+--- @return integer?
+local function find_neo_tree_win()
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_is_valid(win)
+      and vim.api.nvim_win_get_config(win).relative == ""
+    then
+      local buf = vim.api.nvim_win_get_buf(win)
+      local ft = vim.bo[buf].filetype
+      if ft == "neo-tree" then return win end
+    end
+  end
+  return nil
+end
+
+--- Create a code window between neo-tree and opencode.
+--- Uses nvim_open_win with split to avoid focus changes and race conditions.
+--- Callers replace the scratch buffer immediately (open_in_code_win).
 --- @return integer win  The new window handle.
 local function create_code_win()
-  -- Create a full-height vertical split at the far left. We use an
-  -- unlisted scratch buffer to avoid inheriting a terminal buffer
-  -- from the current window. Callers replace this buffer immediately
-  -- (open_in_code_win), so it never appears in :ls or :bn.
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.cmd("topleft vsplit")
-  local win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(win, buf)
-  return win
+  local tree_win = find_neo_tree_win()
+  if tree_win then
+    return vim.api.nvim_open_win(buf, false, { split = "right", win = tree_win })
+  end
+  -- No neo-tree: split at the far left (least likely in practice).
+  return vim.api.nvim_open_win(buf, false, { split = "left", win = 0 })
 end
 
 

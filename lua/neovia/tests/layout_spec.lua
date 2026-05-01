@@ -506,6 +506,53 @@ describe("setup", function()
     pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
   end)
 
+  it("restores code window to the right of neo-tree after :bw", function()
+    layout.setup()
+
+    I.set_opencode_opener(function() end)
+
+    -- Simulate the layout: neo-tree (left) | code (centre) | opencode (right)
+    -- Neo-tree window
+    local tree_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[tree_buf].filetype = "neo-tree"
+    vim.api.nvim_win_set_buf(0, tree_buf)
+
+    -- Code window to the right of neo-tree
+    vim.cmd("vsplit")
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    -- Opencode window to the right of code
+    vim.cmd("vsplit")
+    local oc_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_buf)
+
+    -- Switch to code window and wipe its only buffer
+    local code_win = navigate.find_code_win()
+    vim.api.nvim_set_current_win(code_win)
+    vim.cmd("bwipeout!")
+
+    vim.wait(100, function() return false end)
+
+    -- Code window should be restored
+    local new_code_win = navigate.find_code_win()
+    assert.is_not_nil(new_code_win, "code window should be restored after :bw")
+
+    -- Code window must be to the RIGHT of neo-tree, not to its left.
+    -- Check window positions: code_win col > neo-tree col
+    if new_code_win then
+      local tree_col = vim.api.nvim_win_get_position(
+        vim.fn.win_getid(vim.fn.bufwinnr(tree_buf)))[2]
+      local code_col = vim.api.nvim_win_get_position(new_code_win)[2]
+      assert.is_true(code_col > tree_col,
+        "code window should be to the right of neo-tree, not to the left")
+    end
+
+    pcall(vim.api.nvim_buf_delete, tree_buf, { force = true })
+    pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
+  end)
+
   it("does not create extra code windows when layout has code + opencode after close", function()
     layout.setup()
 
