@@ -126,7 +126,14 @@ end
 --- If no code window exists, create one with a noname buffer.
 --- If no notes window exists, create the notes split.
 --- If no opencode window exists, reopen it.
+--- Skips entirely on diffview tabs (they manage their own layout).
 local function ensure_layout()
+  -- Skip on diffview tabs -- they manage their own window layout.
+  local ok_dv, dv = pcall(require, "neovia.diffview")
+  if ok_dv and dv.is_diffview_tab(vim.api.nvim_get_current_tabpage()) then
+    return
+  end
+
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if not ok_nav then return end
 

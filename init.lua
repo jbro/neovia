@@ -131,6 +131,11 @@ require("neovia.layout").setup()
 require("neovia.worktree").setup()
 
 ------------------------------------------------------------------------
+-- Diffview (per-worktree diffview tab management)
+------------------------------------------------------------------------
+require("neovia.diffview").setup()
+
+------------------------------------------------------------------------
 -- PR status (GitHub PR polling for tabline/statusline)
 ------------------------------------------------------------------------
 require("neovia.pr").setup()

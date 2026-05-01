@@ -176,6 +176,7 @@ end
 --- @field status string
 --- @field current boolean
 --- @field pr neovia.PrInfo|nil
+--- @field view "code"|"diff"|nil  Active view tab ("diff" when on diffview tab)
 
 --- Transitional highlight group name for a powerline separator.
 --- @param from string  "sel", "wt", or "fill"
@@ -217,7 +218,8 @@ function M.build(entries)
         end
       end
     end
-    local content = "%#" .. bg_hl .. "# " .. pr_prefix .. e.branch .. " " .. char .. " "
+    local view_icon = e.view == "diff" and "\u{f440}" or "\u{f121}"
+    local content = "%#" .. bg_hl .. "# " .. pr_prefix .. e.branch .. " " .. view_icon .. " " .. char .. " "
 
     -- Wrap non-current entries with click handler.
     if not e.current then

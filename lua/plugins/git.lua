@@ -10,10 +10,10 @@ return {
   },
   {
     "sindrets/diffview.nvim",
-    cmd = { "DiffviewOpen", "DiffviewFileHistory" },
+    cmd = { "DiffviewOpen", "DiffviewFileHistory", "DiffviewClose" },
     keys = {
-      { "<leader>gd", "<cmd>DiffviewOpen<cr>", desc = "Diff view" },
-      { "<leader>gl", "<cmd>DiffviewFileHistory<cr>", desc = "File history" },
+      { "<leader>dd", function() require("neovia.diffview").toggle_diff(vim.fn.getcwd(-1, 0)) end, desc = "Toggle diff" },
+      { "<leader>dh", function() require("neovia.diffview").toggle_history(vim.fn.getcwd(-1, 0)) end, desc = "Toggle file history" },
     },
     opts = {},
   },

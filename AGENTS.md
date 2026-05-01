@@ -68,6 +68,7 @@ These rules define what neovia is. They guide design and implementation decision
 - Session notes (`neovia.notes`): per-worktree persistent markdown notes in a dedicated bottom split. Storage: `stdpath("cache")/notes/<sha256(dir)>.md`. Listed, exempt from read-only mode, saved on BufLeave. Notes buffers are excluded from `buffer_paths` (managed separately from file buffers). Notes are keyed by worktree directory, not opencode session -- they survive session changes.
 - Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, tells neo-tree the new root, relists saved buffers, and swaps the notes buffer in the notes window. Deleting wipes buffers, tears down SSE, removes notes storage from disk, and removes the git worktree. Tombstone sessions ensure reused paths start clean.
 - Lualine tabline shows worktree branches with status indicators. Current branch highlighted. Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
+- Diffview (`neovia.diffview`): each worktree can have a lazy diffview tab page. `<leader>dd` toggles working-tree diff, `<leader>dh` toggles file history. `ensure_layout()` skips diffview tabs. Worktree navigation (`wn`/`wp`/`ww`) lands on the last-active tab (code or diff) per worktree. Tabline shows `[diff]` when on a diffview tab. Worktree deletion closes associated diffview tabs.
 
 ## Decision Log
 
@@ -150,3 +151,14 @@ notes (`neovia.notes`) live in a dedicated bottom split (15 lines) below the
 code window. Notes are exempt from read-only mode via `vim.b.neovia_notes`
 check in `mode.should_lock()`. The code window starts with a noname buffer
 that disappears when a real file is opened.
+
+### 0012 - Diffview in per-worktree tab pages (2026-05-01)
+
+Diffview gets its own tab page per worktree (lazy, created on first use).
+`<leader>dd` toggles working-tree diff (staged + unstaged), `<leader>dh`
+toggles file history. Both reuse the same tab slot per worktree. The
+tabline shows `[diff]` indicator when the diffview tab is active.
+`ensure_layout()` is skipped on diffview tabs. Worktree navigation
+(`wn`/`wp`/`ww`) lands on whichever tab (code or diff) was last active
+for the target worktree, tracked via `last_view` in worktree state.
+Worktree deletion closes associated diffview tabs.

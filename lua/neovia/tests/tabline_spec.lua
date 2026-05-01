@@ -280,6 +280,43 @@ describe("build", function()
     assert.is_truthy(result:find("\u{f407} feat", 1, true))
   end)
 
+  it("shows diff icon when view is 'diff'", function()
+    local entries = {
+      { branch = "feat", status = "idle", current = true, path = "/proj/feat",
+        view = "diff" },
+    }
+    local result = tabline.build(entries)
+    assert.is_truthy(result:find("\u{f440}", 1, true), "expected diff icon (git-compare)")
+    assert.is_truthy(result:find("feat"), "expected branch name")
+  end)
+
+  it("shows code icon when view is nil (no diffview tab)", function()
+    local entries = {
+      { branch = "feat", status = "idle", current = true, path = "/proj/feat" },
+    }
+    local result = tabline.build(entries)
+    assert.is_truthy(result:find("\u{f121}", 1, true), "expected code icon (code brackets)")
+    assert.is_falsy(result:find("\u{f440}", 1, true), "should not show diff icon")
+  end)
+
+  it("always includes a view icon so tabline width is stable", function()
+    local entries_code = {
+      { branch = "feat", status = "idle", current = true, path = "/proj/feat" },
+    }
+    local entries_diff = {
+      { branch = "feat", status = "idle", current = true, path = "/proj/feat",
+        view = "diff" },
+    }
+    local result_code = tabline.build(entries_code)
+    local result_diff = tabline.build(entries_diff)
+    -- Both should contain exactly one view icon character (either code or diff)
+    assert.is_truthy(result_code:find("\u{f121}", 1, true), "code view should have code icon")
+    assert.is_truthy(result_diff:find("\u{f440}", 1, true), "diff view should have diff icon")
+    -- Neither should have the other icon
+    assert.is_falsy(result_code:find("\u{f440}", 1, true))
+    assert.is_falsy(result_diff:find("\u{f121}", 1, true))
+  end)
+
   it("registers click paths for non-current entries", function()
     local entries = {
       { branch = "main", status = "idle", current = true, path = "/proj/main" },

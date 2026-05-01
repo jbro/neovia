@@ -160,6 +160,7 @@ return {
         { "<leader>b", group = "Buffer" },
         { "<leader>f", group = "Find" },
         { "<leader>s", group = "Search" },
+        { "<leader>d", group = "Diff" },
         { "<leader>g", group = "Git" },
         { "<leader>o", group = "OpenCode" },
         { "<leader>oE", group = "Engine" },

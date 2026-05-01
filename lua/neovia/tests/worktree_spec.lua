@@ -1366,6 +1366,80 @@ describe("switch_to", function()
     package.loaded["neo-tree.ui.renderer"] = nil
     package.loaded["neo-tree.sources.manager"] = nil
   end)
+
+  it("jumps to the target worktree's diffview tab when last_view is diff", function()
+    local dv = require("neovia.diffview")
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", last_view = "diff" }),
+    })
+
+    -- Create a diffview tab for dir_b
+    vim.cmd("tabnew")
+    local dv_tab = vim.api.nvim_get_current_tabpage()
+    dv._internal.register(dir_b, dv_tab)
+    -- Go back to the first tab
+    vim.cmd("tabfirst")
+
+    wt.switch_to(dir_b)
+
+    -- Should be on the diffview tab now
+    assert.equals(dv_tab, vim.api.nvim_get_current_tabpage(),
+      "should land on the diffview tab when last_view is diff")
+
+    -- Cleanup
+    vim.cmd("tabfirst")
+    pcall(vim.cmd.tcd, orig_cwd)
+    while #vim.api.nvim_list_tabpages() > 1 do
+      vim.cmd("tablast | tabclose")
+    end
+    dv._internal.reset()
+  end)
+
+  it("stays on code tab when target has no diffview tab even if last_view is diff", function()
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat", last_view = "diff" }),
+    })
+
+    local code_tab = vim.api.nvim_get_current_tabpage()
+
+    wt.switch_to(dir_b)
+
+    assert.equals(code_tab, vim.api.nvim_get_current_tabpage(),
+      "should stay on code tab when no diffview tab exists")
+  end)
+
+  it("saves last_view as diff when switching away from a diffview tab", function()
+    local dv = require("neovia.diffview")
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Create and register a diffview tab for dir_a, and make it current
+    vim.cmd("tabnew")
+    local dv_tab = vim.api.nvim_get_current_tabpage()
+    dv._internal.register(dir_a, dv_tab)
+    -- We're now on the diffview tab for dir_a
+
+    wt.switch_to(dir_b)
+
+    -- dir_a's last_view should be "diff"
+    assert.equals("diff", I.get_state()[dir_a].last_view,
+      "should save last_view as diff when switching away from diffview tab")
+
+    -- Cleanup
+    vim.cmd("tabfirst")
+    pcall(vim.cmd.tcd, orig_cwd)
+    while #vim.api.nvim_list_tabpages() > 1 do
+      vim.cmd("tablast | tabclose")
+    end
+    dv._internal.reset()
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -2184,6 +2258,40 @@ describe("_delete_continue", function()
     assert.is_nil(I.get_state()["/proj/feat"])
   end)
 
+  it("closes diffview tab for deleted worktree", function()
+    local dv = require("neovia.diffview")
+
+    vim.system = function()
+      return { wait = function() return { code = 0, stdout = "" } end }
+    end
+
+    I.set_state({
+      ["/proj/feat"] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Create and register a diffview tab for /proj/feat
+    vim.cmd("tabnew")
+    local dv_tab = vim.api.nvim_get_current_tabpage()
+    dv._internal.register("/proj/feat", dv_tab)
+    vim.cmd("tabfirst")
+
+    local tab_count_before = #vim.api.nvim_list_tabpages()
+
+    local wt_entry = { path = "/proj/feat", branch = "feat", head = "abc", bare = false }
+    wt._delete_continue(wt_entry)
+
+    assert.equals(tab_count_before - 1, #vim.api.nvim_list_tabpages(),
+      "diffview tab should be closed on worktree delete")
+    assert.is_false(dv.has_diffview_tab("/proj/feat"),
+      "diffview tab should be unregistered on worktree delete")
+
+    -- Cleanup
+    while #vim.api.nvim_list_tabpages() > 1 do
+      vim.cmd("tablast | tabclose")
+    end
+    dv._internal.reset()
+  end)
+
   it("force-deletes branch via async vim.system when user confirms", function()
     local call_idx = 0
     local force_cmd = nil
@@ -2377,6 +2485,56 @@ describe("get_entries", function()
     assert.is_nil(entries[1].pr)
 
     pr._internal.set_cache({})
+  end)
+
+  it("sets view to 'diff' when worktree has a diffview tab and it is current", function()
+    local dv = require("neovia.diffview")
+    -- Create a tab and register it as diffview for /proj/feat
+    vim.cmd("tabnew")
+    local dv_tab = vim.api.nvim_get_current_tabpage()
+    dv._internal.register("/proj/feat", dv_tab)
+
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    -- We're on the diffview tab for /proj/feat, so it should be "diff"
+    assert.equals("diff", entries[2].view)
+    -- main has no diffview tab
+    assert.is_nil(entries[1].view)
+
+    -- Cleanup
+    while #vim.api.nvim_list_tabpages() > 1 do
+      vim.cmd("tablast | tabclose")
+    end
+    dv._internal.reset()
+  end)
+
+  it("sets view to diff when worktree has a diffview tab even if not current tab", function()
+    local dv = require("neovia.diffview")
+    -- Create a tab and register it, then switch away
+    vim.cmd("tabnew")
+    local dv_tab = vim.api.nvim_get_current_tabpage()
+    dv._internal.register("/proj/feat", dv_tab)
+    -- Switch back to first tab (not on the diffview tab)
+    vim.cmd("tabfirst")
+
+    local worktrees = {
+      { path = "/proj/main", branch = "main", head = "abc1234", bare = false },
+      { path = "/proj/feat", branch = "feat-a", head = "abc1234", bare = false },
+    }
+    local entries = wt.get_entries(worktrees)
+    -- The diffview tab exists for feat, so [diff] should show regardless
+    assert.equals("diff", entries[2].view,
+      "view should be diff when a diffview tab exists, even from another tab")
+    -- main still has no diffview tab
+    assert.is_nil(entries[1].view)
+
+    while #vim.api.nvim_list_tabpages() > 1 do
+      vim.cmd("tablast | tabclose")
+    end
+    dv._internal.reset()
   end)
 end)
 

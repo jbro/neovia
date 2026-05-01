@@ -116,8 +116,14 @@ end)
 
 describe("ensure_layout", function()
   after_each(function()
+    -- Close extra tabs
+    while #vim.api.nvim_list_tabpages() > 1 do
+      vim.cmd("tablast | tabclose")
+    end
     vim.cmd("only")
     I.set_opencode_opener(nil)
+    local ok_dv, dv = pcall(require, "neovia.diffview")
+    if ok_dv and dv._internal then dv._internal.reset() end
   end)
 
   it("creates a code window with noname buffer when none exists", function()
@@ -230,6 +236,29 @@ describe("ensure_layout", function()
     vim.api.nvim_buf_delete(code_buf, { force = true })
     vim.api.nvim_buf_delete(notes_buf, { force = true })
     vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+
+  it("skips layout enforcement on diffview tabs", function()
+    local dv = require("neovia.diffview")
+    -- Create a tab and register it as a diffview tab
+    vim.cmd("tabnew")
+    local dv_tab = vim.api.nvim_get_current_tabpage()
+    dv._internal.register("/proj/main", dv_tab)
+
+    -- The tab has just a single scratch buffer -- normally ensure_layout
+    -- would try to create code/opencode windows.
+    local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
+
+    local opener_called = false
+    I.set_opencode_opener(function() opener_called = true end)
+
+    I.ensure_layout()
+
+    -- Should NOT have modified the window layout or called opener
+    assert.equals(win_count_before, #vim.api.nvim_tabpage_list_wins(0),
+      "ensure_layout should not create windows on diffview tabs")
+    assert.is_false(opener_called,
+      "ensure_layout should not call opencode opener on diffview tabs")
   end)
 end)
 

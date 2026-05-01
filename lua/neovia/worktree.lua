@@ -25,6 +25,7 @@ local M = {}
 --- @field session_id string|nil  cached opencode session ID (used by resync and fork)
 --- @field model_state neovia.ModelState|nil  saved model/variant/mode for restore on switch
 --- @field neo_tree_expanded string[]|nil  saved expanded node IDs (absolute paths) for restore on switch
+--- @field last_view "code"|"diff"|nil  which tab (code or diffview) was last active
 
 --- Per-directory state. Keyed by absolute path.
 --- @type table<string, neovia.WorktreeState>
@@ -624,13 +625,30 @@ function M.switch_to(dir)
   local cwd = tab_cwd()
   if cwd == dir then return end
 
-  -- Save current buffers, session ID, model state, and neo-tree expanded nodes
+  -- Save current buffers, session ID, model state, neo-tree expanded nodes,
+  -- and which tab (code vs diffview) was active.
   local current_entry = state[cwd]
   if current_entry then
     current_entry.buffer_paths = collect_file_buffers()
     save_session_id(cwd)
     save_model_state(cwd)
     save_neo_tree_expanded(cwd)
+    -- Record whether we're leaving from a diffview tab
+    local ok_dv, dv_mod = pcall(require, "neovia.diffview")
+    if ok_dv and dv_mod.is_diffview_tab(vim.api.nvim_get_current_tabpage()) then
+      current_entry.last_view = "diff"
+    else
+      current_entry.last_view = "code"
+    end
+  end
+
+  -- If currently on a diffview tab, switch to the code tab first
+  -- so tcd and buffer operations happen in the right context.
+  do
+    local ok_dv, dv_mod = pcall(require, "neovia.diffview")
+    if ok_dv and dv_mod.is_diffview_tab(vim.api.nvim_get_current_tabpage()) then
+      vim.cmd("tabfirst")
+    end
   end
 
   -- Unlist current file buffers
@@ -654,6 +672,7 @@ function M.switch_to(dir)
       session_id = nil,
       model_state = nil,
       neo_tree_expanded = nil,
+      last_view = nil,
     }
   end
 
@@ -685,6 +704,18 @@ function M.switch_to(dir)
   -- Immediate tabline update so the current-worktree highlight is visible
   -- without waiting for the debounced DirChanged handler.
   vim.cmd.redrawtabline()
+
+  -- If the target worktree was last viewed on its diffview tab, jump there.
+  do
+    local ok_dv, dv_mod = pcall(require, "neovia.diffview")
+    if ok_dv and target.last_view == "diff" then
+      local dv_tab = dv_mod.tab_for_worktree(dir)
+      if dv_tab then
+        local tabnr = vim.api.nvim_tabpage_get_number(dv_tab)
+        vim.cmd("tabnext " .. tabnr)
+      end
+    end
+  end
 
   -- Defer neo-tree root update and layout check.  The Neotree dir= command
   -- rescans the filesystem synchronously and is the most expensive single
@@ -916,6 +947,12 @@ function M._delete_continue(wt)
       pcall(entry.subscription.shutdown)
     end
     entry.subscription = nil
+  end
+
+  -- Close any diffview tab for this worktree
+  local ok_dv, dv_mod = pcall(require, "neovia.diffview")
+  if ok_dv then
+    dv_mod.close_for_worktree(wt.path)
   end
 
   -- git worktree remove (try clean first, then force)
@@ -1163,6 +1200,7 @@ function M.get_entries(worktrees)
   worktrees = worktrees or list_worktrees()
   local cwd = tab_cwd()
   local ok_pr, pr_mod = pcall(require, "neovia.pr")
+  local ok_dv, dv_mod = pcall(require, "neovia.diffview")
   local entries = {} --- @type neovia.TablineEntry[]
 
   for _, wt in ipairs(worktrees) do
@@ -1171,12 +1209,20 @@ function M.get_entries(worktrees)
     -- Use the snapshotted branch from state (stable across rebases);
     -- fall back to the live git branch for worktrees not yet in state.
     local branch = (entry and entry.branch ~= "") and entry.branch or wt.branch
+
+    -- Determine active view: "diff" when this worktree has an open diffview tab.
+    local view = nil
+    if ok_dv and dv_mod.has_diffview_tab(wt.path) then
+      view = "diff"
+    end
+
     table.insert(entries, {
       branch = branch,
       path = wt.path,
       status = entry and entry.status or "unknown",
       current = wt.path == cwd,
       pr = pr_info,
+      view = view,
     })
   end
 
@@ -1278,6 +1324,7 @@ M._internal = {
       session_id = nil,
       model_state = nil,
       neo_tree_expanded = nil,
+      last_view = nil,
     }, overrides or {})
   end,
 }
