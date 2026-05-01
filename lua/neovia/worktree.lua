@@ -699,6 +699,9 @@ function M.switch_to(dir)
       local nbuf = notes_mod.get_or_create(dir)
       vim.api.nvim_win_set_buf(notes_win, nbuf)
     end
+    -- Re-enforce canonical height (buffer swap or equalalways may drift it).
+    local ok_layout, layout_mod = pcall(require, "neovia.layout")
+    if ok_layout then layout_mod.enforce_notes_height() end
   end
 
   -- Immediate tabline update so the current-worktree highlight is visible

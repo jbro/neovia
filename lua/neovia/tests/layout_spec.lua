@@ -702,6 +702,104 @@ describe("restore_layout", function()
 end)
 
 ------------------------------------------------------------------------
+-- enforce_notes_height
+------------------------------------------------------------------------
+
+describe("enforce_notes_height", function()
+  after_each(function()
+    vim.cmd("only")
+  end)
+
+  it("sets notes window height to notes_height", function()
+    -- Create a code window + notes window manually
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    vim.cmd("belowright split")
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.b[notes_buf].neovia_notes = true
+    vim.api.nvim_win_set_buf(0, notes_buf)
+    local notes_win = vim.api.nvim_get_current_win()
+
+    -- Set wrong height
+    vim.api.nvim_win_set_height(notes_win, 40)
+    assert.is_not.equals(layout.notes_height, vim.api.nvim_win_get_height(notes_win))
+
+    layout.enforce_notes_height()
+
+    assert.equals(layout.notes_height, vim.api.nvim_win_get_height(notes_win))
+
+    pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
+    pcall(vim.api.nvim_buf_delete, notes_buf, { force = true })
+  end)
+
+  it("sets winfixheight on the notes window", function()
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    vim.cmd("belowright split")
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.b[notes_buf].neovia_notes = true
+    vim.api.nvim_win_set_buf(0, notes_buf)
+    local notes_win = vim.api.nvim_get_current_win()
+
+    layout.enforce_notes_height()
+
+    assert.is_true(vim.wo[notes_win].winfixheight)
+
+    pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
+    pcall(vim.api.nvim_buf_delete, notes_buf, { force = true })
+  end)
+
+  it("is a no-op when no notes window exists", function()
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    -- Should not error
+    layout.enforce_notes_height()
+
+    pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
+  end)
+end)
+
+describe("open_notes_split enforces height on existing window", function()
+  after_each(function()
+    vim.cmd("only")
+  end)
+
+  it("re-enforces height when notes window already exists at wrong size", function()
+    local notes_mod = require("neovia.notes")
+    notes_mod._internal.reset()
+    notes_mod.setup({ cache_dir = vim.fn.tempname() .. "_layout_enforce_test" })
+
+    -- Create code + notes manually
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+    local code_win = vim.api.nvim_get_current_win()
+
+    vim.cmd("belowright split")
+    local nbuf = notes_mod.get_or_create(vim.fn.getcwd())
+    vim.api.nvim_win_set_buf(0, nbuf)
+    local notes_win = vim.api.nvim_get_current_win()
+
+    -- Simulate height drift
+    vim.wo[notes_win].winfixheight = false
+    vim.api.nvim_win_set_height(notes_win, 40)
+
+    -- ensure_layout should fix the height even though window exists
+    I.ensure_layout()
+
+    assert.equals(layout.notes_height, vim.api.nvim_win_get_height(notes_win),
+      "notes window height should be re-enforced")
+    assert.is_true(vim.wo[notes_win].winfixheight,
+      "winfixheight should be set")
+
+    pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
+    notes_mod._internal.reset()
+  end)
+end)
+
+------------------------------------------------------------------------
 -- reset (reload contract)
 ------------------------------------------------------------------------
 

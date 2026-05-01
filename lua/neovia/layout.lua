@@ -103,8 +103,21 @@ local function create_code_win()
   return vim.api.nvim_open_win(buf, false, { split = "left", win = 0 })
 end
 
+--- Set the notes window to the canonical height and lock it.
+--- Safe to call at any time; no-op if no notes window exists.
+function M.enforce_notes_height()
+  local ok_nav, navigate = pcall(require, "neovia.navigate")
+  if not ok_nav then return end
+
+  local notes_win = navigate.find_notes_win()
+  if not notes_win then return end
+
+  vim.api.nvim_win_set_height(notes_win, M.notes_height)
+  vim.wo[notes_win].winfixheight = true
+end
+
 --- Open the session notes buffer in a horizontal split below the code window.
---- Creates the split if no notes window exists.
+--- Creates the split if no notes window exists. Re-enforces height if one does.
 --- @param code_win integer  The code window to split below.
 local function open_notes_split(code_win)
   local ok_notes, notes = pcall(require, "neovia.notes")
@@ -112,9 +125,12 @@ local function open_notes_split(code_win)
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if not ok_nav then return end
 
-  -- Already have a notes window? Just ensure correct buffer.
+  -- Already have a notes window? Re-enforce height and return.
   local existing = navigate.find_notes_win()
-  if existing then return end
+  if existing then
+    M.enforce_notes_height()
+    return
+  end
 
   local nbuf = notes.get_or_create(vim.fn.getcwd())
 
@@ -124,7 +140,7 @@ local function open_notes_split(code_win)
   vim.cmd("belowright split")
   local notes_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(notes_win, nbuf)
-  vim.api.nvim_win_set_height(notes_win, M.notes_height)
+  M.enforce_notes_height()
 
   -- Restore focus.
   vim.api.nvim_set_current_win(prev_win)
@@ -166,6 +182,9 @@ local function ensure_layout()
       vim.notify("layout: failed to restore opencode: " .. tostring(err), vim.log.levels.WARN)
     end
   end
+  -- Re-enforce notes height after all panels are in place (opening new
+  -- panels may cause equalalways to redistribute window sizes).
+  M.enforce_notes_height()
 end
 
 ------------------------------------------------------------------------
@@ -220,6 +239,9 @@ function M.restore_layout()
 
   open_opencode()
 
+  -- Re-enforce notes height after opencode opens (equalalways may drift it).
+  M.enforce_notes_height()
+
   -- Ensure focus lands on the code window.
   new_code_win = navigate.find_code_win()
   if new_code_win then
@@ -271,6 +293,13 @@ function M.setup()
     end,
   })
 
+  vim.api.nvim_create_autocmd("VimResized", {
+    group = group,
+    callback = function()
+      M.enforce_notes_height()
+    end,
+  })
+
   vim.api.nvim_create_autocmd("VimEnter", {
     group = group,
     callback = function()
@@ -286,6 +315,8 @@ function M.setup()
           end
         end
         open_opencode()
+        -- Re-enforce notes height after opencode opens.
+        M.enforce_notes_height()
         -- Ensure focus lands on the code window, not neo-tree or opencode.
         if ok_nav then
           local code_win = navigate.find_code_win()
