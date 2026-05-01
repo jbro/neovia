@@ -4,7 +4,7 @@
 local M = {}
 
 --- Collect file paths of all listed, normal file buffers.
---- Excludes scratch buffers (they are managed separately).
+--- Excludes notes buffers (they are managed separately).
 --- @return string[]
 function M.collect_file_buffers()
   local paths = {}
@@ -12,7 +12,7 @@ function M.collect_file_buffers()
     if vim.api.nvim_buf_is_valid(buf)
       and vim.bo[buf].buflisted
       and vim.bo[buf].buftype == ""
-      and not vim.b[buf].neovia_scratch
+      and not vim.b[buf].neovia_notes
     then
       local name = vim.api.nvim_buf_get_name(buf)
       if name ~= "" then

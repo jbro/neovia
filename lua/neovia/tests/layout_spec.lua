@@ -21,6 +21,12 @@ describe("layout constants", function()
     assert.is_true(layout.opencode_ratio > 0)
     assert.is_true(layout.opencode_ratio < 1)
   end)
+
+  it("exposes notes_height as a positive integer", function()
+    assert.is_number(layout.notes_height)
+    assert.is_true(layout.notes_height > 0)
+    assert.equals(math.floor(layout.notes_height), layout.notes_height)
+  end)
 end)
 
 describe("opencode_width_ratio", function()
@@ -114,11 +120,7 @@ describe("ensure_layout", function()
     I.set_opencode_opener(nil)
   end)
 
-  it("creates a code window with scratch buffer when none exists", function()
-    local scratch = require("neovia.scratch")
-    scratch._internal.reset()
-    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_test" })
-
+  it("creates a code window with noname buffer when none exists", function()
     local oc_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[oc_buf].filetype = "opencode"
     vim.api.nvim_win_set_buf(0, oc_buf)
@@ -129,10 +131,39 @@ describe("ensure_layout", function()
 
     local code_win = navigate.find_code_win()
     assert.is_not_nil(code_win, "expected a code window to be created")
+    -- Code window should have a noname buffer (empty name, normal buftype)
     local buf = vim.api.nvim_win_get_buf(code_win)
-    assert.is_true(scratch.is_scratch(buf), "expected scratch buffer in code window")
+    assert.equals("", vim.api.nvim_buf_get_name(buf))
 
-    scratch._internal.reset()
+    vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+
+  it("creates a notes window when none exists", function()
+    local notes = require("neovia.notes")
+    notes._internal.reset()
+    notes.setup({ cache_dir = vim.fn.tempname() .. "_layout_notes_test" })
+
+    -- code window + opencode but no notes
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    vim.cmd("vsplit")
+    local oc_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_buf)
+
+    assert.is_nil(navigate.find_notes_win(), "no notes window should exist yet")
+
+    I.ensure_layout()
+
+    local notes_win = navigate.find_notes_win()
+    assert.is_not_nil(notes_win, "expected a notes window to be created")
+    local nbuf = vim.api.nvim_win_get_buf(notes_win)
+    assert.is_true(notes.is_notes(nbuf), "notes window should show a notes buffer")
+
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+    vim.api.nvim_buf_delete(oc_buf, { force = true })
+    notes._internal.reset()
   end)
 
   it("creates a code window even when the opencode window is a terminal", function()
@@ -174,10 +205,17 @@ describe("ensure_layout", function()
     vim.api.nvim_buf_delete(code_buf, { force = true })
   end)
 
-  it("does nothing when both code and opencode windows exist", function()
+  it("does nothing when code, notes, and opencode windows all exist", function()
     local code_buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_win_set_buf(0, code_buf)
 
+    -- Notes window below code
+    vim.cmd("split")
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.b[notes_buf].neovia_notes = true
+    vim.api.nvim_win_set_buf(0, notes_buf)
+
+    -- Opencode window to the right
     vim.cmd("vsplit")
     local oc_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[oc_buf].filetype = "opencode_output"
@@ -190,6 +228,7 @@ describe("ensure_layout", function()
     assert.equals(win_count_before, #vim.api.nvim_tabpage_list_wins(0))
 
     vim.api.nvim_buf_delete(code_buf, { force = true })
+    vim.api.nvim_buf_delete(notes_buf, { force = true })
     vim.api.nvim_buf_delete(oc_buf, { force = true })
   end)
 end)
@@ -346,44 +385,6 @@ describe("setup", function()
     pcall(vim.api.nvim_buf_delete, oc_in_buf, { force = true })
   end)
 
-  it("restores code window when scratch buffer is closed with two opencode terminal windows", function()
-    layout.setup()
-
-    -- Code window showing scratch buffer (left)
-    local scratch = require("neovia.scratch")
-    scratch._internal.reset()
-    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_scratch_close_test" })
-
-    local spec_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
-    local project_root = vim.fn.fnamemodify(spec_dir, ":h:h:h")
-    local scratch_buf = scratch.get_or_create(project_root)
-    vim.api.nvim_win_set_buf(0, scratch_buf)
-    local code_win = vim.api.nvim_get_current_win()
-
-    -- Opencode output (right, top) -- terminal buffer
-    vim.cmd("vsplit | terminal")
-    local oc_out_buf = vim.api.nvim_get_current_buf()
-    vim.bo[oc_out_buf].filetype = "opencode_output"
-
-    -- Opencode input (right, bottom) -- terminal buffer
-    vim.cmd("split | terminal")
-    local oc_in_buf = vim.api.nvim_get_current_buf()
-    vim.bo[oc_in_buf].filetype = "opencode"
-
-    -- Close the scratch window
-    vim.api.nvim_set_current_win(code_win)
-    vim.cmd("close")
-
-    vim.wait(100, function() return false end)
-
-    local new_code_win = navigate.find_code_win()
-    assert.is_not_nil(new_code_win, "code window should be restored after scratch close")
-
-    pcall(vim.api.nvim_buf_delete, oc_out_buf, { force = true })
-    pcall(vim.api.nvim_buf_delete, oc_in_buf, { force = true })
-    scratch._internal.reset()
-  end)
-
   it("restores code window when closed with :q instead of :close", function()
     layout.setup()
 
@@ -476,31 +477,7 @@ describe("setup", function()
     pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
   end)
 
-  it("open_scratch_in_code_win works when current window is a terminal", function()
-    local scratch = require("neovia.scratch")
-    scratch._internal.reset()
-    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_term_test" })
-
-    vim.cmd("terminal")
-    local term_buf = vim.api.nvim_get_current_buf()
-    vim.bo[term_buf].filetype = "opencode"
-
-    assert.is_nil(navigate.find_code_win(), "no code window should exist yet")
-
-    local spec_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
-    local project_root = vim.fn.fnamemodify(spec_dir, ":h:h:h")
-
-    local ok, err = pcall(navigate.open_scratch_in_code_win, project_root)
-
-    assert.is_true(ok, "open_scratch_in_code_win should not error: " .. tostring(err))
-    assert.is_not_nil(navigate.find_code_win(), "code window should be created")
-
-    vim.cmd("only")
-    pcall(vim.api.nvim_buf_delete, term_buf, { force = true })
-    scratch._internal.reset()
-  end)
-
-  it("does nothing when layout is correct after close", function()
+  it("does not create extra code windows when layout has code + opencode after close", function()
     layout.setup()
 
     local buf1 = vim.api.nvim_create_buf(true, false)
@@ -516,14 +493,14 @@ describe("setup", function()
     vim.bo[oc_buf].filetype = "opencode_output"
     vim.api.nvim_win_set_buf(0, oc_buf)
 
-    local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
-
+    -- Close one of the two code windows
     vim.api.nvim_set_current_win(win2)
     vim.cmd("close")
 
     vim.wait(50, function() return false end)
 
-    assert.equals(win_count_before - 1, #vim.api.nvim_tabpage_list_wins(0))
+    -- Code window should still exist (buf1's window remains)
+    assert.is_not_nil(navigate.find_code_win(), "code window should still exist")
 
     vim.api.nvim_buf_delete(buf1, { force = true })
     vim.api.nvim_buf_delete(buf2, { force = true })
@@ -542,7 +519,7 @@ describe("restore_layout", function()
     I.set_opencode_opener(nil)
   end)
 
-  it("rebuilds layout from scratch, closing extra windows", function()
+  it("rebuilds layout, closing extra windows", function()
     layout.setup()
 
     local opener_called = false
@@ -604,11 +581,7 @@ describe("restore_layout", function()
     pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
   end)
 
-  it("falls back to scratch buffer when no code buffer was showing", function()
-    local scratch = require("neovia.scratch")
-    scratch._internal.reset()
-    scratch.setup({ state_dir = vim.fn.tempname() .. "_layout_restore_test" })
-
+  it("uses noname buffer when no code buffer was showing", function()
     layout.setup()
 
     I.set_opencode_opener(function() end)
@@ -623,10 +596,32 @@ describe("restore_layout", function()
     local win = navigate.find_code_win()
     assert.is_not_nil(win)
     local buf = vim.api.nvim_win_get_buf(win)
-    assert.is_true(scratch.is_scratch(buf), "expected scratch buffer in code window")
+    -- Should be a noname buffer, not a notes buffer
+    assert.equals("", vim.api.nvim_buf_get_name(buf))
 
     pcall(vim.api.nvim_buf_delete, oc_buf, { force = true })
-    scratch._internal.reset()
+  end)
+
+  it("creates a notes split below the code window", function()
+    local notes = require("neovia.notes")
+    notes._internal.reset()
+    notes.setup({ cache_dir = vim.fn.tempname() .. "_layout_restore_notes_test" })
+
+    layout.setup()
+    I.set_opencode_opener(function() end)
+
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    layout.restore_layout()
+
+    local notes_win = navigate.find_notes_win()
+    assert.is_not_nil(notes_win, "expected notes window after restore_layout")
+    local nbuf = vim.api.nvim_win_get_buf(notes_win)
+    assert.is_true(notes.is_notes(nbuf), "notes window should show a notes buffer")
+
+    pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
+    notes._internal.reset()
   end)
 end)
 
@@ -651,7 +646,8 @@ describe("reset", function()
 
   it("disables WinClosed enforcement after reset", function()
     -- Flush any stale vim.schedule callbacks from previous tests
-    vim.wait(50, function() return false end)
+    vim.wait(150, function() return false end)
+    vim.cmd("only")
 
     layout.setup()
     I.reset()
@@ -668,7 +664,7 @@ describe("reset", function()
     vim.api.nvim_set_current_win(code_win)
     vim.cmd("close")
 
-    vim.wait(50, function() return false end)
+    vim.wait(100, function() return false end)
 
     assert.equals(1, #vim.api.nvim_tabpage_list_wins(0))
 

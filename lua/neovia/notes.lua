@@ -1,11 +1,11 @@
--- neovia scratch module
--- Per-worktree scratch buffer: persistent markdown notes in the code window.
+-- neovia notes module
+-- Per-worktree session notes buffer: persistent markdown notes.
 
 local M = {}
 
 local initialised = false
 
---- Tracked scratch buffers, keyed by worktree dir.
+--- Tracked notes buffers, keyed by worktree dir.
 --- @type table<string, integer>
 local buffers = {}
 
@@ -13,9 +13,9 @@ local buffers = {}
 --- @type table<integer, string>
 local buf_to_dir = {}
 
---- Configured state directory (set via setup()).
+--- Configured cache directory (set via setup()).
 --- @type string
-local state_dir = ""
+local cache_dir = ""
 
 ------------------------------------------------------------------------
 -- Pure helpers
@@ -23,13 +23,13 @@ local state_dir = ""
 
 local ok_fs, fs = pcall(require, "neovia.fs")
 
---- Compute the on-disk storage path for a worktree's scratch file.
+--- Compute the on-disk storage path for a worktree's notes file.
 --- @param dir string  Absolute worktree path.
---- @param sdir string  State directory root.
+--- @param cdir string  Cache directory root.
 --- @return string
-local function storage_path(dir, sdir)
+local function storage_path(dir, cdir)
   local hash = vim.fn.sha256(dir)
-  return sdir .. "/scratch/" .. hash .. ".md"
+  return cdir .. "/notes/" .. hash .. ".md"
 end
 
 --- Write lines to a file, creating parent directories.
@@ -62,13 +62,13 @@ end
 -- Buffer management
 ------------------------------------------------------------------------
 
---- Get or create a scratch buffer for a worktree directory.
+--- Get or create a notes buffer for a worktree directory.
 --- Loads persisted content from disk if available.
 --- @param dir string  Absolute worktree path.
---- @param sdir? string  Override state directory (for testing).
+--- @param cdir? string  Override cache directory (for testing).
 --- @return integer buf  Buffer handle.
-function M.get_or_create(dir, sdir)
-  sdir = sdir or state_dir
+function M.get_or_create(dir, cdir)
+  cdir = cdir or cache_dir
 
   -- Return existing buffer if still valid.
   local existing = buffers[dir]
@@ -85,30 +85,30 @@ function M.get_or_create(dir, sdir)
   vim.bo[buf].buftype = "acwrite"
   vim.bo[buf].swapfile = false
 
-  -- Set a virtual name so lualine and :ls show [scratch].
-  vim.api.nvim_buf_set_name(buf, dir .. "/[scratch]")
+  -- Set a virtual name so lualine and :ls show [session notes].
+  vim.api.nvim_buf_set_name(buf, dir .. "/[session notes]")
 
   -- Load content from disk.
-  local path = storage_path(dir, sdir)
+  local path = storage_path(dir, cdir)
   local lines = load_from_disk(path)
   if lines then
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   end
 
   -- Configure buffer.
-  -- Set scratch flag BEFORE filetype: setting filetype fires the FileType
+  -- Set notes flag BEFORE filetype: setting filetype fires the FileType
   -- autocmd, and mode.apply_lock() must see this exemption to avoid locking
-  -- the scratch buffer.
-  vim.b[buf].neovia_scratch = true
+  -- the notes buffer.
+  vim.b[buf].neovia_notes = true
   vim.bo[buf].filetype = "markdown"
 
   -- Mark as not modified (content matches disk or is empty).
   vim.bo[buf].modified = false
 
-  -- Handle :w on this scratch buffer (buftype=acwrite requires BufWriteCmd).
+  -- Handle :w on this notes buffer (buftype=acwrite requires BufWriteCmd).
   -- Registered per-buffer so normal file writes are not intercepted.
   vim.api.nvim_create_autocmd("BufWriteCmd", {
-    group = vim.api.nvim_create_augroup("neovia_scratch", { clear = false }),
+    group = vim.api.nvim_create_augroup("neovia_notes", { clear = false }),
     buffer = buf,
     callback = function()
       local d = buf_to_dir[buf]
@@ -121,23 +121,23 @@ function M.get_or_create(dir, sdir)
   return buf
 end
 
---- Save a scratch buffer's content to disk.
+--- Save a notes buffer's content to disk.
 --- No-op if no buffer exists for the directory.
 --- @param dir string  Absolute worktree path.
---- @param sdir? string  Override state directory (for testing).
-function M.save(dir, sdir)
-  sdir = sdir or state_dir
+--- @param cdir? string  Override cache directory (for testing).
+function M.save(dir, cdir)
+  cdir = cdir or cache_dir
 
   local buf = buffers[dir]
   if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
 
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local path = storage_path(dir, sdir)
+  local path = storage_path(dir, cdir)
   save_to_disk(path, lines)
   vim.bo[buf].modified = false
 end
 
---- Wipe a scratch buffer and remove from tracking.
+--- Wipe a notes buffer and remove from tracking.
 --- No-op if no buffer exists for the directory.
 --- @param dir string  Absolute worktree path.
 function M.wipe(dir)
@@ -151,42 +151,42 @@ function M.wipe(dir)
   end
 end
 
---- Delete the scratch file from disk for a worktree.
+--- Delete the notes file from disk for a worktree.
 --- @param dir string  Absolute worktree path.
---- @param sdir? string  Override state directory (for testing).
-function M.delete_storage(dir, sdir)
-  sdir = sdir or state_dir
-  local path = storage_path(dir, sdir)
+--- @param cdir? string  Override cache directory (for testing).
+function M.delete_storage(dir, cdir)
+  cdir = cdir or cache_dir
+  local path = storage_path(dir, cdir)
   if vim.fn.filereadable(path) == 1 then
     vim.fn.delete(path)
   end
 end
 
---- Check whether a buffer is a scratch buffer.
+--- Check whether a buffer is a notes buffer.
 --- @param buf integer
 --- @return boolean
-function M.is_scratch(buf)
+function M.is_notes(buf)
   if not vim.api.nvim_buf_is_valid(buf) then return false end
-  return vim.b[buf].neovia_scratch == true
+  return vim.b[buf].neovia_notes == true
 end
 
 ------------------------------------------------------------------------
 -- Setup
 ------------------------------------------------------------------------
 
---- @class neovia.ScratchOpts
---- @field state_dir? string  Override state directory (default: stdpath("state")).
+--- @class neovia.NotesOpts
+--- @field cache_dir? string  Override cache directory (default: stdpath("cache")).
 
---- Initialise the scratch module. Registers BufLeave autocmd for auto-save.
---- @param opts? neovia.ScratchOpts
+--- Initialise the notes module. Registers BufLeave autocmd for auto-save.
+--- @param opts? neovia.NotesOpts
 function M.setup(opts)
   if initialised then return end
   initialised = true
 
   opts = opts or {}
-  state_dir = opts.state_dir or vim.fn.stdpath("state")
+  cache_dir = opts.cache_dir or vim.fn.stdpath("cache")
 
-  local group = vim.api.nvim_create_augroup("neovia_scratch", { clear = true })
+  local group = vim.api.nvim_create_augroup("neovia_notes", { clear = true })
 
   vim.api.nvim_create_autocmd("BufLeave", {
     group = group,
@@ -196,7 +196,7 @@ function M.setup(opts)
     end,
   })
 
-  -- NOTE: BufWriteCmd for scratch buffers is registered per-buffer in
+  -- NOTE: BufWriteCmd for notes buffers is registered per-buffer in
   -- get_or_create(), not globally.  A global BufWriteCmd would swallow
   -- :w on every buffer, preventing normal file writes.
 end
@@ -222,8 +222,8 @@ M._internal = {
     buffers = {}
     buf_to_dir = {}
     initialised = false
-    state_dir = ""
-    pcall(vim.api.nvim_create_augroup, "neovia_scratch", { clear = true })
+    cache_dir = ""
+    pcall(vim.api.nvim_create_augroup, "neovia_notes", { clear = true })
   end,
 }
 

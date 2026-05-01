@@ -1,11 +1,11 @@
--- tests/neovia/scratch_spec.lua
--- Unit tests for lua/neovia/scratch.lua
+-- tests/neovia/notes_spec.lua
+-- Unit tests for lua/neovia/notes.lua (renamed from scratch.lua)
 
-local scratch = require("neovia.scratch")
-local I = scratch._internal
+local notes = require("neovia.notes")
+local I = notes._internal
 
 -- Use a unique temp dir for each test run to avoid collisions.
-local test_state_dir = vim.fn.tempname() .. "_neovia_scratch_test"
+local test_cache_dir = vim.fn.tempname() .. "_neovia_notes_test"
 
 local function cleanup_buf(buf)
   if buf and vim.api.nvim_buf_is_valid(buf) then
@@ -18,22 +18,22 @@ end
 ------------------------------------------------------------------------
 
 describe("storage_path", function()
-  it("returns a path under state_dir using sha256 of the worktree dir", function()
+  it("returns a path under cache_dir/notes/ using sha256 of the worktree dir", function()
     local dir = "/Users/me/projects/foo"
-    local result = I.storage_path(dir, "/tmp/state")
+    local result = I.storage_path(dir, "/tmp/cache")
     local hash = vim.fn.sha256(dir)
-    assert.equals("/tmp/state/scratch/" .. hash .. ".md", result)
+    assert.equals("/tmp/cache/notes/" .. hash .. ".md", result)
   end)
 
   it("returns different paths for different dirs", function()
-    local a = I.storage_path("/a", "/tmp/state")
-    local b = I.storage_path("/b", "/tmp/state")
+    local a = I.storage_path("/a", "/tmp/cache")
+    local b = I.storage_path("/b", "/tmp/cache")
     assert.are_not.equal(a, b)
   end)
 
   it("returns the same path for the same dir", function()
-    local a = I.storage_path("/a", "/tmp/state")
-    local b = I.storage_path("/a", "/tmp/state")
+    local a = I.storage_path("/a", "/tmp/cache")
+    local b = I.storage_path("/a", "/tmp/cache")
     assert.equals(a, b)
   end)
 end)
@@ -44,18 +44,18 @@ end)
 
 describe("save_to_disk", function()
   after_each(function()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
   it("creates parent directories and writes content", function()
-    local path = test_state_dir .. "/scratch/test.md"
+    local path = test_cache_dir .. "/notes/test.md"
     I.save_to_disk(path, { "# Notes", "", "hello" })
     local lines = vim.fn.readfile(path)
     assert.same({ "# Notes", "", "hello" }, lines)
   end)
 
   it("overwrites existing content", function()
-    local path = test_state_dir .. "/scratch/test.md"
+    local path = test_cache_dir .. "/notes/test.md"
     I.save_to_disk(path, { "old" })
     I.save_to_disk(path, { "new" })
     local lines = vim.fn.readfile(path)
@@ -63,7 +63,7 @@ describe("save_to_disk", function()
   end)
 
   it("writes empty file for empty lines", function()
-    local path = test_state_dir .. "/scratch/empty.md"
+    local path = test_cache_dir .. "/notes/empty.md"
     I.save_to_disk(path, {})
     local lines = vim.fn.readfile(path)
     assert.same({}, lines)
@@ -72,19 +72,19 @@ end)
 
 describe("load_from_disk", function()
   after_each(function()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
   it("reads lines from an existing file", function()
-    local path = test_state_dir .. "/scratch/test.md"
-    vim.fn.mkdir(test_state_dir .. "/scratch", "p")
+    local path = test_cache_dir .. "/notes/test.md"
+    vim.fn.mkdir(test_cache_dir .. "/notes", "p")
     vim.fn.writefile({ "line1", "line2" }, path)
     local lines = I.load_from_disk(path)
     assert.same({ "line1", "line2" }, lines)
   end)
 
   it("returns nil for a non-existent file", function()
-    local lines = I.load_from_disk(test_state_dir .. "/nope.md")
+    local lines = I.load_from_disk(test_cache_dir .. "/nope.md")
     assert.is_nil(lines)
   end)
 end)
@@ -100,47 +100,47 @@ describe("get_or_create", function()
 
   after_each(function()
     I.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
-  it("creates a listed buffer with the [scratch] name", function()
-    local buf = scratch.get_or_create("/tmp/wt1", test_state_dir)
+  it("creates a listed buffer with the [session notes] name", function()
+    local buf = notes.get_or_create("/tmp/wt1", test_cache_dir)
     assert.is_true(vim.api.nvim_buf_is_valid(buf))
     assert.is_true(vim.bo[buf].buflisted)
     local name = vim.api.nvim_buf_get_name(buf)
-    assert.is_truthy(name:find("%[scratch%]$"))
+    assert.is_truthy(name:find("%[session notes%]$"))
     cleanup_buf(buf)
   end)
 
   it("sets filetype to markdown", function()
-    local buf = scratch.get_or_create("/tmp/wt1", test_state_dir)
+    local buf = notes.get_or_create("/tmp/wt1", test_cache_dir)
     assert.equals("markdown", vim.bo[buf].filetype)
     cleanup_buf(buf)
   end)
 
-  it("sets the neovia_scratch buffer variable", function()
-    local buf = scratch.get_or_create("/tmp/wt1", test_state_dir)
-    assert.is_true(vim.b[buf].neovia_scratch)
+  it("sets the neovia_notes buffer variable", function()
+    local buf = notes.get_or_create("/tmp/wt1", test_cache_dir)
+    assert.is_true(vim.b[buf].neovia_notes)
     cleanup_buf(buf)
   end)
 
   it("does not create a swap file", function()
-    local buf = scratch.get_or_create("/tmp/wt1", test_state_dir)
+    local buf = notes.get_or_create("/tmp/wt1", test_cache_dir)
     local swapname = vim.fn.swapname(buf)
-    assert.equals("", swapname, "scratch buffer should not have a swap file")
+    assert.equals("", swapname, "notes buffer should not have a swap file")
     cleanup_buf(buf)
   end)
 
   it("returns the same buffer on repeated calls for the same dir", function()
-    local buf1 = scratch.get_or_create("/tmp/wt1", test_state_dir)
-    local buf2 = scratch.get_or_create("/tmp/wt1", test_state_dir)
+    local buf1 = notes.get_or_create("/tmp/wt1", test_cache_dir)
+    local buf2 = notes.get_or_create("/tmp/wt1", test_cache_dir)
     assert.equals(buf1, buf2)
     cleanup_buf(buf1)
   end)
 
   it("returns different buffers for different dirs", function()
-    local buf1 = scratch.get_or_create("/tmp/wt1", test_state_dir)
-    local buf2 = scratch.get_or_create("/tmp/wt2", test_state_dir)
+    local buf1 = notes.get_or_create("/tmp/wt1", test_cache_dir)
+    local buf2 = notes.get_or_create("/tmp/wt2", test_cache_dir)
     assert.are_not.equal(buf1, buf2)
     cleanup_buf(buf1)
     cleanup_buf(buf2)
@@ -149,38 +149,34 @@ describe("get_or_create", function()
   it("loads content from disk if file exists", function()
     -- Pre-populate disk
     local dir = "/tmp/wt_load_test"
-    local path = I.storage_path(dir, test_state_dir)
+    local path = I.storage_path(dir, test_cache_dir)
     vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
     vim.fn.writefile({ "# Saved notes", "content" }, path)
 
-    local buf = scratch.get_or_create(dir, test_state_dir)
+    local buf = notes.get_or_create(dir, test_cache_dir)
     local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
     assert.same({ "# Saved notes", "content" }, lines)
     cleanup_buf(buf)
   end)
 
   it("is not locked by mode module's FileType autocmd", function()
-    -- When mode.setup() is active, setting filetype fires a FileType autocmd
-    -- that calls apply_lock(). The scratch buffer must have buftype and
-    -- neovia_scratch set BEFORE filetype so that should_lock() exempts it.
     local mode = require("neovia.mode")
     mode._internal.reset()
     mode.setup({ auto_relock = true })
 
-    local buf = scratch.get_or_create("/tmp/wt_mode_lock", test_state_dir)
+    local buf = notes.get_or_create("/tmp/wt_mode_lock", test_cache_dir)
 
-    -- Scratch buffer must remain modifiable and not readonly.
-    assert.is_true(vim.bo[buf].modifiable, "scratch buffer should be modifiable")
-    assert.is_false(vim.bo[buf].readonly, "scratch buffer should not be readonly")
+    assert.is_true(vim.bo[buf].modifiable, "notes buffer should be modifiable")
+    assert.is_false(vim.bo[buf].readonly, "notes buffer should not be readonly")
 
     cleanup_buf(buf)
     mode._internal.reset()
   end)
 
   it("creates a buffer for the same dir if previous was wiped", function()
-    local buf1 = scratch.get_or_create("/tmp/wt1", test_state_dir)
+    local buf1 = notes.get_or_create("/tmp/wt1", test_cache_dir)
     vim.api.nvim_buf_delete(buf1, { force = true })
-    local buf2 = scratch.get_or_create("/tmp/wt1", test_state_dir)
+    local buf2 = notes.get_or_create("/tmp/wt1", test_cache_dir)
     assert.are_not.equal(buf1, buf2)
     assert.is_true(vim.api.nvim_buf_is_valid(buf2))
     cleanup_buf(buf2)
@@ -198,24 +194,23 @@ describe("save", function()
 
   after_each(function()
     I.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
   it("writes buffer content to disk", function()
-    local buf = scratch.get_or_create("/tmp/wt_save", test_state_dir)
+    local buf = notes.get_or_create("/tmp/wt_save", test_cache_dir)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "# Test", "data" })
 
-    scratch.save("/tmp/wt_save", test_state_dir)
+    notes.save("/tmp/wt_save", test_cache_dir)
 
-    local path = I.storage_path("/tmp/wt_save", test_state_dir)
+    local path = I.storage_path("/tmp/wt_save", test_cache_dir)
     local lines = vim.fn.readfile(path)
     assert.same({ "# Test", "data" }, lines)
     cleanup_buf(buf)
   end)
 
   it("is a no-op when no buffer exists for the dir", function()
-    -- Should not error
-    scratch.save("/tmp/nonexistent_wt", test_state_dir)
+    notes.save("/tmp/nonexistent_wt", test_cache_dir)
   end)
 end)
 
@@ -230,28 +225,28 @@ describe("wipe", function()
 
   after_each(function()
     I.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
   it("wipes the buffer and removes from tracking", function()
-    local buf = scratch.get_or_create("/tmp/wt_wipe", test_state_dir)
+    local buf = notes.get_or_create("/tmp/wt_wipe", test_cache_dir)
     assert.is_true(vim.api.nvim_buf_is_valid(buf))
 
-    scratch.wipe("/tmp/wt_wipe")
+    notes.wipe("/tmp/wt_wipe")
     assert.is_false(vim.api.nvim_buf_is_valid(buf))
   end)
 
   it("allows creating a new buffer after wipe", function()
-    local buf1 = scratch.get_or_create("/tmp/wt_wipe2", test_state_dir)
-    scratch.wipe("/tmp/wt_wipe2")
-    local buf2 = scratch.get_or_create("/tmp/wt_wipe2", test_state_dir)
+    local buf1 = notes.get_or_create("/tmp/wt_wipe2", test_cache_dir)
+    notes.wipe("/tmp/wt_wipe2")
+    local buf2 = notes.get_or_create("/tmp/wt_wipe2", test_cache_dir)
     assert.are_not.equal(buf1, buf2)
     assert.is_true(vim.api.nvim_buf_is_valid(buf2))
     cleanup_buf(buf2)
   end)
 
   it("is a no-op when no buffer exists for the dir", function()
-    scratch.wipe("/tmp/nonexistent_wt")
+    notes.wipe("/tmp/nonexistent_wt")
   end)
 end)
 
@@ -266,33 +261,32 @@ describe("delete_storage", function()
 
   after_each(function()
     I.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
-  it("deletes the scratch file from disk", function()
-    -- Create and save
-    local buf = scratch.get_or_create("/tmp/wt_del", test_state_dir)
+  it("deletes the notes file from disk", function()
+    local buf = notes.get_or_create("/tmp/wt_del", test_cache_dir)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "doomed" })
-    scratch.save("/tmp/wt_del", test_state_dir)
+    notes.save("/tmp/wt_del", test_cache_dir)
 
-    local path = I.storage_path("/tmp/wt_del", test_state_dir)
+    local path = I.storage_path("/tmp/wt_del", test_cache_dir)
     assert.equals(1, vim.fn.filereadable(path))
 
-    scratch.delete_storage("/tmp/wt_del", test_state_dir)
+    notes.delete_storage("/tmp/wt_del", test_cache_dir)
     assert.equals(0, vim.fn.filereadable(path))
     cleanup_buf(buf)
   end)
 
   it("is a no-op when no file exists", function()
-    scratch.delete_storage("/tmp/nonexistent_wt", test_state_dir)
+    notes.delete_storage("/tmp/nonexistent_wt", test_cache_dir)
   end)
 end)
 
 ------------------------------------------------------------------------
--- is_scratch: identify scratch buffers
+-- is_notes: identify notes buffers
 ------------------------------------------------------------------------
 
-describe("is_scratch", function()
+describe("is_notes", function()
   before_each(function()
     I.reset()
   end)
@@ -301,20 +295,20 @@ describe("is_scratch", function()
     I.reset()
   end)
 
-  it("returns true for a scratch buffer", function()
-    local buf = scratch.get_or_create("/tmp/wt_is", test_state_dir)
-    assert.is_true(scratch.is_scratch(buf))
+  it("returns true for a notes buffer", function()
+    local buf = notes.get_or_create("/tmp/wt_is", test_cache_dir)
+    assert.is_true(notes.is_notes(buf))
     cleanup_buf(buf)
   end)
 
   it("returns false for a normal buffer", function()
     local buf = vim.api.nvim_create_buf(true, false)
-    assert.is_false(scratch.is_scratch(buf))
+    assert.is_false(notes.is_notes(buf))
     cleanup_buf(buf)
   end)
 
   it("returns false for an invalid buffer", function()
-    assert.is_false(scratch.is_scratch(99999))
+    assert.is_false(notes.is_notes(99999))
   end)
 end)
 
@@ -325,13 +319,12 @@ end)
 describe("reset", function()
   it("clears all tracked buffers", function()
     I.reset()
-    local buf = scratch.get_or_create("/tmp/wt_reset", test_state_dir)
+    local buf = notes.get_or_create("/tmp/wt_reset", test_cache_dir)
     assert.is_true(vim.api.nvim_buf_is_valid(buf))
 
     I.reset()
 
-    -- After reset, get_or_create should create a new buffer
-    local buf2 = scratch.get_or_create("/tmp/wt_reset", test_state_dir)
+    local buf2 = notes.get_or_create("/tmp/wt_reset", test_cache_dir)
     assert.are_not.equal(buf, buf2)
 
     cleanup_buf(buf)
@@ -350,39 +343,36 @@ describe("setup", function()
 
   after_each(function()
     I.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
-  it("creates the neovia_scratch augroup", function()
-    scratch.setup({ state_dir = test_state_dir })
-    local cmds = vim.api.nvim_get_autocmds({ group = "neovia_scratch" })
+  it("creates the neovia_notes augroup", function()
+    notes.setup({ cache_dir = test_cache_dir })
+    local cmds = vim.api.nvim_get_autocmds({ group = "neovia_notes" })
     assert.is_true(#cmds > 0)
   end)
 
   it("is idempotent", function()
-    scratch.setup({ state_dir = test_state_dir })
-    local cmds1 = vim.api.nvim_get_autocmds({ group = "neovia_scratch" })
-    scratch.setup({ state_dir = test_state_dir })
-    local cmds2 = vim.api.nvim_get_autocmds({ group = "neovia_scratch" })
+    notes.setup({ cache_dir = test_cache_dir })
+    local cmds1 = vim.api.nvim_get_autocmds({ group = "neovia_notes" })
+    notes.setup({ cache_dir = test_cache_dir })
+    local cmds2 = vim.api.nvim_get_autocmds({ group = "neovia_notes" })
     assert.equals(#cmds1, #cmds2)
   end)
 
-  it("auto-saves scratch content on BufLeave", function()
-    scratch.setup({ state_dir = test_state_dir })
+  it("auto-saves notes content on BufLeave", function()
+    notes.setup({ cache_dir = test_cache_dir })
 
     local dir = "/tmp/wt_autosave_test"
-    local buf = scratch.get_or_create(dir, test_state_dir)
+    local buf = notes.get_or_create(dir, test_cache_dir)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "# Auto-saved", "content" })
 
-    -- Show the scratch buffer in the current window so BufLeave fires.
     vim.api.nvim_win_set_buf(0, buf)
 
-    -- Switch to another buffer to trigger BufLeave.
     local other = vim.api.nvim_create_buf(false, true)
     vim.api.nvim_win_set_buf(0, other)
 
-    -- Verify content was persisted to disk.
-    local path = I.storage_path(dir, test_state_dir)
+    local path = I.storage_path(dir, test_cache_dir)
     local lines = vim.fn.readfile(path)
     assert.same({ "# Auto-saved", "content" }, lines)
 
@@ -390,17 +380,17 @@ describe("setup", function()
     cleanup_buf(other)
   end)
 
-  it("handles :w via BufWriteCmd on scratch buffers", function()
-    scratch.setup({ state_dir = test_state_dir })
+  it("handles :w via BufWriteCmd on notes buffers", function()
+    notes.setup({ cache_dir = test_cache_dir })
 
     local dir = "/tmp/wt_writecmd_test"
-    local buf = scratch.get_or_create(dir, test_state_dir)
+    local buf = notes.get_or_create(dir, test_cache_dir)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "# Written", "via :w" })
 
     vim.api.nvim_win_set_buf(0, buf)
     vim.cmd("write")
 
-    local path = I.storage_path(dir, test_state_dir)
+    local path = I.storage_path(dir, test_cache_dir)
     local lines = vim.fn.readfile(path)
     assert.same({ "# Written", "via :w" }, lines)
 
@@ -408,7 +398,7 @@ describe("setup", function()
   end)
 
   it("does not intercept :w on normal file buffers", function()
-    scratch.setup({ state_dir = test_state_dir })
+    notes.setup({ cache_dir = test_cache_dir })
 
     local tmp = vim.fn.tempname() .. ".txt"
     vim.fn.writefile({ "original" }, tmp)
@@ -426,5 +416,15 @@ describe("setup", function()
 
     cleanup_buf(buf)
     vim.fn.delete(tmp)
+  end)
+
+  it("defaults cache_dir to stdpath('cache')", function()
+    notes.setup()
+    -- Verify by creating a buffer and checking storage_path uses cache
+    local buf = notes.get_or_create("/tmp/wt_default_cache")
+    local expected_prefix = vim.fn.stdpath("cache") .. "/notes/"
+    local path = I.storage_path("/tmp/wt_default_cache", vim.fn.stdpath("cache"))
+    assert.is_true(vim.startswith(path, expected_prefix))
+    cleanup_buf(buf)
   end)
 end)

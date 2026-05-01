@@ -584,23 +584,23 @@ describe("collect_file_buffers", function()
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
-  it("excludes scratch buffers", function()
-    local scratch = require("neovia.scratch")
-    local test_state_dir = vim.fn.tempname() .. "_wt_collect_test"
-    scratch._internal.reset()
-    scratch.setup({ state_dir = test_state_dir })
+  it("excludes notes buffers", function()
+    local notes = require("neovia.notes")
+    local test_cache_dir = vim.fn.tempname() .. "_wt_collect_test"
+    notes._internal.reset()
+    notes.setup({ cache_dir = test_cache_dir })
 
-    local scratch_buf = scratch.get_or_create("/tmp/wt_collect")
-    assert.is_true(vim.bo[scratch_buf].buflisted)
+    local notes_buf = notes.get_or_create("/tmp/wt_collect")
+    assert.is_true(vim.bo[notes_buf].buflisted)
 
     local paths = I.collect_file_buffers()
-    local scratch_name = vim.api.nvim_buf_get_name(scratch_buf)
+    local notes_name = vim.api.nvim_buf_get_name(notes_buf)
     for _, p in ipairs(paths) do
-      assert.is_not_equal(scratch_name, p)
+      assert.is_not_equal(notes_name, p)
     end
 
-    scratch._internal.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    notes._internal.reset()
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 end)
 
@@ -1167,12 +1167,7 @@ describe("switch_to", function()
     assert.is_true(layout_ensured, "Expected layout check to be scheduled after switch")
   end)
 
-  it("opens scratch buffer on first visit instead of netrw", function()
-    local scratch = require("neovia.scratch")
-    local test_state_dir = vim.fn.tempname() .. "_wt_switch_scratch_test"
-    scratch._internal.reset()
-    scratch.setup({ state_dir = test_state_dir })
-
+  it("leaves noname buffer in code window on first visit", function()
     vim.cmd.tcd(dir_a)
     I.set_state({
       [dir_a] = I.make_entry({ branch = "main" }),
@@ -1185,17 +1180,12 @@ describe("switch_to", function()
 
     wt.switch_to(dir_b)
 
-    -- The code window should show a scratch buffer
+    -- The code window should still be there (noname or original buffer)
     local navigate = require("neovia.navigate")
     local code_win = navigate.find_code_win()
-    if code_win then
-      local buf = vim.api.nvim_win_get_buf(code_win)
-      assert.is_true(scratch.is_scratch(buf), "expected scratch buffer on first visit")
-    end
+    assert.is_not_nil(code_win, "code window should exist after first visit")
 
     pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
-    scratch._internal.reset()
-    vim.fn.delete(test_state_dir, "rf")
   end)
 
   it("tells neo-tree the new root after switching", function()
@@ -1235,11 +1225,11 @@ describe("switch_to", function()
     assert.is_truthy(neotree_dir_cmd:find("dir="), "expected Neotree dir= argument")
   end)
 
-  it("does not include scratch buffer in saved buffer_paths", function()
-    local scratch = require("neovia.scratch")
-    local test_state_dir = vim.fn.tempname() .. "_wt_switch_paths_test"
-    scratch._internal.reset()
-    scratch.setup({ state_dir = test_state_dir })
+  it("does not include notes buffer in saved buffer_paths", function()
+    local notes = require("neovia.notes")
+    local test_cache_dir = vim.fn.tempname() .. "_wt_switch_paths_test"
+    notes._internal.reset()
+    notes.setup({ cache_dir = test_cache_dir })
 
     vim.cmd.tcd(dir_a)
     I.set_state({
@@ -1247,29 +1237,29 @@ describe("switch_to", function()
       [dir_b] = I.make_entry({ branch = "feat" }),
     })
 
-    -- Create a scratch buffer for dir_a AND a normal file buffer
-    local scratch_buf = scratch.get_or_create(dir_a)
+    -- Create a notes buffer for dir_a AND a normal file buffer
+    local notes_buf = notes.get_or_create(dir_a)
     local file_buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_buf_set_name(file_buf, dir_a .. "/real_file.lua")
     vim.bo[file_buf].buflisted = true
 
     wt.switch_to(dir_b)
 
-    -- Saved paths for dir_a should contain the file but not the scratch
+    -- Saved paths for dir_a should contain the file but not the notes
     local saved = I.get_state()[dir_a].buffer_paths
     local file_name = vim.api.nvim_buf_get_name(file_buf)
-    local scratch_name = vim.api.nvim_buf_get_name(scratch_buf)
-    local found_file, found_scratch = false, false
+    local notes_name = vim.api.nvim_buf_get_name(notes_buf)
+    local found_file, found_notes = false, false
     for _, p in ipairs(saved) do
       if p == file_name then found_file = true end
-      if p == scratch_name then found_scratch = true end
+      if p == notes_name then found_notes = true end
     end
     assert.is_true(found_file, "Expected real file in saved buffer_paths")
-    assert.is_false(found_scratch, "Scratch buffer should not be in saved buffer_paths")
+    assert.is_false(found_notes, "Notes buffer should not be in saved buffer_paths")
 
     pcall(vim.api.nvim_buf_delete, file_buf, { force = true })
-    scratch._internal.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    notes._internal.reset()
+    vim.fn.delete(test_cache_dir, "rf")
   end)
 
   it("saves neo-tree expanded nodes before switching away", function()

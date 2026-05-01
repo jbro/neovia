@@ -211,99 +211,119 @@ describe("find_code_win", function()
 end)
 
 ------------------------------------------------------------------------
--- open_scratch_in_code_win (public API)
+-- is_notes_win
 ------------------------------------------------------------------------
 
-describe("open_scratch_in_code_win", function()
-  local scratch = require("neovia.scratch")
-  local test_state_dir = vim.fn.tempname() .. "_nav_scratch_test"
+describe("is_notes_win", function()
+  it("returns true for a window showing a notes buffer", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.b[buf].neovia_notes = true
+    local win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(win, buf)
 
-  before_each(function()
-    scratch._internal.reset()
-    scratch.setup({ state_dir = test_state_dir })
+    assert.is_true(I.is_notes_win(win))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
+  it("returns false for a normal buffer", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    local win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(win, buf)
+
+    assert.is_false(I.is_notes_win(win))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("returns false for an invalid window", function()
+    assert.is_false(I.is_notes_win(99999))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- find_notes_win
+------------------------------------------------------------------------
+
+describe("find_notes_win", function()
   after_each(function()
-    scratch._internal.reset()
-    vim.fn.delete(test_state_dir, "rf")
+    vim.cmd("only")
   end)
 
-  it("shows the scratch buffer in the code window", function()
+  it("returns the window showing a notes buffer", function()
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    vim.cmd("split")
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.b[notes_buf].neovia_notes = true
+    vim.api.nvim_win_set_buf(0, notes_buf)
+    local notes_win = vim.api.nvim_get_current_win()
+
+    assert.equals(notes_win, navigate.find_notes_win())
+
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+    vim.api.nvim_buf_delete(notes_buf, { force = true })
+  end)
+
+  it("returns nil when no notes window exists", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, buf)
+
+    assert.is_nil(navigate.find_notes_win())
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("skips floating windows", function()
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.b[notes_buf].neovia_notes = true
+    vim.api.nvim_open_win(notes_buf, false, {
+      relative = "editor", width = 10, height = 10, row = 1, col = 1,
+    })
+
+    assert.is_nil(navigate.find_notes_win())
+
+    vim.cmd("only")
+    vim.api.nvim_buf_delete(notes_buf, { force = true })
+  end)
+end)
+
+------------------------------------------------------------------------
+-- find_code_win skips notes windows
+------------------------------------------------------------------------
+
+describe("find_code_win skips notes", function()
+  after_each(function()
+    vim.cmd("only")
+  end)
+
+  it("does not return a notes window as the code window", function()
+    -- Notes window
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.b[notes_buf].neovia_notes = true
+    vim.api.nvim_win_set_buf(0, notes_buf)
+
+    assert.is_nil(I.find_code_win(), "notes window should not be returned as code window")
+
+    vim.api.nvim_buf_delete(notes_buf, { force = true })
+  end)
+
+  it("finds a code window when notes and code windows both exist", function()
     local code_buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_win_set_buf(0, code_buf)
     local code_win = vim.api.nvim_get_current_win()
 
-    vim.cmd("vsplit")
-    local oc_buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[oc_buf].filetype = "opencode_output"
-    vim.api.nvim_win_set_buf(0, oc_buf)
-
-    local dir = project_root
-    navigate.open_scratch_in_code_win(dir)
-
-    -- Should be in the code window
-    assert.equals(code_win, vim.api.nvim_get_current_win())
-    -- Buffer should be a scratch buffer
-    local buf = vim.api.nvim_win_get_buf(code_win)
-    assert.is_true(scratch.is_scratch(buf))
-
-    -- Cleanup
-    vim.cmd("only")
-    vim.api.nvim_buf_delete(code_buf, { force = true })
-    vim.api.nvim_buf_delete(oc_buf, { force = true })
-  end)
-
-  it("creates a code window if none exists", function()
-    local oc_buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[oc_buf].filetype = "opencode_output"
-    vim.api.nvim_win_set_buf(0, oc_buf)
-
-    local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
-
-    navigate.open_scratch_in_code_win(project_root)
-
-    local win_count_after = #vim.api.nvim_tabpage_list_wins(0)
-    assert.is_true(win_count_after > win_count_before)
-
-    -- Cleanup
-    vim.cmd("only")
-    vim.api.nvim_buf_delete(oc_buf, { force = true })
-  end)
-
-  it("creates a full-height code window with stacked opencode windows", function()
-    local oc_out_buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[oc_out_buf].filetype = "opencode_output"
-    vim.api.nvim_win_set_buf(0, oc_out_buf)
-    local oc_out_win = vim.api.nvim_get_current_win()
-
     vim.cmd("split")
-    local oc_in_buf = vim.api.nvim_create_buf(false, true)
-    vim.bo[oc_in_buf].filetype = "opencode"
-    vim.api.nvim_win_set_buf(0, oc_in_buf)
-    local oc_in_win = vim.api.nvim_get_current_win()
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.b[notes_buf].neovia_notes = true
+    vim.api.nvim_win_set_buf(0, notes_buf)
 
-    navigate.open_scratch_in_code_win(project_root)
+    local found = I.find_code_win()
+    assert.equals(code_win, found)
 
-    local code_win = navigate.find_code_win()
-    assert.is_not_nil(code_win, "code window should be created")
-
-    local code_height = vim.api.nvim_win_get_height(code_win)
-    local oc_out_height = vim.api.nvim_win_get_height(oc_out_win)
-    local oc_in_height = vim.api.nvim_win_get_height(oc_in_win)
-    local total_oc_height = oc_out_height + oc_in_height
-
-    assert.is_true(
-      math.abs(code_height - total_oc_height) <= 2,
-      string.format(
-        "code window should span full height: code=%d oc_out=%d oc_in=%d total_oc=%d",
-        code_height, oc_out_height, oc_in_height, total_oc_height
-      )
-    )
-
-    -- Cleanup
-    vim.cmd("only")
-    vim.api.nvim_buf_delete(oc_out_buf, { force = true })
-    vim.api.nvim_buf_delete(oc_in_buf, { force = true })
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+    vim.api.nvim_buf_delete(notes_buf, { force = true })
   end)
 end)
 
@@ -647,12 +667,12 @@ describe("buffer_list", function()
     vim.api.nvim_buf_delete(unnamed, { force = true })
   end)
 
-  it("excludes scratch buffers", function()
+  it("excludes notes buffers", function()
     local normal = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_buf_set_name(normal, project_root .. "/real.lua")
-    local scratch = vim.api.nvim_create_buf(true, false)
-    vim.api.nvim_buf_set_name(scratch, project_root .. "/[scratch]")
-    vim.b[scratch].neovia_scratch = true
+    local notes_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(notes_buf, project_root .. "/[session notes]")
+    vim.b[notes_buf].neovia_notes = true
 
     local list = I.buffer_list()
     local names = {}
@@ -660,10 +680,10 @@ describe("buffer_list", function()
       names[entry.name] = true
     end
     assert.is_not_nil(names["real.lua"])
-    assert.is_nil(names["[scratch]"])
+    assert.is_nil(names["[session notes]"])
 
     vim.api.nvim_buf_delete(normal, { force = true })
-    vim.api.nvim_buf_delete(scratch, { force = true })
+    vim.api.nvim_buf_delete(notes_buf, { force = true })
   end)
 end)
 

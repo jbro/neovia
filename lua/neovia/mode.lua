@@ -43,12 +43,12 @@ local initialised = false
 ------------------------------------------------------------------------
 
 --- Determine whether a buffer should be locked based on buftype/filetype.
---- @param info { buftype: string, filetype: string, neovia_scratch?: boolean }
+--- @param info { buftype: string, filetype: string, neovia_notes?: boolean }
 --- @return boolean
 local function should_lock(info)
   if skip_buftypes[info.buftype] then return false end
   if skip_filetypes[info.filetype] then return false end
-  if info.neovia_scratch then return false end
+  if info.neovia_notes then return false end
   return true
 end
 
@@ -80,7 +80,7 @@ local function toggle(buf)
   local info = {
     buftype = vim.bo[buf].buftype,
     filetype = vim.bo[buf].filetype,
-    neovia_scratch = vim.b[buf].neovia_scratch or false,
+    neovia_notes = vim.b[buf].neovia_notes or false,
   }
   if not should_lock(info) then return end
   if vim.bo[buf].readonly then
@@ -110,7 +110,7 @@ local function apply_lock(buf)
   local info = {
     buftype = vim.bo[buf].buftype,
     filetype = vim.bo[buf].filetype,
-    neovia_scratch = vim.b[buf].neovia_scratch or false,
+    neovia_notes = vim.b[buf].neovia_notes or false,
   }
   if should_lock(info) and not unlocked[buf] then
     lock_buf(buf)
@@ -166,7 +166,7 @@ function M.toggle()
   local info = {
     buftype = vim.bo[buf].buftype,
     filetype = vim.bo[buf].filetype,
-    neovia_scratch = vim.b[buf].neovia_scratch or false,
+    neovia_notes = vim.b[buf].neovia_notes or false,
   }
   if not should_lock(info) then
     -- Current buffer is special (float, nofile, etc.).  Try the code window.
@@ -189,7 +189,7 @@ function M.is_locked(buf)
   local info = {
     buftype = vim.bo[buf].buftype,
     filetype = vim.bo[buf].filetype,
-    neovia_scratch = vim.b[buf].neovia_scratch or false,
+    neovia_notes = vim.b[buf].neovia_notes or false,
   }
   if not should_lock(info) then return false end
   return vim.bo[buf].readonly
@@ -221,7 +221,7 @@ function M.lualine_mode(buf)
   local info = {
     buftype = vim.bo[buf].buftype,
     filetype = vim.bo[buf].filetype,
-    neovia_scratch = vim.b[buf].neovia_scratch or false,
+    neovia_notes = vim.b[buf].neovia_notes or false,
   }
   if should_lock(info) and vim.bo[buf].readonly then
     return "READ-ONLY"

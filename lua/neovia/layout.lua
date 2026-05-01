@@ -1,5 +1,7 @@
 -- neovia layout module
--- Enforce the three-panel layout: neo-tree (left) + code (centre) + opencode (right).
+-- Enforce the four-panel layout:
+--   neo-tree (left) | code (centre top)    | opencode (right)
+--                   | session notes (bot)  |
 -- Restores missing panels on WinClosed and opens opencode on VimEnter.
 
 local M = {}
@@ -13,6 +15,9 @@ M.sidebar_width = 35
 
 --- Opencode's share of the available space (after sidebar) as a fraction.
 M.opencode_ratio = 0.50
+
+--- Session notes window height in lines.
+M.notes_height = 15
 
 --- Compute the opencode window_width ratio relative to total editor columns.
 --- opencode.nvim interprets window_width as a fraction of vim.o.columns,
@@ -79,9 +84,47 @@ local function has_neo_tree_win()
   return false
 end
 
+--- Create a code window with a noname buffer to the left of the opencode pane.
+--- @return integer win  The new window handle.
+local function create_code_win()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.cmd("topleft vsplit")
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(win, buf)
+  return win
+end
+
+--- Open the session notes buffer in a horizontal split below the code window.
+--- Creates the split if no notes window exists.
+--- @param code_win integer  The code window to split below.
+local function open_notes_split(code_win)
+  local ok_notes, notes = pcall(require, "neovia.notes")
+  if not ok_notes then return end
+  local ok_nav, navigate = pcall(require, "neovia.navigate")
+  if not ok_nav then return end
+
+  -- Already have a notes window? Just ensure correct buffer.
+  local existing = navigate.find_notes_win()
+  if existing then return end
+
+  local nbuf = notes.get_or_create(vim.fn.getcwd())
+
+  -- Split below the code window.
+  local prev_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_set_current_win(code_win)
+  vim.cmd("belowright split")
+  local notes_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(notes_win, nbuf)
+  vim.api.nvim_win_set_height(notes_win, M.notes_height)
+
+  -- Restore focus.
+  vim.api.nvim_set_current_win(prev_win)
+end
+
 --- Check the window layout and restore any missing panel.
 --- If neo-tree is missing, reopen it.
---- If no code window exists, create one with the scratch buffer for cwd.
+--- If no code window exists, create one with a noname buffer.
+--- If no notes window exists, create the notes split.
 --- If no opencode window exists, reopen it.
 local function ensure_layout()
   local ok_nav, navigate = pcall(require, "neovia.navigate")
@@ -91,10 +134,15 @@ local function ensure_layout()
     pcall(vim.cmd, "Neotree show")
   end
   if not navigate.find_code_win() then
-    local ok, err = pcall(navigate.open_scratch_in_code_win, vim.fn.getcwd())
+    local ok, err = pcall(create_code_win)
     if not ok then
       vim.notify("layout: failed to restore code window: " .. tostring(err), vim.log.levels.WARN)
     end
+  end
+  -- Notes split below the code window.
+  local code_win = navigate.find_code_win()
+  if code_win and not navigate.find_notes_win() then
+    pcall(open_notes_split, code_win)
   end
   if not find_opencode_win() then
     local ok, err = pcall(open_opencode)
@@ -110,7 +158,7 @@ end
 
 --- Nuke all windows and rebuild the canonical layout.
 --- Remembers the buffer that was in the code window and restores it.
---- Falls back to scratch buffer (cwd) if no code buffer was showing.
+--- Falls back to a noname buffer if no code buffer was showing.
 function M.restore_layout()
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if not ok_nav then return end
@@ -134,24 +182,30 @@ function M.restore_layout()
   vim.cmd("only")
 
   -- After "only" the surviving window may show an opencode or neo-tree
-  -- buffer.  Replace it with the code buffer (or scratch) so the
-  -- window order comes out correct: neo-tree inserts to its left,
+  -- buffer.  Replace it with the code buffer (or a noname buffer) so
+  -- the window order comes out correct: neo-tree inserts to its left,
   -- opencode opens to its right.
   if code_buf and vim.api.nvim_buf_is_valid(code_buf) then
     vim.api.nvim_win_set_buf(0, code_buf)
   else
-    local ok_scratch, scratch = pcall(require, "neovia.scratch")
-    if ok_scratch then
-      local sbuf = scratch.get_or_create(vim.fn.getcwd())
-      vim.api.nvim_win_set_buf(0, sbuf)
-    end
+    -- Create a fresh noname buffer for the code window.
+    local noname = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, noname)
   end
 
   pcall(vim.cmd, "Neotree show")
+
+  -- Create the notes split below the code window before opening opencode
+  -- so opencode's vertical split ends up to the right of both.
+  local new_code_win = navigate.find_code_win()
+  if new_code_win then
+    pcall(open_notes_split, new_code_win)
+  end
+
   open_opencode()
 
   -- Ensure focus lands on the code window.
-  local new_code_win = navigate.find_code_win()
+  new_code_win = navigate.find_code_win()
   if new_code_win then
     vim.api.nvim_set_current_win(new_code_win)
   end
@@ -187,7 +241,7 @@ end
 
 --- Initialise the layout module. Registers autocmds for:
 --- - WinClosed: restore missing panels after any window closes.
---- - VimEnter: open the opencode panel on startup.
+--- - VimEnter: open the opencode panel and notes split on startup.
 function M.setup()
   if initialised then return end
   initialised = true
@@ -207,9 +261,16 @@ function M.setup()
       vim.schedule(function()
         -- Open neo-tree sidebar (far left)
         pcall(vim.cmd, "Neotree show")
+        -- Create notes split before opencode so the vertical split is correct
+        local ok_nav, navigate = pcall(require, "neovia.navigate")
+        if ok_nav then
+          local code_win = navigate.find_code_win()
+          if code_win then
+            pcall(open_notes_split, code_win)
+          end
+        end
         open_opencode()
         -- Ensure focus lands on the code window, not neo-tree or opencode.
-        local ok_nav, navigate = pcall(require, "neovia.navigate")
         if ok_nav then
           local code_win = navigate.find_code_win()
           if code_win then vim.api.nvim_set_current_win(code_win) end

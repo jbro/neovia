@@ -61,16 +61,16 @@ describe("collect_file_buffers", function()
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
-  it("excludes scratch buffers", function()
+  it("excludes notes buffers", function()
     local buf = vim.api.nvim_create_buf(true, false)
-    vim.api.nvim_buf_set_name(buf, "/tmp/sess_scratch_test")
+    vim.api.nvim_buf_set_name(buf, "/tmp/sess_notes_test")
     vim.bo[buf].buflisted = true
-    vim.b[buf].neovia_scratch = true
+    vim.b[buf].neovia_notes = true
 
     local paths = session.collect_file_buffers()
-    local scratch_name = vim.api.nvim_buf_get_name(buf)
+    local notes_name = vim.api.nvim_buf_get_name(buf)
     for _, p in ipairs(paths) do
-      assert.is_not_equal(scratch_name, p)
+      assert.is_not_equal(notes_name, p)
     end
     vim.api.nvim_buf_delete(buf, { force = true })
   end)

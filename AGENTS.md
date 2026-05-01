@@ -64,9 +64,9 @@ These rules define what neovia is. They guide design and implementation decision
 - Worktree switching uses `tcd` to scope all plugins to that directory.
 - Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. opencode.nvim detects the directory change and swaps sessions automatically. Background sessions keep running server-side.
 - Worktree lifecycle: `<leader>wc` (create from main), `<leader>wC` (create from current HEAD), `<leader>wf` (fork: branch from current HEAD + fork opencode session), `<leader>ww` (switch picker), `<leader>wn` (next), `<leader>wp` (previous), `<leader>wa` (next needing attention), `<leader>wd` (delete picker), `<leader>wD` (delete current). Pickers use fzf-lua; current-worktree shortcuts act directly. Session forking bridges context across worktrees.
-- netrw is disabled. Neo-tree is the sole file navigator (always visible, far left). The code window shows a per-worktree scratch buffer when no file is open. Layout: neo-tree (left) | code/scratch (centre) | opencode (right).
-- Scratch buffer: per-worktree persistent markdown notes. Storage: `stdpath("state")/scratch/<sha256(dir)>.md`. Listed, exempt from read-only mode, saved on BufLeave. Scratch buffers are excluded from `buffer_paths` (managed separately from file buffers).
-- Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, tells neo-tree the new root, and relists saved buffers (or opens scratch on first visit). Deleting wipes buffers, tears down SSE, removes scratch storage from disk, and removes the git worktree. Tombstone sessions ensure reused paths start clean.
+- netrw is disabled. Neo-tree is the sole file navigator (always visible, far left). Layout: neo-tree (left) | code (centre top) + session notes (centre bottom, 15 lines) | opencode (right). The code window starts with a noname buffer that goes away when the first real file is opened.
+- Session notes (`neovia.notes`): per-worktree persistent markdown notes in a dedicated bottom split. Storage: `stdpath("cache")/notes/<sha256(dir)>.md`. Listed, exempt from read-only mode, saved on BufLeave. Notes buffers are excluded from `buffer_paths` (managed separately from file buffers). Notes are keyed by worktree directory, not opencode session -- they survive session changes.
+- Switching unlists current file buffers (saves paths in-memory), `tcd`s to the target, tells neo-tree the new root, relists saved buffers, and swaps the notes buffer in the notes window. Deleting wipes buffers, tears down SSE, removes notes storage from disk, and removes the git worktree. Tombstone sessions ensure reused paths start clean.
 - Lualine tabline shows worktree branches with status indicators. Current branch highlighted. Lualine statusline includes an opencode status component for the current worktree. The worktree module exposes data; lualine components in `lua/plugins/ui.lua` handle rendering.
 
 ## Decision Log
@@ -140,12 +140,13 @@ disk; the plugin connects via `server.url` + `port` in attach mode
 module's `OpencodeEvent:server.connected` autocmd is repeating (not
 `once`) so server restarts trigger SSE re-subscription.
 
-### 0011 - Neo-tree replaces netrw, scratch buffer for empty state (2026-04-23)
+### 0011 - Neo-tree replaces netrw, session notes in bottom split (2026-04-23)
 
 netrw disabled (`vim.g.loaded_netrwPlugin = 1`). Neo-tree is always visible
 (left sidebar, `lazy = false`). `bind_to_cwd = false` prevents neo-tree from
 calling `tcd`/`lcd` when navigating directories; worktree module explicitly
-sets neo-tree root via `Neotree dir=` after `tcd`. Per-worktree scratch
-buffer (`neovia.scratch`) replaces netrw as the "no file open" view. Scratch
-is exempt from read-only mode via `vim.b.neovia_scratch` check in
-`mode.should_lock()`.
+sets neo-tree root via `Neotree dir=` after `tcd`. Per-worktree session
+notes (`neovia.notes`) live in a dedicated bottom split (15 lines) below the
+code window. Notes are exempt from read-only mode via `vim.b.neovia_notes`
+check in `mode.should_lock()`. The code window starts with a noname buffer
+that disappears when a real file is opened.

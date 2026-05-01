@@ -612,7 +612,7 @@ end
 
 --- Switch to a worktree directory.
 --- Saves current file buffer paths (unlist), tcd to target,
---- restores saved buffers (relist) or opens scratch on first visit.
+--- restores saved buffers (relist) or opens noname buffer on first visit.
 --- Session switching is left to opencode.nvim's DirChanged autocmd
 --- (fires synchronously during tcd) so that SSE reconnection and
 --- session loading happen atomically.
@@ -657,23 +657,28 @@ function M.switch_to(dir)
     }
   end
 
-  -- Restore saved buffers or open scratch
+  -- Restore saved buffers (or leave noname on first visit)
   local target = state[dir]
   local ok_nav, navigate = pcall(require, "neovia.navigate")
-  if ok_nav then
-    if #target.buffer_paths > 0 then
-      local bufs = relist_buffers(target.buffer_paths)
-      -- Open the first restored buffer in the code window
-      if #bufs > 0 then
-        local win = navigate.find_code_win()
-        if win then
-          vim.api.nvim_set_current_win(win)
-          vim.api.nvim_win_set_buf(win, bufs[1])
-        end
+  if ok_nav and #target.buffer_paths > 0 then
+    local bufs = relist_buffers(target.buffer_paths)
+    -- Open the first restored buffer in the code window
+    if #bufs > 0 then
+      local win = navigate.find_code_win()
+      if win then
+        vim.api.nvim_set_current_win(win)
+        vim.api.nvim_win_set_buf(win, bufs[1])
       end
-    else
-      -- First visit: open scratch in the code window
-      navigate.open_scratch_in_code_win(dir)
+    end
+  end
+
+  -- Ensure session notes buffer is shown in the notes window
+  local ok_notes, notes_mod = pcall(require, "neovia.notes")
+  if ok_notes and ok_nav then
+    local notes_win = navigate.find_notes_win()
+    if notes_win then
+      local nbuf = notes_mod.get_or_create(dir)
+      vim.api.nvim_win_set_buf(notes_win, nbuf)
     end
   end
 
@@ -901,10 +906,10 @@ function M._delete_continue(wt)
   -- Wipeout buffers and tear down SSE for this worktree
   local entry = state[wt.path]
   if entry then
-    local ok_scratch, scratch_mod = pcall(require, "neovia.scratch")
-    if ok_scratch then
-      scratch_mod.save(wt.path)
-      scratch_mod.wipe(wt.path)
+    local ok_notes, notes_mod = pcall(require, "neovia.notes")
+    if ok_notes then
+      notes_mod.save(wt.path)
+      notes_mod.wipe(wt.path)
     end
     wipeout_buffers_for_dir(wt.path)
     if entry.subscription and type(entry.subscription.shutdown) == "function" then
@@ -964,10 +969,10 @@ function M._delete_continue(wt)
     end
   end
 
-  -- Delete scratch storage (worktree is gone, notes lose context)
-  local ok_scratch, scratch = pcall(require, "neovia.scratch")
-  if ok_scratch then
-    scratch.delete_storage(wt.path)
+  -- Delete notes storage (worktree is gone, notes lose context)
+  local ok_notes, notes = pcall(require, "neovia.notes")
+  if ok_notes then
+    notes.delete_storage(wt.path)
   end
 
   -- Clean up state

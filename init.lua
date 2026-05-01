@@ -182,9 +182,9 @@ vim.keymap.set("n", "<leader>oEd", function()
 end, { desc = "Redraw UI" })
 
 ------------------------------------------------------------------------
--- Scratch buffer (per-worktree persistent notes)
+-- Session notes (per-worktree persistent notes)
 ------------------------------------------------------------------------
-require("neovia.scratch").setup()
+require("neovia.notes").setup()
 
 ------------------------------------------------------------------------
 -- Read-only mode

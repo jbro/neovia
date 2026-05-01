@@ -70,8 +70,17 @@ local function is_sidebar_win(win)
   return ft == "neo-tree" or bt == "help" or bt == "quickfix"
 end
 
---- Find the best "code" window: a normal, non-opencode, non-sidebar window.
---- Returns nil if none found.
+--- Check whether a window shows a session notes buffer.
+--- @param win integer
+--- @return boolean
+local function is_notes_win(win)
+  if not vim.api.nvim_win_is_valid(win) then return false end
+  local buf = vim.api.nvim_win_get_buf(win)
+  return vim.b[buf].neovia_notes == true
+end
+
+--- Find the best "code" window: a normal, non-opencode, non-sidebar,
+--- non-notes window. Returns nil if none found.
 --- @return integer?
 local function find_code_win()
   local wins = vim.api.nvim_tabpage_list_wins(0)
@@ -79,6 +88,22 @@ local function find_code_win()
     if vim.api.nvim_win_is_valid(win)
       and not is_opencode_win(win)
       and not is_sidebar_win(win)
+      and not is_notes_win(win)
+      and vim.api.nvim_win_get_config(win).relative == "" -- not floating
+    then
+      return win
+    end
+  end
+  return nil
+end
+
+--- Find the session notes window. Returns nil if none found.
+--- @return integer?
+local function find_notes_win()
+  local wins = vim.api.nvim_tabpage_list_wins(0)
+  for _, win in ipairs(wins) do
+    if vim.api.nvim_win_is_valid(win)
+      and is_notes_win(win)
       and vim.api.nvim_win_get_config(win).relative == "" -- not floating
     then
       return win
@@ -93,7 +118,7 @@ local function create_code_win()
   -- Create a full-height vertical split at the far left. We use an
   -- unlisted scratch buffer to avoid inheriting a terminal buffer
   -- from the current window. Callers replace this buffer immediately
-  -- (open_scratch_in_code_win, open_in_code_win), so it never appears in :ls or :bn.
+  -- (open_in_code_win), so it never appears in :ls or :bn.
   local buf = vim.api.nvim_create_buf(false, true)
   vim.cmd("topleft vsplit")
   local win = vim.api.nvim_get_current_win()
@@ -101,24 +126,7 @@ local function create_code_win()
   return win
 end
 
---- Open the scratch buffer for a worktree in the code window.
---- Creates the code window if needed.
---- @param dir string  Absolute worktree path.
-local function open_scratch_in_code_win(dir)
-  local ok_scratch, scratch = pcall(require, "neovia.scratch")
-  if not ok_scratch then
-    vim.notify("open_scratch_in_code_win: scratch module not available", vim.log.levels.WARN)
-    return
-  end
 
-  local buf = scratch.get_or_create(dir)
-  local win = find_code_win()
-  if not win then
-    win = create_code_win()
-  end
-  vim.api.nvim_set_current_win(win)
-  vim.api.nvim_win_set_buf(win, buf)
-end
 
 ------------------------------------------------------------------------
 -- Buffer list helpers
@@ -133,7 +141,7 @@ local function buffer_list()
   for _, b in ipairs(bufs) do
     if vim.bo[b].buflisted
       and vim.bo[b].buftype == ""
-      and not vim.b[b].neovia_scratch
+      and not vim.b[b].neovia_notes
     then
       local name = vim.api.nvim_buf_get_name(b)
       if name ~= "" then
@@ -159,18 +167,18 @@ function M.is_opencode_win(win)
   return is_opencode_win(win)
 end
 
---- Find the best "code" window (non-opencode, non-sidebar, non-floating).
+--- Find the best "code" window (non-opencode, non-sidebar, non-notes, non-floating).
 --- Returns nil if none found.
 --- @return integer?
 function M.find_code_win()
   return find_code_win()
 end
 
---- Open the scratch buffer for a worktree in the code window.
---- Creates the code window if needed.
---- @param dir string  Absolute worktree path.
-function M.open_scratch_in_code_win(dir)
-  open_scratch_in_code_win(dir)
+--- Find the session notes window (non-floating).
+--- Returns nil if none found.
+--- @return integer?
+function M.find_notes_win()
+  return find_notes_win()
 end
 
 --- Open a file in the code window. Creates the window if needed.
@@ -277,7 +285,9 @@ end
 M._internal = {
   parse_path = parse_path,
   is_sidebar_win = is_sidebar_win,
+  is_notes_win = is_notes_win,
   find_code_win = find_code_win,
+  find_notes_win = find_notes_win,
   cfile = cfile,
   resolve = resolve,
   buffer_list = buffer_list,

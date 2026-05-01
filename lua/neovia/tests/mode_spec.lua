@@ -69,12 +69,12 @@ describe("should_lock", function()
     assert.is_false(I.should_lock({ buftype = "", filetype = "DiffviewFileHistory" }))
   end)
 
-  it("returns false for scratch buffers", function()
-    assert.is_false(I.should_lock({ buftype = "", filetype = "markdown", neovia_scratch = true }))
+  it("returns false for notes buffers", function()
+    assert.is_false(I.should_lock({ buftype = "", filetype = "markdown", neovia_notes = true }))
   end)
 
-  it("returns true for non-scratch markdown buffers", function()
-    assert.is_true(I.should_lock({ buftype = "", filetype = "markdown", neovia_scratch = false }))
+  it("returns true for non-notes markdown buffers", function()
+    assert.is_true(I.should_lock({ buftype = "", filetype = "markdown", neovia_notes = false }))
   end)
 end)
 
