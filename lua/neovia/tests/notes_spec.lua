@@ -103,10 +103,10 @@ describe("get_or_create", function()
     vim.fn.delete(test_cache_dir, "rf")
   end)
 
-  it("creates a listed buffer with the [session notes] name", function()
+  it("creates an unlisted buffer with the [session notes] name", function()
     local buf = notes.get_or_create("/tmp/wt1", test_cache_dir)
     assert.is_true(vim.api.nvim_buf_is_valid(buf))
-    assert.is_true(vim.bo[buf].buflisted)
+    assert.is_false(vim.bo[buf].buflisted, "notes buffer should be unlisted")
     local name = vim.api.nvim_buf_get_name(buf)
     assert.is_truthy(name:find("%[session notes%]$"))
     cleanup_buf(buf)
@@ -426,5 +426,80 @@ describe("setup", function()
     local path = I.storage_path("/tmp/wt_default_cache", vim.fn.stdpath("cache"))
     assert.is_true(vim.startswith(path, expected_prefix))
     cleanup_buf(buf)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Notes window isolation: non-notes buffers ejected via BufEnter guard
+------------------------------------------------------------------------
+
+describe("notes window isolation", function()
+  before_each(function()
+    I.reset()
+    vim.cmd("only")
+  end)
+
+  after_each(function()
+    I.reset()
+    vim.cmd("only")
+    vim.fn.delete(test_cache_dir, "rf")
+  end)
+
+  it("ejects a non-notes buffer that enters the notes window", function()
+    notes.setup({ cache_dir = test_cache_dir })
+
+    -- Set up: code window (top) + notes window (bottom)
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+    local code_win = vim.api.nvim_get_current_win()
+
+    vim.cmd("belowright split")
+    local notes_win = vim.api.nvim_get_current_win()
+    local notes_buf = notes.get_or_create("/tmp/wt_isolation", test_cache_dir)
+    vim.api.nvim_win_set_buf(notes_win, notes_buf)
+    -- Simulate BufWinEnter that would fire in real usage to set the marker
+    vim.w[notes_win].neovia_notes_buf = notes_buf
+
+    -- Now try to show a regular buffer in the notes window
+    local intruder = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(intruder, "/tmp/intruder.lua")
+    vim.api.nvim_set_current_win(notes_win)
+    vim.api.nvim_win_set_buf(notes_win, intruder)
+
+    -- Fire BufEnter (vim.api.nvim_win_set_buf does not fire autocmds,
+    -- so we trigger manually to test the callback)
+    vim.api.nvim_exec_autocmds("BufEnter", { buffer = intruder })
+
+    -- After the guard fires, the notes window should show the notes buffer
+    assert.equals(notes_buf, vim.api.nvim_win_get_buf(notes_win),
+      "notes window should still show the notes buffer after ejection")
+
+    -- The intruder should have been moved to the code window
+    assert.equals(intruder, vim.api.nvim_win_get_buf(code_win),
+      "ejected buffer should appear in the code window")
+
+    cleanup_buf(code_buf)
+    cleanup_buf(intruder)
+  end)
+
+  it("does not eject the notes buffer itself", function()
+    notes.setup({ cache_dir = test_cache_dir })
+
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    vim.cmd("belowright split")
+    local notes_win = vim.api.nvim_get_current_win()
+    local notes_buf = notes.get_or_create("/tmp/wt_no_eject", test_cache_dir)
+    vim.api.nvim_win_set_buf(notes_win, notes_buf)
+    vim.w[notes_win].neovia_notes_buf = notes_buf
+
+    -- Fire BufEnter for the notes buffer itself -- should be a no-op
+    vim.api.nvim_exec_autocmds("BufEnter", { buffer = notes_buf })
+
+    assert.equals(notes_buf, vim.api.nvim_win_get_buf(notes_win),
+      "notes buffer should remain in the notes window")
+
+    cleanup_buf(code_buf)
   end)
 end)

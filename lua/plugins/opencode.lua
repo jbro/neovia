@@ -125,6 +125,24 @@ return {
         },
       })
 
+      -- Override reference picker to open files in the code window
+      -- instead of tabedit (which creates a new tab, breaking layout).
+      local ok_rp, rp = pcall(require, "opencode.ui.reference_picker")
+      if ok_rp then
+        rp.navigate_to = function(ref)
+          local file_path = ref.file_path
+          if not vim.startswith(file_path, "/") then
+            file_path = vim.fn.getcwd() .. "/" .. file_path
+          end
+          if vim.fn.filereadable(file_path) ~= 1 then
+            vim.notify("File not found: " .. file_path, vim.log.levels.WARN)
+            return
+          end
+          local navigate = require("neovia.navigate")
+          navigate.open_in_code_win(file_path, ref.line)
+        end
+      end
+
       -- gf in opencode output: open file in the code window (left pane)
       local gf_group = vim.api.nvim_create_augroup("neovia_opencode_gf", { clear = true })
       vim.api.nvim_create_autocmd("FileType", {

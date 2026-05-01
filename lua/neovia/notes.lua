@@ -76,8 +76,9 @@ function M.get_or_create(dir, cdir)
     return existing
   end
 
-  -- Create a new listed buffer.
-  local buf = vim.api.nvim_create_buf(true, false)
+  -- Create a new unlisted buffer. Unlisted keeps notes out of :bn/:bp/:ls
+  -- so they cannot accidentally be cycled to in other windows.
+  local buf = vim.api.nvim_create_buf(false, false)
 
   -- Set buftype and disable swap BEFORE setting the name.
   -- If the name is set first, Neovim creates a swap file for it;
@@ -193,6 +194,51 @@ function M.setup(opts)
     callback = function(ev)
       local dir = buf_to_dir[ev.buf]
       if dir then M.save(dir) end
+    end,
+  })
+
+  -- Mark windows that display a notes buffer so the BufEnter guard
+  -- knows which windows are notes windows.
+  vim.api.nvim_create_autocmd("BufWinEnter", {
+    group = group,
+    callback = function(ev)
+      if vim.b[ev.buf].neovia_notes then
+        local win = vim.api.nvim_get_current_win()
+        vim.w[win].neovia_notes_buf = ev.buf
+      end
+    end,
+  })
+
+  -- Guard: eject non-notes buffers from the notes window.
+  -- When a buffer enters a window marked as a notes window
+  -- (via vim.w.neovia_notes_buf, set by BufWinEnter above),
+  -- move the intruder to the code window and restore the notes buffer.
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    callback = function(ev)
+      if vim.b[ev.buf].neovia_notes then return end
+
+      local win = vim.api.nvim_get_current_win()
+      if not vim.api.nvim_win_is_valid(win) then return end
+
+      local expected = vim.w[win].neovia_notes_buf
+      if not expected then return end
+      if not vim.api.nvim_buf_is_valid(expected) then
+        vim.w[win].neovia_notes_buf = nil
+        return
+      end
+
+      -- Eject: move the intruder to the code window.
+      local ok_nav, navigate = pcall(require, "neovia.navigate")
+      if ok_nav then
+        local code_win = navigate.find_code_win()
+        if code_win and code_win ~= win then
+          vim.api.nvim_win_set_buf(code_win, ev.buf)
+        end
+      end
+
+      -- Restore the notes buffer in this window.
+      vim.api.nvim_win_set_buf(win, expected)
     end,
   })
 

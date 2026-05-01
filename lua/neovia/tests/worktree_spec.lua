@@ -591,7 +591,7 @@ describe("collect_file_buffers", function()
     notes.setup({ cache_dir = test_cache_dir })
 
     local notes_buf = notes.get_or_create("/tmp/wt_collect")
-    assert.is_true(vim.bo[notes_buf].buflisted)
+    assert.is_false(vim.bo[notes_buf].buflisted, "notes buffers are unlisted")
 
     local paths = I.collect_file_buffers()
     local notes_name = vim.api.nvim_buf_get_name(notes_buf)

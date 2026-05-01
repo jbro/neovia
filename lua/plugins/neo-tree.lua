@@ -1,6 +1,29 @@
 -- neo-tree: read-only directory tree sidebar (always visible, far left)
 local layout = require("neovia.layout")
 
+--- Custom open command: always opens files in the code window.
+--- Directories toggle expand/collapse as usual.
+local function open_in_code_win(state)
+  local tree = state.tree
+  local ok, node = pcall(tree.get_node, tree)
+  if not (ok and node) then return end
+
+  if node.type == "directory" then
+    -- Toggle directory expansion (default neo-tree behaviour).
+    local cc_ok, cc = pcall(require, "neo-tree.sources.common.commands")
+    if cc_ok then cc.toggle_node(state) end
+    return
+  end
+
+  local path = node.path or node:get_id()
+  if not path then return end
+
+  local nav_ok, navigate = pcall(require, "neovia.navigate")
+  if nav_ok then
+    navigate.open_in_code_win(path)
+  end
+end
+
 return {
   {
     "nvim-neo-tree/neo-tree.nvim",
@@ -48,10 +71,16 @@ return {
           end,
         },
       },
+      commands = {
+        open_in_code_win = open_in_code_win,
+      },
       window = {
         position = "left",
         width = layout.sidebar_width,
         mappings = {
+          -- All opens target the code window explicitly.
+          ["<cr>"] = "open_in_code_win",
+          ["<2-LeftMouse>"] = "open_in_code_win",
           -- Read-only: disable file-editing actions
           ["a"] = "none",
           ["d"] = "none",
