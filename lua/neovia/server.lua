@@ -61,6 +61,129 @@ local function pid_alive(pid)
   return ok and ret == 0
 end
 
+--- Build a base URL for a given port.
+--- @param port number
+--- @return string
+local function base_url(port)
+  return string.format("http://127.0.0.1:%d", port)
+end
+
+--- Check whether a server is alive via HTTP health endpoint.
+--- Synchronous -- blocks up to `timeout_ms` (default 2000).
+--- @param port number?
+--- @param timeout_ms number?
+--- @return boolean
+local function health_check(port, timeout_ms)
+  if not port then return false end
+  timeout_ms = timeout_ms or 2000
+  local url = base_url(port) .. "/global/health"
+  local result = vim.system(
+    { "curl", "-sf", "--max-time", tostring(math.ceil(timeout_ms / 1000)), url },
+    { text = true }
+  ):wait()
+  return result.code == 0
+end
+
+--- Find the PID of the process listening on a given TCP port.
+--- Uses `lsof` on macOS. Returns nil when no listener is found.
+--- @param port number?
+--- @return number?
+local function find_server_pid(port)
+  if not port then return nil end
+  local result = vim.system(
+    { "lsof", "-nP", "-iTCP:" .. tostring(port), "-sTCP:LISTEN", "-t" },
+    { text = true }
+  ):wait()
+  if result.code ~= 0 or not result.stdout then return nil end
+  -- lsof -t returns one PID per line; take the first
+  local pid_str = result.stdout:match("(%d+)")
+  return pid_str and tonumber(pid_str) or nil
+end
+
+--- Kill a process and all its children. SIGTERM first, then SIGKILL.
+--- Safe to call with nil or non-existent PIDs.
+--- @param pid number?
+local function kill_process_tree(pid)
+  if not pid or pid <= 0 then return end
+
+  -- Discover children before killing the parent
+  local children = {}
+  local ok, result = pcall(vim.system, { "pgrep", "-P", tostring(pid) }, { text = true })
+  if ok and result then
+    local out = result:wait()
+    if out.code == 0 and out.stdout then
+      for line in out.stdout:gmatch("[^\n]+") do
+        local cpid = tonumber(line)
+        if cpid then table.insert(children, cpid) end
+      end
+    end
+  end
+
+  -- Kill children first, then parent
+  for _, cpid in ipairs(children) do
+    pcall(vim.uv.kill, cpid, 15)
+  end
+  pcall(vim.uv.kill, pid, 15)
+
+  -- Brief wait, then SIGKILL stragglers
+  vim.wait(500, function()
+    if pid_alive(pid) then return false end
+    for _, cpid in ipairs(children) do
+      if pid_alive(cpid) then return false end
+    end
+    return true
+  end)
+
+  for _, cpid in ipairs(children) do
+    if pid_alive(cpid) then pcall(vim.uv.kill, cpid, 9) end
+  end
+  if pid_alive(pid) then pcall(vim.uv.kill, pid, 9) end
+end
+
+--- Find and kill orphaned `opencode serve` processes for a given repo.
+--- Scans the process table for `opencode serve` processes whose cwd
+--- matches the git working tree. Returns the number of processes killed.
+--- @param git_common_dir string
+--- @return number killed
+local function cleanup_orphans(git_common_dir)
+  -- Resolve the working tree directory from the git common dir.
+  -- For a normal repo, git_common_dir is <worktree>/.git, so the
+  -- working tree is its parent. For bare repos / worktrees it may differ.
+  local work_dir = git_common_dir:gsub("/%.git$", "")
+  local real_work_dir = vim.uv.fs_realpath(work_dir) or work_dir
+
+  -- Find all opencode serve PIDs
+  local ok, result = pcall(vim.system, { "pgrep", "-f", "opencode serve" }, { text = true })
+  if not ok or not result then return 0 end
+  local out = result:wait()
+  if out.code ~= 0 or not out.stdout then return 0 end
+
+  local killed = 0
+  for line in out.stdout:gmatch("[^\n]+") do
+    local pid = tonumber(line)
+    if pid then
+      -- Check if this process's cwd matches our repo
+      local lsof_ok, lsof_result = pcall(vim.system,
+        { "lsof", "-p", tostring(pid), "-Fn" }, { text = true })
+      if lsof_ok and lsof_result then
+        local lsof_out = lsof_result:wait()
+        if lsof_out.code == 0 and lsof_out.stdout then
+          -- lsof -Fn output has lines like "ncwd" followed by "n/path/to/dir"
+          local cwd = lsof_out.stdout:match("n(/[^\n]*)")
+          if cwd then
+            local real_cwd = vim.uv.fs_realpath(cwd) or cwd
+            if real_cwd == real_work_dir then
+              kill_process_tree(pid)
+              killed = killed + 1
+            end
+          end
+        end
+      end
+    end
+  end
+  return killed
+end
+
 ------------------------------------------------------------------------
 -- Server info persistence
 ------------------------------------------------------------------------
@@ -122,6 +245,9 @@ end
 --- @field pid number?
 
 --- Return the current server status for a given state directory.
+--- Checks PID liveness first (fast), then falls back to HTTP health
+--- check (handles the case where the saved PID is stale but the server
+--- child process is still running on the saved port).
 --- @param dir string  The state directory.
 --- @return neovia.server.Status
 local function status(dir)
@@ -129,8 +255,22 @@ local function status(dir)
   if not info then
     return { state = "stopped" }
   end
+  -- Fast path: PID is alive
   if info.pid and info.pid > 0 and pid_alive(info.pid) then
     return { state = "running", port = info.port, pid = info.pid }
+  end
+  -- Slow path: PID is dead but the server child may still be running.
+  -- Check the health endpoint on the saved port.
+  if info.port and health_check(info.port, 1000) then
+    -- Server is alive but with a different PID. Try to discover it.
+    local actual_pid = find_server_pid(info.port)
+    if actual_pid then
+      -- Update the saved PID so future checks use the fast path.
+      save_server_info(dir, info.port, actual_pid)
+      return { state = "running", port = info.port, pid = actual_pid }
+    end
+    -- Can't find PID but health check passed -- still running.
+    return { state = "running", port = info.port, pid = 0 }
   end
   return { state = "stopped" }
 end
@@ -203,12 +343,9 @@ local function start(git_common_dir, callback)
     if not timeout_timer:is_closing() then timeout_timer:close() end
     if not settled then
       settled = true
-      -- Kill the orphan process so it doesn't run untracked
+      -- Kill the orphan process tree so children don't run untracked
       if job and job.pid then
-        pcall(vim.uv.kill, job.pid, 15)
-        vim.defer_fn(function()
-          if pid_alive(job.pid) then pcall(vim.uv.kill, job.pid, 9) end
-        end, 1000)
+        kill_process_tree(job.pid)
       end
       clear_server_info(dir)
       callback("opencode server did not start within " .. (START_TIMEOUT_MS / 1000) .. "s")
@@ -236,8 +373,20 @@ local function start(git_common_dir, callback)
           if not timeout_timer:is_closing() then timeout_timer:close() end
           local port = parse_server_url(url)
           if port and job and job.pid then
+            -- Save with spawned PID initially, then discover the actual
+            -- child PID asynchronously (find_server_pid uses vim.wait
+            -- which can't run in a fast event context).
             save_server_info(dir, port, job.pid)
-            vim.schedule(function() callback(nil, port) end)
+            vim.schedule(function()
+              -- The spawned process may fork: job.pid is the parent,
+              -- but the actual server is often a child. Discover the
+              -- real PID listening on the port for reliable tracking.
+              local actual_pid = find_server_pid(port)
+              if actual_pid and actual_pid ~= job.pid then
+                save_server_info(dir, port, actual_pid)
+              end
+              callback(nil, port)
+            end)
           else
             vim.schedule(function() callback("failed to parse server URL: " .. tostring(url)) end)
           end
@@ -264,33 +413,42 @@ local function start(git_common_dir, callback)
 end
 
 --- Stop the opencode server synchronously.
---- Sends SIGTERM, waits up to 2s for exit, then SIGKILL if needed.
+--- Attempts graceful HTTP shutdown first, then falls back to process
+--- tree kill. Handles the case where the tracked PID is a parent that
+--- has already exited while its child (the actual server) is still
+--- running on the saved port.
 --- @param git_common_dir string
---- @return boolean stopped  True if a process was killed.
+--- @return boolean stopped  True if a process was killed or shutdown.
 local function stop(git_common_dir)
   local dir = state_dir(git_common_dir)
   local info = load_server_info(dir)
-  if not info or not info.pid or info.pid <= 0 then
+  if not info then
     clear_server_info(dir)
     return false
   end
 
+  local port = info.port
   local pid = info.pid
-  if pid_alive(pid) then
-    pcall(vim.uv.kill, pid, 15) -- SIGTERM
 
-    -- Poll for process death (up to 2s, checking every 100ms)
-    local waited = 0
-    while pid_alive(pid) and waited < 2000 do
-      vim.wait(100, function() return false end) -- sleep 100ms
-      waited = waited + 100
-    end
+  -- Try graceful HTTP shutdown first (works regardless of PID tracking)
+  if port and health_check(port, 1000) then
+    local url = base_url(port) .. "/global/shutdown"
+    pcall(vim.system, { "curl", "-sf", "-XPOST", "--max-time", "2", url }, { text = true })
+    -- Wait for the health endpoint to stop responding
+    vim.wait(3000, function() return not health_check(port, 500) end, 200)
+  end
 
-    -- Force kill if still alive
-    if pid_alive(pid) then
-      pcall(vim.uv.kill, pid, 9) -- SIGKILL
-      -- Brief wait for SIGKILL to take effect
-      vim.wait(200, function() return not pid_alive(pid) end)
+  -- If the tracked PID is alive, kill it and its children
+  if pid and pid > 0 and pid_alive(pid) then
+    kill_process_tree(pid)
+  end
+
+  -- Also find and kill whatever is actually listening on the port
+  -- (handles the orphaned child case where saved PID != actual PID)
+  if port then
+    local actual_pid = find_server_pid(port)
+    if actual_pid and actual_pid ~= pid then
+      kill_process_tree(actual_pid)
     end
   end
 
@@ -323,6 +481,10 @@ local function ensure_running(git_common_dir)
   if s.state == "running" then
     return s.port, nil
   end
+
+  -- Clean up any orphaned opencode serve processes from previous runs
+  -- before spawning a new one. This prevents unbounded accumulation.
+  cleanup_orphans(git_common_dir)
 
   local done = false
   local result_port, result_err
@@ -442,6 +604,10 @@ M._internal = {
   port_file = port_file,
   pid_file = pid_file,
   pid_alive = pid_alive,
+  health_check = health_check,
+  find_server_pid = find_server_pid,
+  kill_process_tree = kill_process_tree,
+  cleanup_orphans = cleanup_orphans,
   save_server_info = save_server_info,
   load_server_info = load_server_info,
   clear_server_info = clear_server_info,

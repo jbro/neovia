@@ -584,3 +584,209 @@ describe("M.restart", function()
     I.clear_server_info(sdir)
   end)
 end)
+
+------------------------------------------------------------------------
+-- health_check (HTTP-based liveness)
+------------------------------------------------------------------------
+
+describe("health_check", function()
+  it("returns false for a port with no server", function()
+    -- Use a port that nothing is listening on
+    local alive = I.health_check(19999)
+    assert.is_false(alive)
+  end)
+
+  it("returns false for nil port", function()
+    local alive = I.health_check(nil)
+    assert.is_false(alive)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- find_server_pid (discover PID from port via lsof)
+------------------------------------------------------------------------
+
+describe("find_server_pid", function()
+  it("returns nil for a port with no listener", function()
+    local pid = I.find_server_pid(19999)
+    assert.is_nil(pid)
+  end)
+
+  it("returns nil for nil port", function()
+    local pid = I.find_server_pid(nil)
+    assert.is_nil(pid)
+  end)
+
+  it("finds the PID of a process listening on a known port", function()
+    -- Start a simple server on a known port using nc (netcat),
+    -- which doesn't fork, so lsof returns the same PID we spawned.
+    local job = vim.system(
+      { "nc", "-l", "127.0.0.1", "19876" },
+      { detach = true }
+    )
+    -- Give it time to bind
+    vim.wait(500, function() return false end)
+
+    local pid = I.find_server_pid(19876)
+    assert.is_not_nil(pid)
+    assert.is_true(I.pid_alive(pid))
+
+    -- Clean up
+    pcall(vim.uv.kill, job.pid, 9)
+    if pid ~= job.pid then pcall(vim.uv.kill, pid, 9) end
+    vim.wait(500, function() return not I.pid_alive(job.pid) end)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- kill_process_tree (kill parent + all children)
+------------------------------------------------------------------------
+
+describe("kill_process_tree", function()
+  it("kills a process and its children", function()
+    -- Start a parent that spawns a child
+    local job = vim.system({ "bash", "-c", "sleep 120 & wait" }, { detach = true })
+    local parent_pid = job.pid
+    -- Give child time to spawn
+    vim.wait(500, function() return false end)
+
+    -- Find children
+    local result = vim.system(
+      { "pgrep", "-P", tostring(parent_pid) }, { text = true }
+    ):wait()
+    local child_pids = {}
+    if result.code == 0 and result.stdout then
+      for line in result.stdout:gmatch("[^\n]+") do
+        local cpid = tonumber(line)
+        if cpid then table.insert(child_pids, cpid) end
+      end
+    end
+
+    -- Kill the whole tree
+    I.kill_process_tree(parent_pid)
+
+    -- Wait for death
+    vim.wait(2000, function()
+      if I.pid_alive(parent_pid) then return false end
+      for _, cpid in ipairs(child_pids) do
+        if I.pid_alive(cpid) then return false end
+      end
+      return true
+    end)
+
+    assert.is_false(I.pid_alive(parent_pid))
+    for _, cpid in ipairs(child_pids) do
+      assert.is_false(I.pid_alive(cpid))
+    end
+  end)
+
+  it("handles non-existent PID gracefully", function()
+    -- Should not error
+    I.kill_process_tree(99999999)
+  end)
+
+  it("handles nil PID gracefully", function()
+    I.kill_process_tree(nil)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- cleanup_orphans (find and kill stale opencode serve processes)
+------------------------------------------------------------------------
+
+describe("cleanup_orphans", function()
+  it("kills opencode serve processes in the given directory", function()
+    -- We can't easily spawn a real opencode serve in tests, but we can
+    -- test that the function doesn't error when no orphans exist.
+    local gcd = I.resolve_git_common_dir()
+    -- Should not error even with no orphans
+    local killed = I.cleanup_orphans(gcd)
+    assert.is_true(type(killed) == "number")
+  end)
+end)
+
+------------------------------------------------------------------------
+-- status with health_check fallback
+------------------------------------------------------------------------
+
+describe("status (health-check aware)", function()
+  local tmp_dir
+
+  before_each(function()
+    tmp_dir = vim.fn.tempname()
+    vim.fn.mkdir(tmp_dir, "p")
+  end)
+
+  after_each(function()
+    os.remove(tmp_dir .. "/port")
+    os.remove(tmp_dir .. "/pid")
+    os.remove(tmp_dir)
+  end)
+
+  it("returns 'stopped' when PID is dead and health check fails", function()
+    -- Simulate stale state: dead PID, port nobody listens on
+    I.save_server_info(tmp_dir, 19999, 99999999)
+    local s = I.status(tmp_dir)
+    assert.equals("stopped", s.state)
+  end)
+
+  it("returns 'running' when PID is dead but health check passes", function()
+    -- Start a fake HTTP server that responds 200 to any request.
+    -- bash+nc: loop accepting connections and sending a 200 response.
+    local job = vim.system(
+      { "bash", "-c", "while true; do echo -e 'HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\n{}' | nc -l 127.0.0.1 19877; done" },
+      { detach = true }
+    )
+    vim.wait(500, function() return false end)
+
+    -- Save stale state: dead PID, but the port IS answering
+    I.save_server_info(tmp_dir, 19877, 99999999)
+    local s = I.status(tmp_dir)
+    assert.equals("running", s.state)
+    assert.equals(19877, s.port)
+    -- status should have discovered the actual PID
+    assert.is_true(s.pid ~= nil and s.pid > 0)
+
+    -- Clean up
+    I.kill_process_tree(job.pid)
+    vim.wait(500, function() return not I.pid_alive(job.pid) end)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- stop with port-based PID discovery
+------------------------------------------------------------------------
+
+describe("stop (port-based PID fallback)", function()
+  it("kills the actual listener when saved PID differs", function()
+    local fake_git_dir = "__test_stop_port_fallback__"
+    local dir = I.state_dir(fake_git_dir)
+
+    -- Start a real listener on a known port
+    local job = vim.system(
+      { "python3", "-m", "http.server", "19878", "--bind", "127.0.0.1" },
+      { detach = true }
+    )
+    vim.wait(1500, function() return false end)
+
+    -- Save state with a WRONG PID (simulating the parent-died scenario)
+    I.save_server_info(dir, 19878, 99999999)
+
+    -- stop should discover the actual PID via the port and kill it
+    local stopped = I.stop(fake_git_dir)
+    assert.is_true(stopped)
+
+    -- Verify the listener is dead
+    vim.wait(2000, function() return not I.pid_alive(job.pid) end)
+    -- The actual server process may have a different PID than job.pid
+    -- (python may fork), so check that nothing is listening on the port
+    local listener = I.find_server_pid(19878)
+    assert.is_nil(listener)
+
+    -- Clean up
+    I.clear_server_info(dir)
+    pcall(vim.fn.delete, dir, "rf")
+  end)
+end)
+
+
