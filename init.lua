@@ -121,6 +121,11 @@ if not vim.g.neovia_lazy_loaded then
 end
 
 ------------------------------------------------------------------------
+-- Version tracking (server vs system binary, statusline display)
+------------------------------------------------------------------------
+require("neovia.version").setup()
+
+------------------------------------------------------------------------
 -- Layout (enforce code + opencode panels, open opencode on launch)
 ------------------------------------------------------------------------
 require("neovia.layout").setup()

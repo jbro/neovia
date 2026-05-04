@@ -43,6 +43,24 @@ local function opencode_status_color()
   return info.hl
 end
 
+--- Build the opencode version string for the statusline.
+--- Shows the running server version; turns yellow when the local binary
+--- is newer (i.e. upgrade happened but server not restarted).
+--- @return string
+local function opencode_version()
+  local ok, ver = pcall(require, "neovia.version")
+  if not ok then return "" end
+  return ver.display().text
+end
+
+--- Return the highlight colour for the version component.
+--- @return table
+local function opencode_version_color()
+  local ok, ver = pcall(require, "neovia.version")
+  if not ok then return {} end
+  return ver.display().hl
+end
+
 --- Build the PR string for the statusline (e.g. "#42 Fix login bug").
 --- Title is truncated to 30 characters. Returns empty string when
 --- the current branch has no PR.
@@ -138,6 +156,7 @@ return {
           },
         },
         lualine_x = {
+          { opencode_version, color = opencode_version_color },
           { opencode_status, color = opencode_status_color },
           "filetype",
         },
