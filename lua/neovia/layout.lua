@@ -207,6 +207,10 @@ local function rebuild(code_buf)
   -- buffer.  Replace it with the code buffer (or a noname buffer) so
   -- the window order comes out correct: neo-tree inserts to its left,
   -- opencode opens to its right.
+  -- Temporarily clear winfixbuf (neo-tree/opencode may set it) so the
+  -- buffer switch succeeds.
+  local had_fixbuf = vim.wo.winfixbuf
+  if had_fixbuf then vim.wo.winfixbuf = false end
   if code_buf and vim.api.nvim_buf_is_valid(code_buf) then
     vim.api.nvim_win_set_buf(0, code_buf)
   else

@@ -272,3 +272,72 @@ describe("setup", function()
     assert.equals(#cmds1, #cmds2)
   end)
 end)
+
+------------------------------------------------------------------------
+-- current_file
+------------------------------------------------------------------------
+
+describe("current_file", function()
+  before_each(cleanup)
+  after_each(cleanup)
+
+  it("returns nil when diffview.lib is not available", function()
+    -- No diffview loaded in test environment, so get_current_view returns nil.
+    assert.is_nil(diffview.current_file())
+  end)
+
+  it("returns path when panel.cur_file is a table with path", function()
+    -- Simulate diffview.lib.get_current_view returning a view
+    -- where panel.cur_file is a table (DiffView style).
+    local fake_view = {
+      panel = { cur_file = { path = "lua/foo.lua" } },
+    }
+    local result = diffview._internal.extract_current_file(fake_view)
+    assert.equals("lua/foo.lua", result)
+  end)
+
+  it("returns path when panel.cur_file is a function (FileHistoryView)", function()
+    -- FileHistoryView: panel.cur_file is a method that returns an entry.
+    local fake_view = {
+      panel = {
+        cur_file = function(_self) return { path = "lua/bar.lua" } end,
+      },
+    }
+    local result = diffview._internal.extract_current_file(fake_view)
+    assert.equals("lua/bar.lua", result)
+  end)
+
+  it("returns nil when panel.cur_file function returns nil", function()
+    local fake_view = {
+      panel = {
+        cur_file = function(_self) return nil end,
+      },
+    }
+    local result = diffview._internal.extract_current_file(fake_view)
+    assert.is_nil(result)
+  end)
+
+  it("returns nil when panel.cur_file function errors", function()
+    local fake_view = {
+      panel = {
+        cur_file = function(_self) error("boom") end,
+      },
+    }
+    local result = diffview._internal.extract_current_file(fake_view)
+    assert.is_nil(result)
+  end)
+
+  it("returns nil when view has no panel", function()
+    local fake_view = {}
+    local result = diffview._internal.extract_current_file(fake_view)
+    assert.is_nil(result)
+  end)
+
+  it("returns nil when entry has no path field", function()
+    local fake_view = {
+      panel = { cur_file = { name = "no-path" } },
+    }
+    local result = diffview._internal.extract_current_file(fake_view)
+    assert.is_nil(result)
+  end)
+end)

@@ -77,6 +77,36 @@ end
 -- Public API
 ------------------------------------------------------------------------
 
+--- Extract the current file path from a diffview view object.
+--- Handles both DiffView (cur_file is a table) and FileHistoryView
+--- (cur_file is a method).
+--- @param view table  A diffview view object.
+--- @return string|nil
+local function extract_current_file(view)
+  if not view or not view.panel then return nil end
+  local cur = view.panel.cur_file
+  local entry
+  if type(cur) == "function" then
+    local ok, result = pcall(cur, view.panel)
+    if ok then entry = result end
+  elseif type(cur) == "table" then
+    entry = cur
+  end
+  if type(entry) ~= "table" or not entry.path then return nil end
+  return entry.path
+end
+
+--- Return the relative file path for the currently selected diffview entry.
+--- Returns nil if not in a diffview or no file is selected.
+--- @return string|nil
+function M.current_file()
+  local ok, lib = pcall(require, "diffview.lib")
+  if not ok then return nil end
+  local view = lib.get_current_view()
+  if not view then return nil end
+  return extract_current_file(view)
+end
+
 --- Check whether a tab page is a diffview tab.
 --- @param tab integer
 --- @return boolean
@@ -230,6 +260,7 @@ M._internal = {
   unregister = unregister,
   is_diffview_tab = is_diffview_tab,
   worktree_for_tab = worktree_for_tab,
+  extract_current_file = extract_current_file,
 
   --- Reset all state (reload contract).
   reset = function()

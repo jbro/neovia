@@ -4,14 +4,9 @@
 --- Returns nil if not in a diffview or no file is selected.
 --- @return string|nil
 local function diffview_current_file()
-  local ok, lib = pcall(require, "diffview.lib")
+  local ok, dv = pcall(require, "neovia.diffview")
   if not ok then return nil end
-  local view = lib.get_current_view()
-  if not view then return nil end
-  -- DiffView uses panel.cur_file, FileHistoryView uses :cur_file()
-  local entry = (view.panel and view.panel.cur_file) or (view.cur_file and view:cur_file())
-  if not entry then return nil end
-  return entry.path
+  return dv.current_file()
 end
 
 --- Get the worktree directory for the current tab.
