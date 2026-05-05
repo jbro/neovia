@@ -766,11 +766,9 @@ function M.switch_to(dir)
     pcall(vim.cmd, "Neotree dir=" .. vim.fn.fnameescape(dir))
 
     -- Layout check: opencode.nvim's session swap is async, so if
-    -- it disrupts the output window, ensure_layout repairs it.
+    -- it disrupts the output window, apply repairs it.
     local ok, layout = pcall(require, "neovia.layout")
-    if ok and layout._internal and layout._internal.ensure_layout then
-      layout._internal.ensure_layout()
-    end
+    if ok then layout.apply() end
 
     -- Restore saved model/variant/mode after the session switch has
     -- settled.  set_model auto-clears variant (via a subscriber), so

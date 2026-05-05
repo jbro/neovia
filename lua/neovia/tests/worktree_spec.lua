@@ -1142,29 +1142,21 @@ describe("switch_to", function()
       [dir_b] = I.make_entry({ branch = "feat" }),
     })
 
-    local layout_restored = false
-    local orig_restore = require("neovia.layout").restore_layout
-    require("neovia.layout").restore_layout = function()
-      layout_restored = true
-    end
-
-    -- Mock ensure_layout instead since restore_layout is too aggressive
-    local layout_ensured = false
-    local layout_internal = require("neovia.layout")._internal
-    local orig_ensure = layout_internal.ensure_layout
-    layout_internal.ensure_layout = function()
-      layout_ensured = true
+    local layout_applied = false
+    local layout_mod = require("neovia.layout")
+    local orig_apply = layout_mod.apply
+    layout_mod.apply = function()
+      layout_applied = true
     end
 
     wt.switch_to(dir_b)
 
-    -- ensure_layout should be deferred; flush pending callbacks
-    vim.wait(200, function() return layout_ensured end)
+    -- apply should be deferred; flush pending callbacks
+    vim.wait(200, function() return layout_applied end)
 
-    require("neovia.layout").restore_layout = orig_restore
-    layout_internal.ensure_layout = orig_ensure
+    layout_mod.apply = orig_apply
 
-    assert.is_true(layout_ensured, "Expected layout check to be scheduled after switch")
+    assert.is_true(layout_applied, "Expected layout.apply() to be called after switch")
   end)
 
   it("leaves noname buffer in code window on first visit", function()
@@ -1204,7 +1196,7 @@ describe("switch_to", function()
         if type(c) == "string" and c:find("Neotree") and c:find("dir=") then
           neotree_dir_cmd = c
         end
-        -- Always delegate so ensure_layout etc. still work
+        -- Always delegate so layout.apply() etc. still work
         orig_cmd(c)
       end,
       __index = function(_, k)

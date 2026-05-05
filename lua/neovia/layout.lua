@@ -2,7 +2,8 @@
 -- Enforce the four-panel layout:
 --   neo-tree (left) | code (centre top)    | opencode (right)
 --                   | session notes (bot)  |
--- Restores missing panels on WinClosed and opens opencode on VimEnter.
+-- A single apply() function handles all layout enforcement: both
+-- WinClosed recovery and explicit <leader>l restores use the same path.
 
 local M = {}
 
@@ -33,9 +34,11 @@ end
 
 local initialised = false
 local opencode_opener = nil
+local applying = false
+local apply_epoch = 0
 
 ------------------------------------------------------------------------
--- Window detection
+-- Window detection (delegates to navigate for shared helpers)
 ------------------------------------------------------------------------
 
 --- Find a non-floating opencode window. Returns nil if none found.
@@ -56,20 +59,6 @@ local function find_opencode_win()
   return nil
 end
 
-------------------------------------------------------------------------
--- Layout enforcement
-------------------------------------------------------------------------
-
---- Open opencode using the configured opener or the real API.
-local function open_opencode()
-  if opencode_opener then
-    opencode_opener()
-  else
-    local ok, api = pcall(require, "opencode.api")
-    if ok then api.toggle() end
-  end
-end
-
 --- Find the neo-tree sidebar window. Returns nil if none found.
 --- @return integer?
 local function find_neo_tree_win()
@@ -84,23 +73,52 @@ local function find_neo_tree_win()
   return nil
 end
 
---- Check whether a neo-tree sidebar window exists.
---- @return boolean
-local function has_neo_tree_win()
-  return find_neo_tree_win() ~= nil
-end
+------------------------------------------------------------------------
+-- Layout check (pure: no side effects)
+------------------------------------------------------------------------
 
---- Create a code window with a noname buffer between neo-tree and opencode.
---- Uses nvim_open_win with split to avoid focus changes and race conditions.
---- @return integer win  The new window handle.
-local function create_code_win()
-  local buf = vim.api.nvim_create_buf(false, true)
+--- Check whether the current tab has a correct layout.
+--- Returns true when code and opencode windows exist and are correctly
+--- positioned (code column < opencode column; neo-tree column < code
+--- column when neo-tree exists).
+--- @return boolean
+local function is_layout_ok()
+  local ok_nav, navigate = pcall(require, "neovia.navigate")
+  if not ok_nav then return false end
+
+  local code_win = navigate.find_code_win()
+  local oc_win = find_opencode_win()
+
+  -- Must have both code and opencode windows.
+  if not code_win or not oc_win then return false end
+
+  -- Check column ordering.
+  local code_col = vim.api.nvim_win_get_position(code_win)[2]
+  local oc_col = vim.api.nvim_win_get_position(oc_win)[2]
+  if oc_col <= code_col then return false end
+
+  -- If neo-tree exists, it must be to the left of code.
   local tree_win = find_neo_tree_win()
   if tree_win then
-    return vim.api.nvim_open_win(buf, false, { split = "right", win = tree_win })
+    local tree_col = vim.api.nvim_win_get_position(tree_win)[2]
+    if tree_col >= code_col then return false end
   end
-  -- No neo-tree: split at the far left (least likely in practice).
-  return vim.api.nvim_open_win(buf, false, { split = "left", win = 0 })
+
+  return true
+end
+
+------------------------------------------------------------------------
+-- Panel helpers
+------------------------------------------------------------------------
+
+--- Open opencode using the configured opener or the real API.
+local function open_opencode()
+  if opencode_opener then
+    opencode_opener()
+  else
+    local ok, api = pcall(require, "opencode.api")
+    if ok then api.toggle() end
+  end
 end
 
 --- Set the notes window to the canonical height and lock it.
@@ -146,64 +164,18 @@ local function open_notes_split(code_win)
   vim.api.nvim_set_current_win(prev_win)
 end
 
---- Check the window layout and restore any missing panel.
---- If neo-tree is missing, reopen it.
---- If no code window exists, create one with a noname buffer.
---- If no notes window exists, create the notes split.
---- If no opencode window exists, reopen it.
---- Skips entirely on diffview tabs (they manage their own layout).
-local function ensure_layout()
-  -- Skip on diffview tabs -- they manage their own window layout.
-  local ok_dv, dv = pcall(require, "neovia.diffview")
-  if ok_dv and dv.is_diffview_tab(vim.api.nvim_get_current_tabpage()) then
-    return
-  end
-
-  local ok_nav, navigate = pcall(require, "neovia.navigate")
-  if not ok_nav then return end
-
-  if not has_neo_tree_win() then
-    pcall(vim.cmd, "Neotree show")
-  end
-  if not navigate.find_code_win() then
-    local ok, err = pcall(create_code_win)
-    if not ok then
-      vim.notify("layout: failed to restore code window: " .. tostring(err), vim.log.levels.WARN)
-    end
-  end
-  -- Notes split below the code window.
-  local code_win = navigate.find_code_win()
-  if code_win and not navigate.find_notes_win() then
-    pcall(open_notes_split, code_win)
-  end
-  if not find_opencode_win() then
-    local ok, err = pcall(open_opencode)
-    if not ok then
-      vim.notify("layout: failed to restore opencode: " .. tostring(err), vim.log.levels.WARN)
-    end
-  end
-  -- Re-enforce notes height after all panels are in place (opening new
-  -- panels may cause equalalways to redistribute window sizes).
-  M.enforce_notes_height()
-end
-
 ------------------------------------------------------------------------
--- Restore layout
+-- Nuke-and-rebuild
 ------------------------------------------------------------------------
 
---- Nuke all windows and rebuild the canonical layout.
---- Remembers the buffer that was in the code window and restores it.
---- Falls back to a noname buffer if no code buffer was showing.
-function M.restore_layout()
+--- Rebuild the canonical layout from scratch.
+--- Saves the code buffer, tears down everything, then reconstructs
+--- panels in the correct order: neo-tree (left), code+notes (centre),
+--- opencode (right).
+--- @param code_buf integer?  Buffer to show in the code window (nil = noname).
+local function rebuild(code_buf)
   local ok_nav, navigate = pcall(require, "neovia.navigate")
   if not ok_nav then return end
-
-  -- Remember the buffer in the code window (if any)
-  local code_win = navigate.find_code_win()
-  local code_buf = nil
-  if code_win then
-    code_buf = vim.api.nvim_win_get_buf(code_win)
-  end
 
   -- Tear down opencode windows cleanly before collapsing so
   -- opencode.nvim does not hold stale window references.
@@ -213,8 +185,23 @@ function M.restore_layout()
     pcall(oc_ui.teardown_visible_windows, oc_state.windows)
   end
 
-  -- Collapse to one window then rebuild all panels.
-  vim.cmd("only")
+  -- Collapse to one window. Close extra windows one by one; when only
+  -- one window remains, stop. `only!` can hang when terminal buffers
+  -- are running, so we avoid it.
+  local function close_extras()
+    local wins = vim.api.nvim_tabpage_list_wins(0)
+    while #wins > 1 do
+      -- Pick a window that is NOT the current one.
+      for _, w in ipairs(wins) do
+        if w ~= vim.api.nvim_get_current_win() and vim.api.nvim_win_is_valid(w) then
+          pcall(vim.api.nvim_win_close, w, true)
+          break
+        end
+      end
+      wins = vim.api.nvim_tabpage_list_wins(0)
+    end
+  end
+  close_extras()
 
   -- After "only" the surviving window may show an opencode or neo-tree
   -- buffer.  Replace it with the code buffer (or a noname buffer) so
@@ -223,7 +210,6 @@ function M.restore_layout()
   if code_buf and vim.api.nvim_buf_is_valid(code_buf) then
     vim.api.nvim_win_set_buf(0, code_buf)
   else
-    -- Create a fresh noname buffer for the code window.
     local noname = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_win_set_buf(0, noname)
   end
@@ -248,7 +234,7 @@ function M.restore_layout()
     vim.api.nvim_set_current_win(new_code_win)
   end
 
-  -- Clean up any stray [No Name] listed buffers left behind
+  -- Clean up any stray [No Name] listed buffers left behind.
   for _, b in ipairs(vim.api.nvim_list_bufs()) do
     if vim.bo[b].buflisted
       and vim.bo[b].buftype == ""
@@ -257,7 +243,6 @@ function M.restore_layout()
     then
       local lines = vim.api.nvim_buf_get_lines(b, 0, 1, false)
       if #lines == 0 or lines[1] == "" then
-        -- Not shown in any window -- safe to wipe
         local in_use = false
         for _, w in ipairs(vim.api.nvim_list_wins()) do
           if vim.api.nvim_win_get_buf(w) == b then
@@ -274,12 +259,64 @@ function M.restore_layout()
 end
 
 ------------------------------------------------------------------------
+-- Unified apply
+------------------------------------------------------------------------
+
+--- Enforce the canonical layout. This is the single entry point for all
+--- layout enforcement: WinClosed recovery, VimEnter setup, <leader>l,
+--- server restart, worktree switch, etc.
+---
+--- If all panels exist and are correctly ordered, just enforce notes
+--- height and return (no-op). Otherwise, nuke and rebuild.
+---
+--- Skips entirely on diffview tabs.
+function M.apply()
+  -- Guard against re-entrant calls (rebuild closes windows which fires
+  -- WinClosed which schedules another apply).
+  if applying then return end
+
+  -- Skip on diffview tabs -- they manage their own window layout.
+  local ok_dv, dv = pcall(require, "neovia.diffview")
+  if ok_dv and dv.is_diffview_tab(vim.api.nvim_get_current_tabpage()) then
+    return
+  end
+
+  -- If layout is already correct, just enforce notes height and return.
+  if is_layout_ok() then
+    M.enforce_notes_height()
+    return
+  end
+
+  -- Layout is broken: remember the code buffer and rebuild.
+  local ok_nav, navigate = pcall(require, "neovia.navigate")
+  local code_buf = nil
+  if ok_nav then
+    local code_win = navigate.find_code_win()
+    if code_win then
+      code_buf = vim.api.nvim_win_get_buf(code_win)
+    end
+  end
+
+  applying = true
+  apply_epoch = apply_epoch + 1
+  local ok, err = pcall(rebuild, code_buf)
+  -- Increment again so any WinClosed callbacks scheduled during rebuild()
+  -- (which captured the pre-increment epoch) see a stale epoch and bail.
+  apply_epoch = apply_epoch + 1
+  applying = false
+  if not ok then
+    vim.notify("layout: rebuild failed: " .. tostring(err), vim.log.levels.WARN)
+  end
+end
+
+------------------------------------------------------------------------
 -- Setup
 ------------------------------------------------------------------------
 
 --- Initialise the layout module. Registers autocmds for:
---- - WinClosed: restore missing panels after any window closes.
---- - VimEnter: open the opencode panel and notes split on startup.
+--- - WinClosed: apply layout when a panel is missing.
+--- - VimEnter: build the initial layout on startup.
+--- - VimResized: re-enforce notes height.
 function M.setup()
   if initialised then return end
   initialised = true
@@ -289,7 +326,14 @@ function M.setup()
   vim.api.nvim_create_autocmd("WinClosed", {
     group = group,
     callback = function()
-      vim.schedule(ensure_layout)
+      -- Capture the epoch before scheduling. If apply() already ran
+      -- (e.g. a rebuild that closed windows), the epoch will have
+      -- changed and we skip the stale callback.
+      local epoch = apply_epoch
+      vim.schedule(function()
+        if apply_epoch ~= epoch then return end
+        M.apply()
+      end)
     end,
   })
 
@@ -304,24 +348,7 @@ function M.setup()
     group = group,
     callback = function()
       vim.schedule(function()
-        -- Open neo-tree sidebar (far left)
-        pcall(vim.cmd, "Neotree show")
-        -- Create notes split before opencode so the vertical split is correct
-        local ok_nav, navigate = pcall(require, "neovia.navigate")
-        if ok_nav then
-          local code_win = navigate.find_code_win()
-          if code_win then
-            pcall(open_notes_split, code_win)
-          end
-        end
-        open_opencode()
-        -- Re-enforce notes height after opencode opens.
-        M.enforce_notes_height()
-        -- Ensure focus lands on the code window, not neo-tree or opencode.
-        if ok_nav then
-          local code_win = navigate.find_code_win()
-          if code_win then vim.api.nvim_set_current_win(code_win) end
-        end
+        M.apply()
       end)
     end,
   })
@@ -333,8 +360,7 @@ end
 
 M._internal = {
   find_opencode_win = find_opencode_win,
-  has_neo_tree_win = has_neo_tree_win,
-  ensure_layout = ensure_layout,
+  is_layout_ok = is_layout_ok,
 
   --- Set a custom opencode opener (for testing). Pass nil to clear.
   --- @param fn function?
@@ -346,6 +372,8 @@ M._internal = {
   reset = function()
     initialised = false
     opencode_opener = nil
+    applying = false
+    apply_epoch = apply_epoch + 1
     pcall(vim.api.nvim_create_augroup, "neovia_layout", { clear = true })
   end,
 }
