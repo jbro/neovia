@@ -23,6 +23,14 @@ neovia is a Neovim configuration for an AI-driven coding environment.
 - **`init.lua`:** one-time side effects (like `lazy.setup()` and `env.setup()`) must be guarded with a `vim.g` flag so they are skipped on re-source. Autocmds must use named augroups.
 - **Plugin specs (`lua/plugins/`):** not reloaded -- use `:Lazy sync` for that. Keep keymaps set via plugin specs idempotent (lazy.nvim handles this).
 
+### Project documentation
+
+- `ARCHITECTURE.md` -- layers, data flow, key abstractions, entry points. **Owned by magic-context** (auto-generated); edits are overwritten on regeneration.
+- `STRUCTURE.md` -- directory layout, naming conventions, where to add new code. **Owned by magic-context** (auto-generated); edits are overwritten on regeneration.
+- `AGENTS.md` (this file) -- rules, design spec, and decisions. Manually maintained.
+
+Magic-context injects `ARCHITECTURE.md` and `STRUCTURE.md` into agent context automatically. Keep `AGENTS.md` content complementary -- rules, design spec, and decisions belong here; architectural and structural detail belongs in the generated files.
+
 ### Repo structure: config vs module
 
 This repo has two distinct parts:
