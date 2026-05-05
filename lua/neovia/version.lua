@@ -161,10 +161,10 @@ end
 local function resolve_colors()
   local ok_tl, tl = pcall(require, "neovia.tabline")
   if ok_tl and tl.status_colors then
-    return tl.status_colors.idle or "#9ece6a",
-           tl.status_colors.responding or "#e0af68"
+    return tl.status_colors.idle or "#a6e3a1",
+           tl.status_colors.responding or "#f9e2af"
   end
-  return "#9ece6a", "#e0af68"
+  return "#a6e3a1", "#f9e2af"
 end
 
 --- Build display info for the statusline.

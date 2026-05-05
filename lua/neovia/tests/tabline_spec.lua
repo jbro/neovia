@@ -415,6 +415,97 @@ end)
 -- reset (reload contract)
 ------------------------------------------------------------------------
 
+------------------------------------------------------------------------
+-- status_palette_keys (semantic colour mapping)
+------------------------------------------------------------------------
+
+describe("status_palette_keys", function()
+  it("maps idle to green", function()
+    assert.equals("green", I.status_palette_keys.idle)
+  end)
+
+  it("maps responding to yellow", function()
+    assert.equals("yellow", I.status_palette_keys.responding)
+  end)
+
+  it("maps needs_attention to red", function()
+    assert.equals("red", I.status_palette_keys.needs_attention)
+  end)
+
+  it("maps unknown to overlay0", function()
+    assert.equals("overlay0", I.status_palette_keys.unknown)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- resolve_status_colors (palette-based colour resolution)
+------------------------------------------------------------------------
+
+describe("resolve_status_colors", function()
+  it("returns a table with all four status keys", function()
+    local colors = I.resolve_status_colors()
+    assert.is_string(colors.idle)
+    assert.is_string(colors.responding)
+    assert.is_string(colors.needs_attention)
+    assert.is_string(colors.unknown)
+  end)
+
+  it("returns hex colour strings", function()
+    local colors = I.resolve_status_colors()
+    for _, colour in pairs(colors) do
+      assert.is_truthy(colour:match("^#%x+$"), "expected hex colour, got: " .. colour)
+    end
+  end)
+
+  it("uses catppuccin palette colours when available", function()
+    -- catppuccin may not be installed in test env, but if it is,
+    -- the colours should match the palette
+    local ok, palettes = pcall(require, "catppuccin.palettes")
+    if not ok then return end -- skip if not installed
+    local palette = palettes.get_palette()
+    local colors = I.resolve_status_colors()
+    assert.equals(palette.green, colors.idle)
+    assert.equals(palette.yellow, colors.responding)
+    assert.equals(palette.red, colors.needs_attention)
+    assert.equals(palette.overlay0, colors.unknown)
+  end)
+
+  it("returns fallback colours when catppuccin is not loaded", function()
+    -- This test always runs; fallbacks are valid hex strings
+    local colors = I.resolve_status_colors()
+    assert.is_truthy(colors.idle:match("^#%x+$"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- define_worktree_highlights refreshes status_colors
+------------------------------------------------------------------------
+
+describe("define_worktree_highlights refreshes colors", function()
+  before_each(function()
+    vim.api.nvim_set_hl(0, "lualine_a_normal", { bg = "#aaaaaa", fg = "#111111" })
+    vim.api.nvim_set_hl(0, "lualine_b_normal", { bg = "#555555", fg = "#eeeeee" })
+    vim.api.nvim_set_hl(0, "TabLineFill", { bg = "#222222" })
+  end)
+
+  after_each(function()
+    vim.api.nvim_set_hl(0, "lualine_a_normal", {})
+    vim.api.nvim_set_hl(0, "lualine_b_normal", {})
+    vim.api.nvim_set_hl(0, "TabLineFill", {})
+  end)
+
+  it("updates M.status_colors after being called", function()
+    tabline.define_worktree_highlights()
+    -- status_colors should be populated with hex strings
+    assert.is_truthy(tabline.status_colors.idle:match("^#%x+$"))
+    assert.is_truthy(tabline.status_colors.responding:match("^#%x+$"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- reset (reload contract)
+------------------------------------------------------------------------
+
 describe("reset", function()
   it("clears click paths", function()
     tabline.build({

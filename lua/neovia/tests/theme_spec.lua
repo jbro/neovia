@@ -41,30 +41,48 @@ describe("state_path", function()
 end)
 
 ------------------------------------------------------------------------
--- save / load
+-- flavours list
+------------------------------------------------------------------------
+
+describe("flavours", function()
+  it("exposes all four catppuccin flavours", function()
+    assert.are.same({ "latte", "frappe", "macchiato", "mocha" }, theme.flavours)
+  end)
+
+  it("latte is the only light flavour", function()
+    -- latte maps to background=light, the rest to dark
+    assert.are.equal("light", I.flavour_background("latte"))
+    assert.are.equal("dark", I.flavour_background("frappe"))
+    assert.are.equal("dark", I.flavour_background("macchiato"))
+    assert.are.equal("dark", I.flavour_background("mocha"))
+  end)
+end)
+
+------------------------------------------------------------------------
+-- save / load (now persists flavour)
 ------------------------------------------------------------------------
 
 describe("save", function()
   after_each(cleanup)
 
-  it("writes the current background to the state file", function()
+  it("writes the current flavour to the state file", function()
     local p = fresh_tmp()
     I.reset()
     theme.setup({ state_path = p })
-    vim.o.background = "light"
+    I.set_current_flavour("frappe")
     I.save()
     local content = vim.fn.readfile(p)
     assert.is_true(#content > 0)
   end)
 
-  it("saved file is valid Lua that returns a table with background key", function()
+  it("saved file is valid Lua that returns a table with flavour key", function()
     local p = fresh_tmp()
     I.reset()
     theme.setup({ state_path = p })
-    vim.o.background = "light"
+    I.set_current_flavour("macchiato")
     I.save()
     local tbl = dofile(p)
-    assert.are.equal("light", tbl.background)
+    assert.are.equal("macchiato", tbl.flavour)
   end)
 end)
 
@@ -79,14 +97,14 @@ describe("load", function()
     assert.is_nil(I.load())
   end)
 
-  it("returns the saved background value", function()
+  it("returns the saved flavour value", function()
     local p = fresh_tmp()
     I.reset()
     theme.setup({ state_path = p })
-    vim.o.background = "dark"
+    I.set_current_flavour("mocha")
     I.save()
     local result = I.load()
-    assert.are.equal("dark", result.background)
+    assert.are.equal("mocha", result.flavour)
   end)
 
   it("returns nil for a corrupt state file", function()
@@ -96,41 +114,115 @@ describe("load", function()
     vim.fn.writefile({ "not valid lua {{{{" }, p)
     assert.is_nil(I.load())
   end)
+
+  it("migrates legacy state files with background key", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    vim.fn.writefile({ 'return { background = "light" }' }, p)
+    local result = I.load()
+    assert.are.equal("latte", result.flavour)
+  end)
+
+  it("migrates legacy dark background to mocha", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    vim.fn.writefile({ 'return { background = "dark" }' }, p)
+    local result = I.load()
+    assert.are.equal("mocha", result.flavour)
+  end)
 end)
 
 ------------------------------------------------------------------------
--- toggle
+-- set_flavour
 ------------------------------------------------------------------------
 
-describe("toggle", function()
+describe("set_flavour", function()
   after_each(cleanup)
 
-  it("switches from dark to light", function()
+  it("sets background to light for latte", function()
     local p = fresh_tmp()
     I.reset()
     theme.setup({ state_path = p })
-    vim.o.background = "dark"
-    theme.toggle()
+    theme.set_flavour("latte")
     assert.are.equal("light", vim.o.background)
   end)
 
-  it("switches from light to dark", function()
+  it("sets background to dark for mocha", function()
     local p = fresh_tmp()
     I.reset()
     theme.setup({ state_path = p })
-    vim.o.background = "light"
-    theme.toggle()
+    theme.set_flavour("mocha")
     assert.are.equal("dark", vim.o.background)
   end)
 
-  it("persists the new value to disk", function()
+  it("sets background to dark for frappe", function()
     local p = fresh_tmp()
     I.reset()
     theme.setup({ state_path = p })
-    vim.o.background = "dark"
-    theme.toggle()
+    theme.set_flavour("frappe")
+    assert.are.equal("dark", vim.o.background)
+  end)
+
+  it("sets background to dark for macchiato", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    theme.set_flavour("macchiato")
+    assert.are.equal("dark", vim.o.background)
+  end)
+
+  it("persists the chosen flavour to disk", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    theme.set_flavour("frappe")
     local result = I.load()
-    assert.are.equal("light", result.background)
+    assert.are.equal("frappe", result.flavour)
+  end)
+
+  it("updates current_flavour()", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    theme.set_flavour("macchiato")
+    assert.are.equal("macchiato", theme.current_flavour())
+  end)
+
+  it("ignores unknown flavour names", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    theme.set_flavour("mocha")
+    theme.set_flavour("nonexistent")
+    -- Should remain mocha
+    assert.are.equal("mocha", theme.current_flavour())
+  end)
+end)
+
+------------------------------------------------------------------------
+-- current_flavour
+------------------------------------------------------------------------
+
+describe("current_flavour", function()
+  after_each(cleanup)
+
+  it("defaults to mocha before any set_flavour call", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    assert.are.equal("mocha", theme.current_flavour())
+  end)
+
+  it("reflects the last set_flavour call", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    theme.set_flavour("latte")
+    assert.are.equal("latte", theme.current_flavour())
+    theme.set_flavour("frappe")
+    assert.are.equal("frappe", theme.current_flavour())
   end)
 end)
 
@@ -141,15 +233,26 @@ end)
 describe("apply", function()
   after_each(cleanup)
 
-  it("sets background from saved state", function()
+  it("sets background from saved flavour", function()
     local p = fresh_tmp()
     I.reset()
     theme.setup({ state_path = p })
-    vim.o.background = "light"
+    I.set_current_flavour("latte")
     I.save()
     vim.o.background = "dark" -- change it
     theme.apply()
     assert.are.equal("light", vim.o.background)
+  end)
+
+  it("restores flavour from disk", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    I.set_current_flavour("frappe")
+    I.save()
+    I.set_current_flavour("mocha") -- change it
+    theme.apply()
+    assert.are.equal("frappe", theme.current_flavour())
   end)
 
   it("is a no-op when no state file exists", function()
@@ -160,6 +263,55 @@ describe("apply", function()
     vim.o.background = "dark"
     theme.apply()
     assert.are.equal("dark", vim.o.background)
+    assert.are.equal("mocha", theme.current_flavour())
+  end)
+end)
+
+------------------------------------------------------------------------
+-- toggle (cycles through flavours)
+------------------------------------------------------------------------
+
+describe("toggle", function()
+  after_each(cleanup)
+
+  it("cycles from mocha to latte", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    I.set_current_flavour("mocha")
+    theme.toggle()
+    assert.are.equal("latte", theme.current_flavour())
+  end)
+
+  it("cycles from latte to frappe", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    I.set_current_flavour("latte")
+    theme.toggle()
+    assert.are.equal("frappe", theme.current_flavour())
+  end)
+
+  it("cycles through all four flavours", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    I.set_current_flavour("latte")
+    theme.toggle() -- -> frappe
+    theme.toggle() -- -> macchiato
+    theme.toggle() -- -> mocha
+    theme.toggle() -- -> latte (wraps)
+    assert.are.equal("latte", theme.current_flavour())
+  end)
+
+  it("persists after toggle", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    I.set_current_flavour("mocha")
+    theme.toggle()
+    local result = I.load()
+    assert.are.equal("latte", result.flavour)
   end)
 end)
 
@@ -196,7 +348,14 @@ describe("reset", function()
     assert.are.equal(p2, I.state_path())
     pcall(os.remove, p2)
   end)
-end)
 
--- NOTE: define_worktree_highlights, status_colors, hl_bg, hl_fg tests
--- moved to tabline_spec.lua (these are now in neovia.tabline).
+  it("resets current flavour to default", function()
+    local p = fresh_tmp()
+    I.reset()
+    theme.setup({ state_path = p })
+    theme.set_flavour("latte")
+    I.reset()
+    theme.setup({ state_path = p })
+    assert.are.equal("mocha", theme.current_flavour())
+  end)
+end)

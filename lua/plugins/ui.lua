@@ -83,12 +83,23 @@ end
 return {
   -- Colorscheme
   {
-    "folke/tokyonight.nvim",
+    "catppuccin/nvim",
+    name = "catppuccin",
     lazy = false,
     priority = 1000,
-    config = function()
-      vim.cmd.colorscheme("tokyonight")
-    end,
+    opts = {
+      integrations = {
+        blink_cmp = true,
+        diffview = true,
+        gitsigns = true,
+        indent_blankline = { enabled = true },
+        lsp_trouble = true,
+        native_lsp = { enabled = true },
+        neo_tree = true,
+        render_markdown = true,
+        which_key = true,
+      },
+    },
   },
 
   -- Statusline + tabline
@@ -184,6 +195,7 @@ return {
         { "<leader>o", group = "OpenCode" },
         { "<leader>oE", group = "Engine" },
         { "<leader>p", group = "Plugins" },
+        { "<leader>t", group = "Theme" },
         { "<leader>w", group = "Worktree" },
       },
     },

@@ -218,7 +218,11 @@ vim.keymap.set("n", "<leader>pp", function()
 end, { desc = "Lazy" })
 vim.keymap.set("n", "<leader>pr", function() require("neovia.reload").reload() end, { desc = "Reload config" })
 vim.keymap.set("n", "<leader>l", function() require("neovia.layout").restore_layout() end, { desc = "Restore layout" })
-vim.keymap.set("n", "<leader>t", function() require("neovia.theme").toggle() end, { desc = "Toggle light/dark" })
+vim.keymap.set("n", "<leader>tl", function() require("neovia.theme").set_flavour("latte") end, { desc = "Latte (light)" })
+vim.keymap.set("n", "<leader>tf", function() require("neovia.theme").set_flavour("frappe") end, { desc = "Frappe" })
+vim.keymap.set("n", "<leader>tm", function() require("neovia.theme").set_flavour("macchiato") end, { desc = "Macchiato" })
+vim.keymap.set("n", "<leader>td", function() require("neovia.theme").set_flavour("mocha") end, { desc = "Mocha (darkest)" })
+vim.keymap.set("n", "<leader>tn", function() require("neovia.theme").toggle() end, { desc = "Next flavour" })
 vim.keymap.set("n", "<leader>q", "<cmd>qa<cr>", { desc = "Quit all" })
 
 ------------------------------------------------------------------------

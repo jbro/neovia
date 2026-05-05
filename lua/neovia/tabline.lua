@@ -5,16 +5,41 @@
 local M = {}
 
 ------------------------------------------------------------------------
--- Status colours (authoritative source, moved from theme.lua)
+-- Status colours (derived from catppuccin palette when available)
 ------------------------------------------------------------------------
 
+--- Semantic mapping from status name to catppuccin palette key.
 --- @type table<string, string>
-local status_colors = {
-  idle = "#9ece6a",
-  responding = "#e0af68",
-  needs_attention = "#f7768e",
-  unknown = "#565f89",
+local status_palette_keys = {
+  idle = "green",
+  responding = "yellow",
+  needs_attention = "red",
+  unknown = "overlay0",
 }
+
+--- Fallback hex values (catppuccin mocha) used when the palette is not loaded.
+--- @type table<string, string>
+local fallback_colors = {
+  green = "#a6e3a1",
+  yellow = "#f9e2af",
+  red = "#f38ba8",
+  overlay0 = "#6c7086",
+}
+
+--- Resolve status colours from catppuccin palette, falling back to mocha defaults.
+--- @return table<string, string>
+local function resolve_status_colors()
+  local ok, palettes = pcall(require, "catppuccin.palettes")
+  local palette = ok and palettes.get_palette() or nil
+  local colors = {}
+  for status, key in pairs(status_palette_keys) do
+    colors[status] = (palette and palette[key]) or fallback_colors[key]
+  end
+  return colors
+end
+
+--- @type table<string, string>
+local status_colors = resolve_status_colors()
 
 M.status_colors = status_colors
 
@@ -99,6 +124,10 @@ end
 --- Derives tab backgrounds from lualine's theme groups so colors follow
 --- the colorscheme. Creates transitional groups for powerline separators.
 local function define_worktree_highlights()
+  -- Refresh status colours from the active catppuccin palette.
+  local fresh = resolve_status_colors()
+  for k, v in pairs(fresh) do status_colors[k] = v end
+
   -- Status indicator colors
   vim.api.nvim_set_hl(0, "NeoviaWt_idle", { fg = status_colors.idle })
   vim.api.nvim_set_hl(0, "NeoviaWt_responding", { fg = status_colors.responding })
@@ -282,6 +311,8 @@ end
 ------------------------------------------------------------------------
 
 M._internal = {
+  status_palette_keys = status_palette_keys,
+  resolve_status_colors = resolve_status_colors,
   status_ansi = status_ansi,
   status_icon = status_icon,
   status_hl_for = status_hl_for,
