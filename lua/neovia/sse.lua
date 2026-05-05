@@ -41,23 +41,6 @@ function M.process_event(state, dir, event, apply_fn)
     vim.cmd.redrawstatus()
     vim.cmd.redrawtabline()
   end
-
-  -- Refresh magic-context snapshot when context may have changed
-  local t = event.type
-  local props = event.properties or {}
-  local refresh_mc = false
-  if t == "message.updated" then
-    local info = props.info or props
-    if info.role == "assistant" and info.time and info.time.completed then
-      refresh_mc = true
-    end
-  elseif t == "session.idle" then
-    refresh_mc = true
-  end
-  if refresh_mc then
-    local ok_mc, mc = pcall(require, "neovia.magic_context")
-    if ok_mc then mc.refresh() end
-  end
 end
 
 --- Ensure every known worktree has an active SSE subscription.

@@ -31,24 +31,6 @@ local function opencode_status()
   return info.icon
 end
 
---- Build the magic-context progress bar for the statusline.
---- Shows proportional token breakdown with color-coded segments.
---- @return string
-local function mc_context_bar()
-  local ok, mc = pcall(require, "neovia.magic_context")
-  if not ok then return "" end
-  return mc.context_bar(25)
-end
-
---- Build the magic-context memory display for the statusline.
---- Shows "loaded/known" memory count.
---- @return string
-local function mc_memory()
-  local ok, mc = pcall(require, "neovia.magic_context")
-  if not ok then return "" end
-  return mc.memory_display().text
-end
-
 --- Return the highlight colour for the opencode status component.
 --- @return table
 local function opencode_status_color()
@@ -175,8 +157,6 @@ return {
         },
         lualine_x = {
           { opencode_version, color = opencode_version_color },
-          { mc_context_bar, separator = "", padding = { left = 1, right = 0 } },
-          { mc_memory, icon = "\u{f0599}" },
           { opencode_status, color = opencode_status_color },
           "filetype",
         },

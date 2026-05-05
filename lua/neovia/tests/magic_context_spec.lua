@@ -62,25 +62,6 @@ end)
 -- format_memory
 ------------------------------------------------------------------------
 
-describe("format_memory", function()
-  it("returns loaded/known format", function()
-    local snap = { memoryBlockCount = 5, memoryCount = 12 }
-    local result = I.format_memory(snap)
-    assert.equals("5/12", result.text)
-  end)
-
-  it("handles zero counts", function()
-    local snap = { memoryBlockCount = 0, memoryCount = 0 }
-    local result = I.format_memory(snap)
-    assert.equals("0/0", result.text)
-  end)
-
-  it("returns empty when snapshot is nil", function()
-    local result = I.format_memory(nil)
-    assert.equals("", result.text)
-  end)
-end)
-
 ------------------------------------------------------------------------
 -- bar_segments
 ------------------------------------------------------------------------
@@ -128,121 +109,6 @@ describe("bar_segments", function()
     for _, s in ipairs(segs) do
       assert.equals(0, s.fraction)
     end
-  end)
-end)
-
-------------------------------------------------------------------------
--- format_bar
-------------------------------------------------------------------------
-
-describe("format_bar", function()
-  it("returns a string of the requested width", function()
-    local snap = {
-      inputTokens = 1000,
-      usagePercentage = 42,
-      systemPromptTokens = 200,
-      compartmentTokens = 100,
-      factTokens = 50,
-      memoryTokens = 50,
-      conversationTokens = 300,
-      toolCallTokens = 200,
-      toolDefinitionTokens = 100,
-    }
-    local bar = I.format_bar(snap, 30)
-    assert.is_string(bar)
-    -- Should contain visible characters (the bar itself)
-    assert.is_true(#bar > 0)
-  end)
-
-  it("returns empty string when snapshot is nil", function()
-    local bar = I.format_bar(nil, 30)
-    assert.equals("", bar)
-  end)
-
-  it("includes usage percentage text", function()
-    local snap = {
-      inputTokens = 1000,
-      usagePercentage = 42,
-      systemPromptTokens = 200,
-      compartmentTokens = 100,
-      factTokens = 50,
-      memoryTokens = 50,
-      conversationTokens = 300,
-      toolCallTokens = 200,
-      toolDefinitionTokens = 100,
-    }
-    local bar = I.format_bar(snap, 30)
-    assert.is_truthy(bar:find("42%%"), "should contain usage percentage")
-  end)
-end)
-
-------------------------------------------------------------------------
--- format_bar_lualine
-------------------------------------------------------------------------
-
-describe("format_bar_lualine", function()
-  it("returns a progress bar with colored segments and total percentage", function()
-    local snap = {
-      inputTokens = 1000,
-      usagePercentage = 42,
-      systemPromptTokens = 200,
-      compartmentTokens = 100,
-      factTokens = 50,
-      memoryTokens = 50,
-      conversationTokens = 300,
-      toolCallTokens = 200,
-      toolDefinitionTokens = 100,
-    }
-    local bar = I.format_bar_lualine(snap, 25)
-    assert.is_string(bar)
-    -- Should contain bar highlight groups (background color)
-    assert.is_truthy(bar:find("NeoviaMcBar_system"), "should contain system bar highlight")
-    assert.is_truthy(bar:find("NeoviaMcBar_tool_calls"), "should contain tool_calls bar highlight")
-    -- Should end with total percentage
-    assert.is_truthy(bar:find("NeoviaMcUsage"), "should contain usage highlight")
-    assert.is_truthy(bar:find("42%%%%"), "should contain total percentage")
-  end)
-
-  it("shows segment percentages inside wide enough segments", function()
-    local snap = {
-      inputTokens = 100,
-      usagePercentage = 50,
-      systemPromptTokens = 0,
-      compartmentTokens = 0,
-      factTokens = 0,
-      memoryTokens = 0,
-      conversationTokens = 0,
-      toolCallTokens = 100,
-      toolDefinitionTokens = 0,
-    }
-    -- Single segment at 100% of 20 chars = 20 chars wide
-    local bar = I.format_bar_lualine(snap, 20)
-    -- "100" should appear inside the segment
-    assert.is_truthy(bar:find("100"), "should show percentage inside wide segment")
-  end)
-
-  it("omits segments with 0 fraction", function()
-    local snap = {
-      inputTokens = 1000,
-      usagePercentage = 50,
-      systemPromptTokens = 500,
-      compartmentTokens = 0,
-      factTokens = 0,
-      memoryTokens = 0,
-      conversationTokens = 0,
-      toolCallTokens = 500,
-      toolDefinitionTokens = 0,
-    }
-    local bar = I.format_bar_lualine(snap, 20)
-    assert.is_truthy(bar:find("NeoviaMcBar_system"), "should include system")
-    assert.is_truthy(bar:find("NeoviaMcBar_tool_calls"), "should include tool_calls")
-    assert.is_falsy(bar:find("NeoviaMcBar_compartments"), "should omit compartments")
-    assert.is_falsy(bar:find("NeoviaMcBar_facts"), "should omit facts")
-  end)
-
-  it("returns empty string when snapshot is nil", function()
-    local bar = I.format_bar_lualine(nil, 20)
-    assert.equals("", bar)
   end)
 end)
 
@@ -566,22 +432,6 @@ describe("state management", function()
     I.reset()
   end)
 
-  it("starts with nil snapshot", function()
-    assert.is_nil(I.get_snapshot())
-  end)
-
-  it("stores and retrieves a snapshot", function()
-    local snap = { usagePercentage = 42, memoryCount = 10 }
-    I.set_snapshot(snap)
-    assert.same(snap, I.get_snapshot())
-  end)
-
-  it("clears snapshot on reset", function()
-    I.set_snapshot({ usagePercentage = 42 })
-    I.reset()
-    assert.is_nil(I.get_snapshot())
-  end)
-
   it("stores and retrieves port", function()
     I.set_port(12345)
     assert.equals(12345, I.get_port())
@@ -616,66 +466,6 @@ describe("setup", function()
     mc.setup()
     I.reset()
     mc.setup()  -- should not error
-  end)
-end)
-
-------------------------------------------------------------------------
--- Public API: context_bar / memory_display
-------------------------------------------------------------------------
-
-describe("M.context_bar", function()
-  before_each(function()
-    I.reset()
-  end)
-
-  after_each(function()
-    I.reset()
-  end)
-
-  it("returns empty string when no snapshot is available", function()
-    local bar = mc.context_bar(25)
-    assert.equals("", bar)
-  end)
-
-  it("returns a bar when snapshot is set", function()
-    I.set_snapshot({
-      inputTokens = 1000,
-      usagePercentage = 42,
-      systemPromptTokens = 200,
-      compartmentTokens = 100,
-      factTokens = 50,
-      memoryTokens = 50,
-      conversationTokens = 300,
-      toolCallTokens = 200,
-      toolDefinitionTokens = 100,
-    })
-    local bar = mc.context_bar(25)
-    assert.is_string(bar)
-    assert.is_true(#bar > 0)
-  end)
-end)
-
-describe("M.memory_display", function()
-  before_each(function()
-    I.reset()
-  end)
-
-  after_each(function()
-    I.reset()
-  end)
-
-  it("returns empty text when no snapshot is available", function()
-    local d = mc.memory_display()
-    assert.equals("", d.text)
-  end)
-
-  it("returns loaded/known format when snapshot is set", function()
-    I.set_snapshot({
-      memoryBlockCount = 5,
-      memoryCount = 12,
-    })
-    local d = mc.memory_display()
-    assert.equals("5/12", d.text)
   end)
 end)
 
@@ -811,25 +601,24 @@ describe("fetch_snapshot", function()
       return { wait = function() return { code = 0, stdout = response } end }
     end
     I.set_port(50442)
-    I.fetch_snapshot("ses_abc", "/tmp/test")
-    local snap = I.get_snapshot()
+    local snap = I.fetch_snapshot("ses_abc", "/tmp/test")
     assert.is_not_nil(snap)
     assert.equals(42.5, snap.usagePercentage)
     assert.equals(20, snap.memoryCount)
   end)
 
-  it("does not update snapshot on curl failure", function()
+  it("returns nil on curl failure", function()
     vim.system = function()
       return { wait = function() return { code = 7, stdout = "" } end }
     end
     I.set_port(50442)
-    I.fetch_snapshot("ses_abc", "/tmp/test")
-    assert.is_nil(I.get_snapshot())
+    local snap = I.fetch_snapshot("ses_abc", "/tmp/test")
+    assert.is_nil(snap)
   end)
 
-  it("does not crash when port is nil", function()
-    I.fetch_snapshot("ses_abc", "/tmp/test")
-    assert.is_nil(I.get_snapshot())
+  it("returns nil when port is nil", function()
+    local snap = I.fetch_snapshot("ses_abc", "/tmp/test")
+    assert.is_nil(snap)
   end)
 end)
 
@@ -1005,22 +794,4 @@ describe("integration: live RPC", function()
     assert.is_number(detail.cacheTtlMs)
   end)
 
-  it("fetch_snapshot populates state from live server", function()
-    local dir = vim.uv.cwd()
-    I.fetch_snapshot("integration-test", dir)
-    local snap = I.get_snapshot()
-    assert.is_not_nil(snap, "snapshot should be populated after fetch")
-    assert.is_number(snap.usagePercentage)
-    assert.is_number(snap.memoryCount)
-  end)
-
-  it("context_bar renders from live snapshot", function()
-    local dir = vim.uv.cwd()
-    I.fetch_snapshot("integration-test", dir)
-    local bar = mc.context_bar(20)
-    assert.is_string(bar)
-    -- Should contain highlight groups (lualine format)
-    assert.is_truthy(bar:find("%%#") or bar:find("%%"),
-      "bar should contain statusline formatting: " .. bar)
-  end)
 end)

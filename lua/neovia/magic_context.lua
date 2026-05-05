@@ -2,8 +2,7 @@
 -- Magic Context integration: RPC client for context/memory status.
 --
 -- Discovers the magic-context RPC server port from its on-disk state,
--- fetches sidebar-snapshot and status-detail data, and exposes it for
--- lualine components and a floating popup.
+-- fetches status-detail data, and displays it in a floating popup.
 
 local M = {}
 
@@ -26,7 +25,6 @@ local state = {
   snapshot = nil,
   port = nil,
   session_id = nil,
-  init_timer = nil,
 }
 
 ------------------------------------------------------------------------
@@ -52,7 +50,7 @@ local segment_colors = {
   tool_defs    = "#f7768e", -- red/pink
 }
 
-M.segment_colors = segment_colors
+
 
 ------------------------------------------------------------------------
 -- Project hash
@@ -80,20 +78,6 @@ local function port_file_path(dir)
 end
 
 ------------------------------------------------------------------------
--- Memory display
-------------------------------------------------------------------------
-
---- Format the memory count display (loaded/known).
---- @param snap table?
---- @return { text: string, hl: table }
-local function format_memory(snap)
-  if not snap then return { text = "", hl = {} } end
-  local loaded = snap.memoryBlockCount or 0
-  local known = snap.memoryCount or 0
-  return { text = string.format("%d/%d", loaded, known), hl = {} }
-end
-
-------------------------------------------------------------------------
 -- Bar segments
 ------------------------------------------------------------------------
 
@@ -115,91 +99,6 @@ local function bar_segments(snap)
     seg.fraction = total > 0 and (seg.tokens / total) or 0
   end
   return categories
-end
-
-------------------------------------------------------------------------
--- Format bar (plain text with highlight groups for popup)
-------------------------------------------------------------------------
-
---- Build a text progress bar with usage percentage.
---- Uses block characters to represent proportional segments.
---- @param snap table?
---- @param width number  Character width of the bar area
---- @return string
-local function format_bar(snap, width)
-  if not snap then return "" end
-
-  local segs = bar_segments(snap)
-  local pct = snap.usagePercentage or 0
-  local label = string.format(" %d%%", math.floor(pct))
-  local bar_width = width - #label
-
-  if bar_width < 1 then
-    return string.format("%d%%", math.floor(pct))
-  end
-
-  local chars = {}
-  local used = 0
-  for i, seg in ipairs(segs) do
-    local seg_width = math.floor(seg.fraction * bar_width + 0.5)
-    -- Last segment takes the remainder to avoid rounding gaps
-    if i == #segs then
-      seg_width = bar_width - used
-    end
-    if seg_width > 0 then
-      for _ = 1, seg_width do
-        table.insert(chars, "\u{2588}") -- full block
-      end
-    end
-    used = used + seg_width
-  end
-
-  return table.concat(chars) .. label
-end
-
-------------------------------------------------------------------------
--- Format bar (lualine statusline with highlight groups)
-------------------------------------------------------------------------
-
---- Build a progress bar for the statusline with colored segments.
---- Each segment is a colored block region; if wide enough the segment's
---- percentage is printed inside. Total percentage follows the bar.
---- @param snap table?
---- @param width number  Character width of the bar (not counting the total label)
---- @return string
-local function format_bar_lualine(snap, width)
-  if not snap then return "" end
-
-  local segs = bar_segments(snap)
-  local pct = math.floor(snap.usagePercentage or 0)
-  local bar_width = width or 25
-
-  local parts = {}
-  local used = 0
-  for i, seg in ipairs(segs) do
-    local seg_width = math.floor(seg.fraction * bar_width + 0.5)
-    if i == #segs then seg_width = bar_width - used end
-    if seg_width > 0 then
-      local hl = "NeoviaMcBar_" .. seg.label:lower():gsub(" ", "_")
-      local seg_pct = math.floor(seg.fraction * 100 + 0.5)
-      local label = tostring(seg_pct)
-      if #label <= seg_width then
-        -- Center the label inside the segment
-        local pad_left = math.floor((seg_width - #label) / 2)
-        local pad_right = seg_width - #label - pad_left
-        local fill = string.rep(" ", pad_left) .. label .. string.rep(" ", pad_right)
-        table.insert(parts, string.format("%%#%s#%s", hl, fill))
-      else
-        -- Too narrow for the label; just fill with blocks
-        table.insert(parts, string.format("%%#%s#%s", hl, string.rep(" ", seg_width)))
-      end
-    end
-    used = used + seg_width
-  end
-
-  -- Total percentage after the bar
-  table.insert(parts, string.format("%%#NeoviaMcUsage# %d%%%%", pct))
-  return " " .. table.concat(parts)
 end
 
 ------------------------------------------------------------------------
@@ -407,12 +306,13 @@ end
 ------------------------------------------------------------------------
 
 --- Fetch a sidebar-snapshot from the magic-context RPC server.
---- Synchronous (blocks briefly). Updates state.snapshot on success.
+--- Synchronous (blocks briefly).
 --- @param session_id string
 --- @param dir string
+--- @return table?
 local function fetch_snapshot(session_id, dir)
   local port = state.port
-  if not port then return end
+  if not port then return nil end
 
   local url = string.format("http://127.0.0.1:%d/rpc/sidebar-snapshot", port)
   local body = vim.fn.json_encode({ sessionId = session_id, directory = dir })
@@ -425,14 +325,14 @@ local function fetch_snapshot(session_id, dir)
     url,
   }, { text = true })
 
-  if not ok or not result then return end
+  if not ok or not result then return nil end
   local out = result:wait()
-  if out.code ~= 0 or not out.stdout or out.stdout == "" then return end
+  if out.code ~= 0 or not out.stdout or out.stdout == "" then return nil end
 
   local decode_ok, data = pcall(vim.fn.json_decode, out.stdout)
-  if not decode_ok or type(data) ~= "table" then return end
+  if not decode_ok or type(data) ~= "table" then return nil end
 
-  state.snapshot = data
+  return data
 end
 
 --- Fetch status-detail from the magic-context RPC server.
@@ -476,18 +376,11 @@ local function hex_to_int(hex)
   return tonumber(hex:sub(2), 16)
 end
 
---- Define highlight groups used by the context bar and popup.
+--- Define highlight groups used by the popup.
 local function define_highlights()
-  local dark_bg = 0x1a1b26  -- dark background for text on colored bars
   for key, color in pairs(segment_colors) do
-    local c = hex_to_int(color)
-    -- Foreground-only (popup text labels)
-    vim.api.nvim_set_hl(0, "NeoviaMc_" .. key, { fg = c })
-    -- Background bar segments (statusline bar with text overlay)
-    vim.api.nvim_set_hl(0, "NeoviaMcBar_" .. key, { fg = dark_bg, bg = c, bold = true })
+    vim.api.nvim_set_hl(0, "NeoviaMc_" .. key, { fg = hex_to_int(color) })
   end
-  -- Usage percentage text inherits normal fg
-  vim.api.nvim_set_hl(0, "NeoviaMcUsage", {})
 end
 
 ------------------------------------------------------------------------
@@ -570,41 +463,6 @@ local function show_popup()
 end
 
 ------------------------------------------------------------------------
--- Refresh (called from SSE hook)
-------------------------------------------------------------------------
-
---- Refresh the snapshot data. Called when assistant finishes a message.
---- Runs asynchronously to avoid blocking.
-function M.refresh()
-  local dir = vim.uv.cwd()
-  if not dir then return end
-
-  if not state.port then
-    discover_port(dir)
-  end
-  if not state.port then return end
-
-  local session_id = resolve_session_id()
-  if not session_id then return end
-
-  vim.system({
-    "curl", "-sf", "--max-time", "2",
-    "-X", "POST",
-    "-H", "Content-Type: application/json",
-    "-d", vim.fn.json_encode({ sessionId = session_id, directory = dir }),
-    string.format("http://127.0.0.1:%d/rpc/sidebar-snapshot", state.port),
-  }, { text = true }, function(out)
-    if out.code ~= 0 or not out.stdout or out.stdout == "" then return end
-    local decode_ok, data = pcall(vim.fn.json_decode, out.stdout)
-    if not decode_ok or type(data) ~= "table" then return end
-    vim.schedule(function()
-      state.snapshot = data
-      vim.cmd.redrawstatus()
-    end)
-  end)
-end
-
-------------------------------------------------------------------------
 -- Public API
 ------------------------------------------------------------------------
 
@@ -615,43 +473,10 @@ function M.setup()
 
   define_highlights()
 
-  local augroup = vim.api.nvim_create_augroup("NeoviaMagicContext", { clear = true })
-
-  -- Re-define highlights on colorscheme change
   vim.api.nvim_create_autocmd("ColorScheme", {
-    group = augroup,
+    group = vim.api.nvim_create_augroup("NeoviaMagicContext", { clear = true }),
     callback = define_highlights,
   })
-
-  -- Retry initial fetch until we get a snapshot (opencode may not be connected yet)
-  state.init_timer = vim.uv.new_timer()
-  if state.init_timer then
-    local attempts = 0
-    state.init_timer:start(2000, 3000, vim.schedule_wrap(function()
-      attempts = attempts + 1
-      M.refresh()
-      if state.snapshot or attempts >= 10 then
-        if state.init_timer and not state.init_timer:is_closing() then
-          state.init_timer:stop()
-          state.init_timer:close()
-        end
-        state.init_timer = nil
-      end
-    end))
-  end
-end
-
---- Get context bar for lualine (progress bar with colored segments).
---- @param width number?  Bar width in characters (default 25)
---- @return string
-function M.context_bar(width)
-  return format_bar_lualine(state.snapshot, width or 25)
-end
-
---- Get memory display info for lualine.
---- @return { text: string, hl: table }
-function M.memory_display()
-  return format_memory(state.snapshot)
 end
 
 --- Show the full status-detail popup.
@@ -666,10 +491,7 @@ end
 M._internal = {
   project_hash = project_hash,
   port_file_path = port_file_path,
-  format_memory = format_memory,
   bar_segments = bar_segments,
-  format_bar = format_bar,
-  format_bar_lualine = format_bar_lualine,
   format_popup_lines = format_popup_lines,
   fmt_tokens = fmt_tokens,
   read_port = read_port,
@@ -677,22 +499,15 @@ M._internal = {
   fetch_snapshot = fetch_snapshot,
   define_highlights = define_highlights,
 
-  get_snapshot = function() return state.snapshot end,
-  set_snapshot = function(s) state.snapshot = s end,
   get_port = function() return state.port end,
   set_port = function(p) state.port = p end,
 
   reset = function()
     initialised = false
-    if state.init_timer and not state.init_timer:is_closing() then
-      state.init_timer:stop()
-      state.init_timer:close()
-    end
     state = {
       snapshot = nil,
       port = nil,
       session_id = nil,
-      init_timer = nil,
     }
   end,
 }
