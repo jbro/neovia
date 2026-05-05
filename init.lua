@@ -192,6 +192,12 @@ vim.keymap.set("n", "<leader>oEd", function()
 end, { desc = "Redraw UI" })
 
 ------------------------------------------------------------------------
+-- Magic Context integration (context/memory status from RPC)
+------------------------------------------------------------------------
+require("neovia.magic_context").setup()
+vim.keymap.set("n", "<leader>oc", function() require("neovia.magic_context").show_popup() end, { desc = "Context status" })
+
+------------------------------------------------------------------------
 -- Session notes (per-worktree persistent notes)
 ------------------------------------------------------------------------
 require("neovia.notes").setup()
