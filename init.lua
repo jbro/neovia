@@ -171,7 +171,7 @@ vim.keymap.set("n", "<leader>oEr", function()
         vim.notify("opencode server: restart failed: " .. err, vim.log.levels.ERROR)
       else
         vim.notify(("opencode server: restarted on port %d"):format(port), vim.log.levels.INFO)
-        require("neovia.layout").restore_layout()
+        require("neovia.layout").apply()
       end
     end)
   end)
@@ -188,7 +188,7 @@ end, { desc = "Shutdown server" })
 
 vim.keymap.set("n", "<leader>oEd", function()
   vim.notify("opencode: reconnecting and restoring layout...", vim.log.levels.INFO)
-  require("neovia.layout").restore_layout()
+  require("neovia.layout").apply()
 end, { desc = "Redraw UI" })
 
 ------------------------------------------------------------------------
@@ -222,7 +222,7 @@ vim.keymap.set("n", "<leader>pp", function()
   end
 end, { desc = "Lazy" })
 vim.keymap.set("n", "<leader>pr", function() require("neovia.reload").reload() end, { desc = "Reload config" })
-vim.keymap.set("n", "<leader>l", function() require("neovia.layout").restore_layout() end, { desc = "Restore layout" })
+vim.keymap.set("n", "<leader>l", function() require("neovia.layout").apply() end, { desc = "Restore layout" })
 vim.keymap.set("n", "<leader>tl", function() require("neovia.theme").set_flavour("latte") end, { desc = "Latte (light)" })
 vim.keymap.set("n", "<leader>tf", function() require("neovia.theme").set_flavour("frappe") end, { desc = "Frappe" })
 vim.keymap.set("n", "<leader>tm", function() require("neovia.theme").set_flavour("macchiato") end, { desc = "Macchiato" })
