@@ -264,6 +264,22 @@ function M.clear(dir, sdir)
   end
 end
 
+--- Delete all comments for a worktree.
+--- Clears cache, removes the storage file, and wipes review extmarks
+--- from all loaded buffers.
+--- @param dir string
+--- @param sdir? string
+function M.delete_all(dir, sdir)
+  sdir = sdir or state_dir
+  M.clear(dir, sdir)
+  -- Clear review extmarks from all loaded buffers.
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    end
+  end
+end
+
 --- Reload comments from disk (for file watcher callback).
 --- @param dir string
 --- @param sdir? string

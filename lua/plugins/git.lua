@@ -184,6 +184,28 @@ return {
         end,
         desc = "Previous review comment",
       },
+      {
+        "<leader>rD",
+        function()
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          local dir = current_dir()
+          local comments = review.get_comments(dir)
+          if #comments == 0 then
+            vim.notify("No review comments", vim.log.levels.INFO)
+            return
+          end
+          vim.ui.select({ "Yes", "No" }, {
+            prompt = "Delete all " .. #comments .. " review comments?",
+          }, function(choice)
+            if choice == "Yes" then
+              review.delete_all(dir)
+              vim.notify("Deleted all review comments", vim.log.levels.INFO)
+            end
+          end)
+        end,
+        desc = "Delete all review comments",
+      },
     },
     opts = {
       hooks = {

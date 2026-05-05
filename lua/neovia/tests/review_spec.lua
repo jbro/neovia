@@ -824,6 +824,61 @@ describe("setup", function()
 end)
 
 ------------------------------------------------------------------------
+-- delete_all: remove all comments for a worktree
+------------------------------------------------------------------------
+
+describe("delete_all", function()
+  local dir = "/tmp/review_delete_all_test"
+
+  before_each(function()
+    I.reset()
+    review.setup({ state_dir = test_state_dir })
+  end)
+
+  after_each(function()
+    review.clear(dir, test_state_dir)
+    I.reset()
+  end)
+
+  it("removes all comments from cache and disk", function()
+    review.add_comment(dir, { file = "a.lua", line = 1, text = "one" }, test_state_dir)
+    review.add_comment(dir, { file = "b.lua", line = 5, text = "two" }, test_state_dir)
+    assert.equals(2, #review.get_comments(dir, test_state_dir))
+
+    review.delete_all(dir, test_state_dir)
+
+    assert.equals(0, #review.get_comments(dir, test_state_dir))
+    -- File should be gone from disk.
+    local path = I.storage_path(dir, test_state_dir)
+    assert.equals(0, vim.fn.filereadable(path))
+  end)
+
+  it("clears extmarks from a buffer", function()
+    review.add_comment(dir, { file = "a.lua", line = 1, text = "fix" }, test_state_dir)
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "line1", "line2" })
+    review.render_extmarks(buf, "a.lua", dir, test_state_dir)
+
+    local ns = vim.api.nvim_create_namespace("neovia_review")
+    local marks_before = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {})
+    assert.is_true(#marks_before > 0)
+
+    review.delete_all(dir, test_state_dir)
+
+    local marks_after = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {})
+    assert.equals(0, #marks_after)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("is safe to call when no comments exist", function()
+    -- Should not error.
+    review.delete_all(dir, test_state_dir)
+    assert.equals(0, #review.get_comments(dir, test_state_dir))
+  end)
+end)
+
+------------------------------------------------------------------------
 -- comment_counts_by_file: aggregate comment counts per file
 ------------------------------------------------------------------------
 
