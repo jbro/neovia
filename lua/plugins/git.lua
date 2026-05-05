@@ -1,4 +1,25 @@
--- Git: gitsigns + diffview + fugitive
+-- Git: gitsigns + diffview + fugitive + review
+
+--- Get the relative file path for the current diffview entry.
+--- Returns nil if not in a diffview or no file is selected.
+--- @return string|nil
+local function diffview_current_file()
+  local ok, lib = pcall(require, "diffview.lib")
+  if not ok then return nil end
+  local view = lib.get_current_view()
+  if not view then return nil end
+  -- DiffView uses panel.cur_file, FileHistoryView uses :cur_file()
+  local entry = (view.panel and view.panel.cur_file) or (view.cur_file and view:cur_file())
+  if not entry then return nil end
+  return entry.path
+end
+
+--- Get the worktree directory for the current tab.
+--- @return string
+local function current_dir()
+  return vim.fn.getcwd(-1, 0)
+end
+
 return {
   {
     "lewis6991/gitsigns.nvim",
@@ -12,10 +33,147 @@ return {
     "sindrets/diffview.nvim",
     cmd = { "DiffviewOpen", "DiffviewFileHistory", "DiffviewClose" },
     keys = {
-      { "<leader>dd", function() require("neovia.diffview").toggle_diff(vim.fn.getcwd(-1, 0)) end, desc = "Toggle diff" },
-      { "<leader>dh", function() require("neovia.diffview").toggle_history(vim.fn.getcwd(-1, 0)) end, desc = "Toggle file history" },
+      { "<leader>dd", function() require("neovia.diffview").toggle_diff(current_dir()) end, desc = "Toggle diff" },
+      { "<leader>dh", function() require("neovia.diffview").toggle_history(current_dir()) end, desc = "Toggle file history" },
+
+      -- Review keymaps
+      {
+        "<leader>rc",
+        function()
+          local file = diffview_current_file()
+          if not file then
+            vim.notify("No file selected in diffview", vim.log.levels.WARN)
+            return
+          end
+          local dir = current_dir()
+          local line = vim.fn.line(".")
+          local end_line = nil
+
+          -- Visual mode: get range
+          local mode = vim.fn.mode()
+          if mode == "v" or mode == "V" or mode == "\22" then
+            vim.cmd("normal! " .. vim.api.nvim_replace_termcodes("<Esc>", true, false, true))
+            local start_line = vim.fn.line("'<")
+            end_line = vim.fn.line("'>")
+            line = start_line
+          end
+
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          review.open_comment_input({
+            title = " Add Review Comment ",
+            on_submit = function(text)
+              review.add_comment(dir, {
+                file = file,
+                line = line,
+                end_line = end_line,
+                text = text,
+              })
+              review.render_extmarks(vim.api.nvim_get_current_buf(), file, dir)
+            end,
+          })
+        end,
+        mode = { "n", "v" },
+        desc = "Add review comment",
+      },
+      {
+        "<leader>re",
+        function()
+          local file = diffview_current_file()
+          if not file then return end
+          local dir = current_dir()
+          local line = vim.fn.line(".")
+
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          local comment = review.find_comment_at_line(dir, file, line)
+          if not comment then
+            vim.notify("No review comment at this line", vim.log.levels.INFO)
+            return
+          end
+          review.open_comment_input({
+            title = " Edit Review Comment ",
+            default = comment.text,
+            on_submit = function(text)
+              review.edit_comment(dir, comment.id, text)
+              review.render_extmarks(vim.api.nvim_get_current_buf(), file, dir)
+            end,
+          })
+        end,
+        desc = "Edit review comment",
+      },
+      {
+        "<leader>rd",
+        function()
+          local file = diffview_current_file()
+          if not file then return end
+          local dir = current_dir()
+          local line = vim.fn.line(".")
+
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          local comment = review.find_comment_at_line(dir, file, line)
+          if not comment then
+            vim.notify("No review comment at this line", vim.log.levels.INFO)
+            return
+          end
+          review.delete_comment(dir, comment.id)
+          review.render_extmarks(vim.api.nvim_get_current_buf(), file, dir)
+        end,
+        desc = "Delete review comment",
+      },
+      {
+        "<leader>rx",
+        function()
+          local file = diffview_current_file()
+          if not file then return end
+          local dir = current_dir()
+          local line = vim.fn.line(".")
+
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          local comment = review.find_comment_at_line(dir, file, line)
+          if not comment then
+            vim.notify("No review comment at this line", vim.log.levels.INFO)
+            return
+          end
+          if comment.state ~= "resolved" then
+            vim.notify("Comment is not resolved", vim.log.levels.INFO)
+            return
+          end
+          review.set_state(dir, comment.id, "rereview")
+          review.render_extmarks(vim.api.nvim_get_current_buf(), file, dir)
+        end,
+        desc = "Reject resolved comment",
+      },
+      {
+        "<leader>rS",
+        function()
+          local dir = current_dir()
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          local ok = review.submit(dir)
+          if not ok then
+            vim.notify("No actionable review comments", vim.log.levels.INFO)
+          end
+        end,
+        desc = "Submit review to OpenCode",
+      },
     },
-    opts = {},
+    opts = {
+      hooks = {
+        diff_buf_read = function(bufnr, ctx)
+          -- Only render extmarks on the new (right/working tree) side.
+          if ctx.symbol ~= "b" then return end
+          local file = diffview_current_file()
+          if not file then return end
+          local dir = current_dir()
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          review.render_extmarks(bufnr, file, dir)
+        end,
+      },
+    },
   },
   {
     "tpope/vim-fugitive",

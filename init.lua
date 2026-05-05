@@ -203,6 +203,11 @@ vim.keymap.set("n", "<leader>oc", function() require("neovia.magic_context").sho
 require("neovia.notes").setup()
 
 ------------------------------------------------------------------------
+-- Review (per-worktree code review comments on diffs)
+------------------------------------------------------------------------
+require("neovia.review").setup()
+
+------------------------------------------------------------------------
 -- Read-only mode
 ------------------------------------------------------------------------
 require("neovia.mode").setup({ auto_relock = true })

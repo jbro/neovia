@@ -195,6 +195,7 @@ return {
         { "<leader>o", group = "OpenCode" },
         { "<leader>oE", group = "Engine" },
         { "<leader>p", group = "Plugins" },
+        { "<leader>r", group = "Review" },
         { "<leader>t", group = "Theme" },
         { "<leader>w", group = "Worktree" },
       },
