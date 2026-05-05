@@ -162,8 +162,9 @@ return {
     },
     opts = {
       hooks = {
-        diff_buf_read = function(bufnr, ctx)
-          -- Only render extmarks on the new (right/working tree) side.
+        diff_buf_win_enter = function(bufnr, _winid, ctx)
+          -- Render review extmarks on the new (right/working tree) side
+          -- every time a diff buffer is displayed (file switch, tab enter, etc.).
           if ctx.symbol ~= "b" then return end
           local file = diffview_current_file()
           if not file then return end

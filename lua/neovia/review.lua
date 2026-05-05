@@ -113,6 +113,7 @@ local function load_from_disk(path)
 end
 
 --- Get or load review data for a worktree (lazy load from disk).
+--- Automatically starts a file watcher on first access.
 --- @param dir string
 --- @param sdir string
 --- @return neovia.ReviewData
@@ -124,6 +125,9 @@ local function ensure_data(dir, sdir)
     data = { comments = {} }
   end
   cache[dir] = data
+  -- Start watching for external edits (e.g. OpenCode resolving comments).
+  -- M.watch is set after module table is created; guard for early calls.
+  if M.watch then M.watch(dir, sdir) end
   return data
 end
 
