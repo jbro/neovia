@@ -674,6 +674,83 @@ describe("define_highlights", function()
 end)
 
 ------------------------------------------------------------------------
+-- segment_palette_keys (semantic colour mapping)
+------------------------------------------------------------------------
+
+describe("segment_palette_keys", function()
+  it("maps system to blue", function()
+    assert.equals("blue", I.segment_palette_keys.system)
+  end)
+
+  it("maps compartments to sky", function()
+    assert.equals("sky", I.segment_palette_keys.compartments)
+  end)
+
+  it("maps facts to teal", function()
+    assert.equals("teal", I.segment_palette_keys.facts)
+  end)
+
+  it("maps memories to green", function()
+    assert.equals("green", I.segment_palette_keys.memories)
+  end)
+
+  it("maps conversation to yellow", function()
+    assert.equals("yellow", I.segment_palette_keys.conversation)
+  end)
+
+  it("maps tool_calls to peach", function()
+    assert.equals("peach", I.segment_palette_keys.tool_calls)
+  end)
+
+  it("maps tool_defs to red", function()
+    assert.equals("red", I.segment_palette_keys.tool_defs)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- resolve_segment_colors (palette-based colour resolution)
+------------------------------------------------------------------------
+
+describe("resolve_segment_colors", function()
+  it("returns a table with all seven segment keys", function()
+    local colors = I.resolve_segment_colors()
+    assert.is_string(colors.system)
+    assert.is_string(colors.compartments)
+    assert.is_string(colors.facts)
+    assert.is_string(colors.memories)
+    assert.is_string(colors.conversation)
+    assert.is_string(colors.tool_calls)
+    assert.is_string(colors.tool_defs)
+  end)
+
+  it("returns hex colour strings", function()
+    local colors = I.resolve_segment_colors()
+    for _, colour in pairs(colors) do
+      assert.is_truthy(colour:match("^#%x+$"), "expected hex colour, got: " .. colour)
+    end
+  end)
+
+  it("uses catppuccin palette colours when available", function()
+    local ok, palettes = pcall(require, "catppuccin.palettes")
+    if not ok then return end -- skip if not installed
+    local palette = palettes.get_palette()
+    local colors = I.resolve_segment_colors()
+    assert.equals(palette.blue, colors.system)
+    assert.equals(palette.sky, colors.compartments)
+    assert.equals(palette.teal, colors.facts)
+    assert.equals(palette.green, colors.memories)
+    assert.equals(palette.yellow, colors.conversation)
+    assert.equals(palette.peach, colors.tool_calls)
+    assert.equals(palette.red, colors.tool_defs)
+  end)
+
+  it("returns fallback colours when catppuccin is not loaded", function()
+    local colors = I.resolve_segment_colors()
+    assert.is_truthy(colors.system:match("^#%x+$"))
+  end)
+end)
+
+------------------------------------------------------------------------
 -- Integration: live RPC server
 ------------------------------------------------------------------------
 

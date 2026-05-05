@@ -36,19 +36,47 @@ local state = {
 local RPC_BASE = (vim.env.HOME or "") .. "/.local/share/cortexkit/magic-context/rpc/"
 
 ------------------------------------------------------------------------
--- Segment colors (authoritative source for bar/popup)
+-- Segment colors (derived from catppuccin palette when available)
 ------------------------------------------------------------------------
 
+--- Semantic mapping from segment name to catppuccin palette key.
 --- @type table<string, string>
-local segment_colors = {
-  system       = "#7aa2f7", -- blue
-  compartments = "#7dcfff", -- cyan
-  facts        = "#73daca", -- teal
-  memories     = "#9ece6a", -- green
-  conversation = "#e0af68", -- yellow
-  tool_calls   = "#ff9e64", -- orange
-  tool_defs    = "#f7768e", -- red/pink
+local segment_palette_keys = {
+  system       = "blue",
+  compartments = "sky",
+  facts        = "teal",
+  memories     = "green",
+  conversation = "yellow",
+  tool_calls   = "peach",
+  tool_defs    = "red",
 }
+
+--- Fallback hex values (catppuccin mocha) used when the palette is not loaded.
+--- @type table<string, string>
+local fallback_segment_colors = {
+  blue   = "#89b4fa",
+  sky    = "#89dceb",
+  teal   = "#94e2d5",
+  green  = "#a6e3a1",
+  yellow = "#f9e2af",
+  peach  = "#fab387",
+  red    = "#f38ba8",
+}
+
+--- Resolve segment colours from catppuccin palette, falling back to mocha defaults.
+--- @return table<string, string>
+local function resolve_segment_colors()
+  local ok, palettes = pcall(require, "catppuccin.palettes")
+  local palette = ok and palettes.get_palette() or nil
+  local colors = {}
+  for segment, key in pairs(segment_palette_keys) do
+    colors[segment] = (palette and palette[key]) or fallback_segment_colors[key]
+  end
+  return colors
+end
+
+--- @type table<string, string>
+local segment_colors = resolve_segment_colors()
 
 
 
@@ -377,7 +405,11 @@ local function hex_to_int(hex)
 end
 
 --- Define highlight groups used by the popup.
+--- Refreshes segment colours from the active catppuccin palette.
 local function define_highlights()
+  local fresh = resolve_segment_colors()
+  for k, v in pairs(fresh) do segment_colors[k] = v end
+
   for key, color in pairs(segment_colors) do
     vim.api.nvim_set_hl(0, "NeoviaMc_" .. key, { fg = hex_to_int(color) })
   end
@@ -489,6 +521,8 @@ end
 ------------------------------------------------------------------------
 
 M._internal = {
+  segment_palette_keys = segment_palette_keys,
+  resolve_segment_colors = resolve_segment_colors,
   project_hash = project_hash,
   port_file_path = port_file_path,
   bar_segments = bar_segments,
