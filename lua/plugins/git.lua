@@ -155,7 +155,7 @@ return {
         desc = "Submit review to OpenCode",
       },
       {
-        "<leader>rn",
+        "]r",
         function()
           local ok_rev, review = pcall(require, "neovia.review")
           if not ok_rev then return end
@@ -170,7 +170,7 @@ return {
         desc = "Next review comment",
       },
       {
-        "<leader>rp",
+        "[r",
         function()
           local ok_rev, review = pcall(require, "neovia.review")
           if not ok_rev then return end
