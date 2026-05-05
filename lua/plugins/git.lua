@@ -159,6 +159,36 @@ return {
         end,
         desc = "Submit review to OpenCode",
       },
+      {
+        "<leader>rn",
+        function()
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          local buf = vim.api.nvim_get_current_buf()
+          local line = review.jump_to_comment(buf, vim.fn.line("."), "next")
+          if line then
+            vim.api.nvim_win_set_cursor(0, { line, 0 })
+          else
+            vim.notify("No review comments in this file", vim.log.levels.INFO)
+          end
+        end,
+        desc = "Next review comment",
+      },
+      {
+        "<leader>rp",
+        function()
+          local ok_rev, review = pcall(require, "neovia.review")
+          if not ok_rev then return end
+          local buf = vim.api.nvim_get_current_buf()
+          local line = review.jump_to_comment(buf, vim.fn.line("."), "prev")
+          if line then
+            vim.api.nvim_win_set_cursor(0, { line, 0 })
+          else
+            vim.notify("No review comments in this file", vim.log.levels.INFO)
+          end
+        end,
+        desc = "Previous review comment",
+      },
     },
     opts = {
       hooks = {
@@ -172,6 +202,15 @@ return {
           local ok_rev, review = pcall(require, "neovia.review")
           if not ok_rev then return end
           review.render_extmarks(bufnr, file, dir)
+
+          -- Also refresh file panel indicators (panel is rendered by now).
+          local ok_lib, lib = pcall(require, "diffview.lib")
+          if ok_lib then
+            local view = lib.get_current_view()
+            if view and view.panel and view.panel.bufnr then
+              review.render_file_panel_indicators(view.panel.bufnr, dir)
+            end
+          end
         end,
       },
     },

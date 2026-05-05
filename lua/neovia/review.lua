@@ -351,6 +351,110 @@ function M.render_extmarks(buf, file, dir, sdir)
 end
 
 ------------------------------------------------------------------------
+-- Extmark navigation
+------------------------------------------------------------------------
+
+--- Jump to the next or previous review extmark in a buffer.
+--- Uses the review namespace to find extmark positions.
+--- Wraps around when reaching the end/start of the buffer.
+--- @param buf integer  Buffer handle.
+--- @param current_line integer  Current cursor line (1-indexed).
+--- @param direction "next"|"prev"
+--- @return integer|nil  Target line (1-indexed), or nil if no extmarks.
+function M.jump_to_comment(buf, current_line, direction)
+  if not vim.api.nvim_buf_is_valid(buf) then return nil end
+
+  -- Get all review extmarks sorted by position.
+  local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {})
+  if #marks == 0 then return nil end
+
+  -- marks are {id, row, col} with row 0-indexed.
+  -- Collect unique 1-indexed lines, sorted.
+  local lines = {}
+  local seen = {}
+  for _, m in ipairs(marks) do
+    local line = m[2] + 1 -- 0-indexed → 1-indexed
+    if not seen[line] then
+      seen[line] = true
+      lines[#lines + 1] = line
+    end
+  end
+  table.sort(lines)
+
+  if direction == "next" then
+    -- Find the first line strictly after current_line.
+    for _, l in ipairs(lines) do
+      if l > current_line then return l end
+    end
+    -- Wrap: return the first line.
+    return lines[1]
+  else -- "prev"
+    -- Find the last line strictly before current_line.
+    for i = #lines, 1, -1 do
+      if lines[i] < current_line then return lines[i] end
+    end
+    -- Wrap: return the last line.
+    return lines[#lines]
+  end
+end
+
+--- Count comments per file for a worktree (for file panel indicators).
+--- @param dir string
+--- @param sdir? string
+--- @return table<string, integer>  file path → comment count
+function M.comment_counts_by_file(dir, sdir)
+  sdir = sdir or state_dir
+  local comments = M.get_comments(dir, sdir)
+  local counts = {}
+  for _, c in ipairs(comments) do
+    counts[c.file] = (counts[c.file] or 0) + 1
+  end
+  return counts
+end
+
+--- Render comment-count indicators on a diffview file panel buffer.
+--- Scans buffer lines for file paths that have comments and places
+--- virtual text with the count.
+--- @param buf integer  File panel buffer handle.
+--- @param dir string  Worktree directory.
+--- @param sdir? string
+function M.render_file_panel_indicators(buf, dir, sdir)
+  sdir = sdir or state_dir
+  if not vim.api.nvim_buf_is_valid(buf) then return end
+
+  local ns_panel = vim.api.nvim_create_namespace("neovia_review_panel")
+  vim.api.nvim_buf_clear_namespace(buf, ns_panel, 0, -1)
+
+  local counts = M.comment_counts_by_file(dir, sdir)
+  if vim.tbl_isempty(counts) then return end
+
+  -- Build a basename → total count map for matching against panel lines.
+  -- Diffview panel shows only basenames (e.g. "git.lua 53, 0"), but
+  -- comments store full relative paths (e.g. "lua/plugins/git.lua").
+  local basename_counts = {}
+  for file, count in pairs(counts) do
+    local base = vim.fn.fnamemodify(file, ":t")
+    basename_counts[base] = (basename_counts[base] or 0) + count
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, line_count, false)
+
+  for i, text in ipairs(lines) do
+    for base, count in pairs(basename_counts) do
+      if text:find(base, 1, true) then
+        local label = count == 1 and " 1 comment" or (" " .. count .. " comments")
+        vim.api.nvim_buf_set_extmark(buf, ns_panel, i - 1, 0, {
+          virt_text = { { label, "DiagnosticVirtualTextHint" } },
+          virt_text_pos = "eol",
+        })
+        break -- one indicator per line
+      end
+    end
+  end
+end
+
+------------------------------------------------------------------------
 -- File watching
 ------------------------------------------------------------------------
 
@@ -495,7 +599,23 @@ function M.setup(opts)
   opts = opts or {}
   state_dir = opts.state_dir or vim.fn.stdpath("state")
 
-  vim.api.nvim_create_augroup("neovia_review", { clear = true })
+  local group = vim.api.nvim_create_augroup("neovia_review", { clear = true })
+
+  -- Render file panel indicators when a DiffviewFiles buffer is displayed.
+  -- The FileType event fires after diffview populates the buffer content,
+  -- but we defer slightly to ensure the renderer has flushed all lines.
+  vim.api.nvim_create_autocmd("BufWinEnter", {
+    group = group,
+    callback = function(ev)
+      local ft = vim.bo[ev.buf].filetype
+      if ft ~= "DiffviewFiles" then return end
+      vim.defer_fn(function()
+        if not vim.api.nvim_buf_is_valid(ev.buf) then return end
+        local dir = vim.fn.getcwd(-1, 0)
+        M.render_file_panel_indicators(ev.buf, dir)
+      end, 150)
+    end,
+  })
 end
 
 ------------------------------------------------------------------------

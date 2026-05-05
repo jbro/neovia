@@ -817,8 +817,243 @@ describe("setup", function()
   end)
 
   it("is idempotent", function()
-    review.setup({ state_dir = test_state_dir })
+     review.setup({ state_dir = test_state_dir })
     review.setup({ state_dir = test_state_dir })
     -- No error means idempotent
+  end)
+end)
+
+------------------------------------------------------------------------
+-- comment_counts_by_file: aggregate comment counts per file
+------------------------------------------------------------------------
+
+describe("comment_counts_by_file", function()
+  local dir = "/tmp/review_counts_test"
+
+  before_each(function()
+    I.reset()
+    review.setup({ state_dir = test_state_dir })
+  end)
+
+  after_each(function()
+    review.clear(dir, test_state_dir)
+    I.reset()
+  end)
+
+  it("returns empty table when no comments exist", function()
+    local counts = review.comment_counts_by_file(dir, test_state_dir)
+    assert.same({}, counts)
+  end)
+
+  it("counts comments per file", function()
+    review.add_comment(dir, { file = "a.lua", line = 1, text = "one" }, test_state_dir)
+    review.add_comment(dir, { file = "a.lua", line = 5, text = "two" }, test_state_dir)
+    review.add_comment(dir, { file = "b.lua", line = 1, text = "three" }, test_state_dir)
+    local counts = review.comment_counts_by_file(dir, test_state_dir)
+    assert.equals(2, counts["a.lua"])
+    assert.equals(1, counts["b.lua"])
+  end)
+end)
+
+------------------------------------------------------------------------
+-- render_file_panel_indicators: extmarks on file panel buffer
+------------------------------------------------------------------------
+
+describe("render_file_panel_indicators", function()
+  local dir = "/tmp/review_panel_test"
+
+  before_each(function()
+    I.reset()
+    review.setup({ state_dir = test_state_dir })
+  end)
+
+  after_each(function()
+    review.clear(dir, test_state_dir)
+    I.reset()
+  end)
+
+  it("places extmarks on lines matching files with comments", function()
+    review.add_comment(dir, { file = "foo.lua", line = 1, text = "fix" }, test_state_dir)
+    review.add_comment(dir, { file = "foo.lua", line = 5, text = "also" }, test_state_dir)
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      "Changes (1)",
+      "  M  foo.lua",
+      "  M  bar.lua",
+    })
+
+    review.render_file_panel_indicators(buf, dir, test_state_dir)
+
+    local ns_panel = vim.api.nvim_create_namespace("neovia_review_panel")
+    local marks = vim.api.nvim_buf_get_extmarks(buf, ns_panel, 0, -1, { details = true })
+    assert.equals(1, #marks)
+    -- Should be on line 2 (0-indexed = 1)
+    assert.equals(1, marks[1][2])
+    -- Check virtual text contains "2 comments"
+    assert.is_truthy(marks[1][4].virt_text[1][1]:find("2 comments"))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("does not place extmarks for files without comments", function()
+    review.add_comment(dir, { file = "foo.lua", line = 1, text = "fix" }, test_state_dir)
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      "  M  bar.lua",
+      "  M  baz.lua",
+    })
+
+    review.render_file_panel_indicators(buf, dir, test_state_dir)
+
+    local ns_panel = vim.api.nvim_create_namespace("neovia_review_panel")
+    local marks = vim.api.nvim_buf_get_extmarks(buf, ns_panel, 0, -1, {})
+    assert.equals(0, #marks)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("uses singular label for 1 comment", function()
+    review.add_comment(dir, { file = "foo.lua", line = 1, text = "fix" }, test_state_dir)
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "  M  foo.lua" })
+
+    review.render_file_panel_indicators(buf, dir, test_state_dir)
+
+    local ns_panel = vim.api.nvim_create_namespace("neovia_review_panel")
+    local marks = vim.api.nvim_buf_get_extmarks(buf, ns_panel, 0, -1, { details = true })
+    assert.equals(1, #marks)
+    assert.is_truthy(marks[1][4].virt_text[1][1]:find("1 comment"))
+    -- Make sure it's not "1 comments"
+    assert.is_falsy(marks[1][4].virt_text[1][1]:find("1 comments"))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("matches comments with full paths against panel lines with basenames", function()
+    -- Comments use full relative paths like "lua/plugins/git.lua"
+    -- but diffview panel shows only the basename like "git.lua 53, 0"
+    review.add_comment(dir, { file = "lua/plugins/git.lua", line = 10, text = "fix" }, test_state_dir)
+    review.add_comment(dir, { file = "lua/plugins/git.lua", line = 20, text = "also" }, test_state_dir)
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+      "Changes (1)",
+      "  M  git.lua 53, 0",
+      "  M  ui.lua 12, 0",
+    })
+
+    review.render_file_panel_indicators(buf, dir, test_state_dir)
+
+    local ns_panel = vim.api.nvim_create_namespace("neovia_review_panel")
+    local marks = vim.api.nvim_buf_get_extmarks(buf, ns_panel, 0, -1, { details = true })
+    assert.equals(1, #marks)
+    assert.equals(1, marks[1][2]) -- line 2, 0-indexed
+    assert.is_truthy(marks[1][4].virt_text[1][1]:find("2 comments"))
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
+  it("clears old indicators before re-rendering", function()
+    review.add_comment(dir, { file = "foo.lua", line = 1, text = "fix" }, test_state_dir)
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "  M  foo.lua" })
+
+    review.render_file_panel_indicators(buf, dir, test_state_dir)
+    review.render_file_panel_indicators(buf, dir, test_state_dir)
+
+    local ns_panel = vim.api.nvim_create_namespace("neovia_review_panel")
+    local marks = vim.api.nvim_buf_get_extmarks(buf, ns_panel, 0, -1, {})
+    assert.equals(1, #marks)
+
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+end)
+
+------------------------------------------------------------------------
+-- jump_to_comment: navigate between review extmarks in a buffer
+------------------------------------------------------------------------
+
+describe("jump_to_comment", function()
+  local buf
+  local dir = "/tmp/review_nav_test"
+
+  before_each(function()
+    I.reset()
+    review.setup({ state_dir = test_state_dir })
+    -- Create a scratch buffer with 30 lines.
+    buf = vim.api.nvim_create_buf(false, true)
+    local lines = {}
+    for i = 1, 30 do lines[i] = "line " .. i end
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    -- Add comments and render extmarks.
+    review.add_comment(dir, { file = "foo.lua", line = 5, text = "first" }, test_state_dir)
+    review.add_comment(dir, { file = "foo.lua", line = 15, text = "second" }, test_state_dir)
+    review.add_comment(dir, { file = "foo.lua", line = 25, text = "third" }, test_state_dir)
+    review.render_extmarks(buf, "foo.lua", dir, test_state_dir)
+  end)
+
+  after_each(function()
+    review.clear(dir, test_state_dir)
+    if vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end
+    I.reset()
+  end)
+
+  it("returns the next extmark line after current line (forward)", function()
+    local line = review.jump_to_comment(buf, 1, "next")
+    assert.equals(5, line)
+  end)
+
+  it("skips to the next extmark when on an extmark line (forward)", function()
+    local line = review.jump_to_comment(buf, 5, "next")
+    assert.equals(15, line)
+  end)
+
+  it("returns the next extmark from between extmarks (forward)", function()
+    local line = review.jump_to_comment(buf, 10, "next")
+    assert.equals(15, line)
+  end)
+
+  it("wraps around to the first extmark after the last (forward)", function()
+    local line = review.jump_to_comment(buf, 25, "next")
+    assert.equals(5, line)
+  end)
+
+  it("wraps around when past all extmarks (forward)", function()
+    local line = review.jump_to_comment(buf, 28, "next")
+    assert.equals(5, line)
+  end)
+
+  it("returns the previous extmark before current line (prev)", function()
+    local line = review.jump_to_comment(buf, 20, "prev")
+    assert.equals(15, line)
+  end)
+
+  it("skips to the previous extmark when on an extmark line (prev)", function()
+    local line = review.jump_to_comment(buf, 15, "prev")
+    assert.equals(5, line)
+  end)
+
+  it("wraps around to the last extmark before the first (prev)", function()
+    local line = review.jump_to_comment(buf, 5, "prev")
+    assert.equals(25, line)
+  end)
+
+  it("wraps around when before all extmarks (prev)", function()
+    local line = review.jump_to_comment(buf, 1, "prev")
+    assert.equals(25, line)
+  end)
+
+  it("returns nil when no extmarks exist", function()
+    local empty_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(empty_buf, 0, -1, false, { "a", "b" })
+    local line = review.jump_to_comment(empty_buf, 1, "next")
+    assert.is_nil(line)
+    vim.api.nvim_buf_delete(empty_buf, { force = true })
   end)
 end)
