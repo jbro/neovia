@@ -37,7 +37,7 @@ end
 local function mc_context_bar()
   local ok, mc = pcall(require, "neovia.magic_context")
   if not ok then return "" end
-  return mc.context_bar(20)
+  return mc.context_bar(25)
 end
 
 --- Build the magic-context memory display for the statusline.
@@ -176,7 +176,7 @@ return {
         lualine_x = {
           { opencode_version, color = opencode_version_color },
           { mc_context_bar, separator = "", padding = { left = 1, right = 0 } },
-          { mc_memory, icon = "\u{f0599}", separator = "" },
+          { mc_memory, icon = "\u{f0599}" },
           { opencode_status, color = opencode_status_color },
           "filetype",
         },

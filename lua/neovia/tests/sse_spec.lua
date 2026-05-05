@@ -132,4 +132,67 @@ describe("process_event", function()
     sse.process_event(state, "/nonexistent", { type = "test" }, function() end)
     assert.is_nil(state["/nonexistent"])
   end)
+
+  it("triggers magic-context refresh on completed assistant message", function()
+    local state = {
+      ["/proj/a"] = make_entry({ status = "responding", branch = "main" }),
+    }
+    -- Spy on magic_context.refresh
+    local refresh_called = false
+    local mc = require("neovia.magic_context")
+    local orig_refresh = mc.refresh
+    mc.refresh = function() refresh_called = true end
+
+    sse.process_event(state, "/proj/a", {
+      type = "message.updated",
+      properties = {
+        info = {
+          role = "assistant",
+          time = { created = 1000, completed = 2000 },
+        },
+      },
+    }, function() return false end)
+
+    assert.is_true(refresh_called,
+      "mc.refresh() should be called on completed assistant message")
+    mc.refresh = orig_refresh
+  end)
+
+  it("triggers magic-context refresh on session.idle", function()
+    local state = {
+      ["/proj/a"] = make_entry({ status = "responding", branch = "main" }),
+    }
+    local refresh_called = false
+    local mc = require("neovia.magic_context")
+    local orig_refresh = mc.refresh
+    mc.refresh = function() refresh_called = true end
+
+    sse.process_event(state, "/proj/a", {
+      type = "session.idle",
+      properties = {},
+    }, function() return false end)
+
+    assert.is_true(refresh_called,
+      "mc.refresh() should be called on session.idle")
+    mc.refresh = orig_refresh
+  end)
+
+  it("does not trigger magic-context refresh on unrelated events", function()
+    local state = {
+      ["/proj/a"] = make_entry({ status = "idle", branch = "main" }),
+    }
+    local refresh_called = false
+    local mc = require("neovia.magic_context")
+    local orig_refresh = mc.refresh
+    mc.refresh = function() refresh_called = true end
+
+    sse.process_event(state, "/proj/a", {
+      type = "permission.asked",
+      properties = { id = "perm_1" },
+    }, function() return false end)
+
+    assert.is_false(refresh_called,
+      "mc.refresh() should not be called on permission.asked")
+    mc.refresh = orig_refresh
+  end)
 end)

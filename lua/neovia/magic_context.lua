@@ -7,6 +7,9 @@
 
 local M = {}
 
+local ok_nui_line, NuiLine = pcall(require, "nui.line")
+if not ok_nui_line then NuiLine = nil end
+
 local initialised = false
 
 ------------------------------------------------------------------------
@@ -23,6 +26,7 @@ local state = {
   snapshot = nil,
   port = nil,
   session_id = nil,
+  init_timer = nil,
 }
 
 ------------------------------------------------------------------------
@@ -30,10 +34,8 @@ local state = {
 ------------------------------------------------------------------------
 
 --- Base directory for magic-context RPC port files.
---- Uses opencode's own data directory (not Neovim's stdpath("data"),
---- which varies with the config name).
-local RPC_BASE = (vim.env.HOME or "") .. "/.local/share"
-  .. "/opencode/storage/plugin/magic-context/rpc/"
+--- magic-context stores under ~/.local/share/cortexkit/magic-context/.
+local RPC_BASE = (vim.env.HOME or "") .. "/.local/share/cortexkit/magic-context/rpc/"
 
 ------------------------------------------------------------------------
 -- Segment colors (authoritative source for bar/popup)
@@ -159,38 +161,45 @@ end
 -- Format bar (lualine statusline with highlight groups)
 ------------------------------------------------------------------------
 
---- Build a statusline-format bar string with highlight group references.
+--- Build a progress bar for the statusline with colored segments.
+--- Each segment is a colored block region; if wide enough the segment's
+--- percentage is printed inside. Total percentage follows the bar.
 --- @param snap table?
---- @param width number
+--- @param width number  Character width of the bar (not counting the total label)
 --- @return string
 local function format_bar_lualine(snap, width)
   if not snap then return "" end
 
   local segs = bar_segments(snap)
-  local pct = snap.usagePercentage or 0
-  local label = string.format(" %d%%", math.floor(pct))
-  local bar_width = width - #label
-
-  if bar_width < 1 then
-    return string.format("%%#NeoviaMcUsage#%d%%%%", math.floor(pct))
-  end
+  local pct = math.floor(snap.usagePercentage or 0)
+  local bar_width = width or 25
 
   local parts = {}
   local used = 0
   for i, seg in ipairs(segs) do
     local seg_width = math.floor(seg.fraction * bar_width + 0.5)
-    if i == #segs then
-      seg_width = bar_width - used
-    end
+    if i == #segs then seg_width = bar_width - used end
     if seg_width > 0 then
-      local hl_name = "NeoviaMc_" .. seg.label:lower():gsub(" ", "_")
-      table.insert(parts, "%#" .. hl_name .. "#" .. string.rep("\u{2588}", seg_width))
+      local hl = "NeoviaMcBar_" .. seg.label:lower():gsub(" ", "_")
+      local seg_pct = math.floor(seg.fraction * 100 + 0.5)
+      local label = tostring(seg_pct)
+      if #label <= seg_width then
+        -- Center the label inside the segment
+        local pad_left = math.floor((seg_width - #label) / 2)
+        local pad_right = seg_width - #label - pad_left
+        local fill = string.rep(" ", pad_left) .. label .. string.rep(" ", pad_right)
+        table.insert(parts, string.format("%%#%s#%s", hl, fill))
+      else
+        -- Too narrow for the label; just fill with blocks
+        table.insert(parts, string.format("%%#%s#%s", hl, string.rep(" ", seg_width)))
+      end
     end
     used = used + seg_width
   end
 
-  table.insert(parts, "%#NeoviaMcUsage#" .. label)
-  return table.concat(parts)
+  -- Total percentage after the bar
+  table.insert(parts, string.format("%%#NeoviaMcUsage# %d%%%%", pct))
+  return " " .. table.concat(parts)
 end
 
 ------------------------------------------------------------------------
@@ -208,35 +217,69 @@ local function fmt_tokens(n)
 end
 
 --- Build the full popup content from a status-detail response.
+--- Returns NuiLine objects so that the popup can render with highlights.
 --- @param detail table
---- @return string[]
+--- @return table[]  Array of NuiLine objects
 local function format_popup_lines(detail)
+  local Line = NuiLine
+  if not Line then return {} end
+
+  local pad = "  "
   local lines = {}
-  local function add(line) table.insert(lines, line) end
+  local function add(line)
+    if type(line) == "string" then
+      local l = Line()
+      l:append(pad .. line)
+      table.insert(lines, l)
+    else
+      -- Prepend padding to NuiLine objects
+      local padded = Line()
+      padded:append(pad)
+      padded:append(line)
+      table.insert(lines, padded)
+    end
+  end
 
-  -- Header
-  add("Magic Context Status")
-  add(string.rep("\u{2500}", 40))
-  add("")
 
-  -- Context bar
+  -- Context bar (colored segments)
   add("Context Usage")
-  add(format_bar(detail, 40))
+
+  local segs = bar_segments(detail)
+  local pct = detail.usagePercentage or 0
+  local bar_width = 40
+  local bar_line = Line()
+  local used = 0
+  for i, seg in ipairs(segs) do
+    local seg_width = math.floor(seg.fraction * bar_width + 0.5)
+    if i == #segs then seg_width = bar_width - used end
+    if seg_width > 0 then
+      local hl = "NeoviaMc_" .. seg.label:lower():gsub(" ", "_")
+      bar_line:append(string.rep("\u{2588}", seg_width), hl)
+    end
+    used = used + seg_width
+  end
+  add(bar_line)
+
   add(string.format("  %s / %s tokens (%d%%)",
     fmt_tokens(detail.inputTokens or 0),
     fmt_tokens(detail.contextLimit or 0),
-    math.floor(detail.usagePercentage or 0)))
+    math.floor(pct)))
   add("")
 
-  -- Token breakdown
-  add("Token Breakdown")
-  local segs = bar_segments(detail)
+  -- Token breakdown (colored labels)
+  local breakdown_header = Line()
+  breakdown_header:append("Token Breakdown", "Title")
+  add(breakdown_header)
   for _, seg in ipairs(segs) do
     if seg.tokens > 0 then
-      add(string.format("  %s  %s (%d%%)",
-        seg.label,
+      local l = Line()
+      l:append("  ")
+      local hl = "NeoviaMc_" .. seg.label:lower():gsub(" ", "_")
+      l:append(seg.label, hl)
+      l:append(string.format("  %s (%d%%)",
         fmt_tokens(seg.tokens),
         math.floor(seg.fraction * 100 + 0.5)))
+      add(l)
     end
   end
   add("")
@@ -264,17 +307,18 @@ local function format_popup_lines(detail)
   add(string.format("  TTL: %s  Expired: %s",
     detail.cacheTtl or "?",
     detail.cacheExpired and "yes" or "no"))
-  if detail.cacheRemainingMs then
+  if type(detail.cacheRemainingMs) == "number" then
     add(string.format("  Remaining: %ds", math.floor(detail.cacheRemainingMs / 1000)))
   end
   add("")
 
   -- Tags
   add("Tags")
-  add(string.format("  Active: %d  Dropped: %d  Total: %d  Protected: %d",
-    detail.activeTags or 0, detail.droppedTags or 0,
+  add(string.format("  Active: %d  Dropped: %d",
+    detail.activeTags or 0, detail.droppedTags or 0))
+  add(string.format("  Total: %d  Protected: %d",
     detail.totalTags or 0, detail.protectedTagCount or 0))
-  if detail.pendingOpsCount and detail.pendingOpsCount > 0 then
+  if type(detail.pendingOpsCount) == "number" and detail.pendingOpsCount > 0 then
     add(string.format("  Pending ops: %d", detail.pendingOpsCount))
   end
   add("")
@@ -284,24 +328,30 @@ local function format_popup_lines(detail)
   add(string.format("  Execute: %d%% (%s)",
     detail.executeThreshold or 0, detail.executeThresholdMode or "?"))
   add(string.format("  History budget: %d%%", detail.historyBudgetPercentage or 0))
-  if detail.compressionUsage then
+  if type(detail.compressionUsage) == "string" then
     add(string.format("  Compression: %s", detail.compressionUsage))
   end
   add("")
 
   -- Dreamer
-  if detail.lastDreamerRunAt then
+  if type(detail.lastDreamerRunAt) == "number" then
     add(string.format("Dreamer: last run %s", os.date("%Y-%m-%d %H:%M", detail.lastDreamerRunAt)))
   else
     add("Dreamer: no runs yet")
   end
   add("")
 
-  -- Color key
-  add("Color Key")
+  -- Color key (colored swatches)
+  local key_header = Line()
+  key_header:append("Color Key", "Title")
+  add(key_header)
   add(string.rep("\u{2500}", 40))
   for _, seg in ipairs(segs) do
-    add(string.format("  \u{2588}\u{2588} %s", seg.label))
+    local l = Line()
+    local hl = "NeoviaMc_" .. seg.label:lower():gsub(" ", "_")
+    l:append("  \u{2588}\u{2588}", hl)
+    l:append(" " .. seg.label)
+    add(l)
   end
 
   return lines
@@ -428,9 +478,13 @@ end
 
 --- Define highlight groups used by the context bar and popup.
 local function define_highlights()
+  local dark_bg = 0x1a1b26  -- dark background for text on colored bars
   for key, color in pairs(segment_colors) do
-    local hl_name = "NeoviaMc_" .. key
-    vim.api.nvim_set_hl(0, hl_name, { fg = hex_to_int(color) })
+    local c = hex_to_int(color)
+    -- Foreground-only (popup text labels)
+    vim.api.nvim_set_hl(0, "NeoviaMc_" .. key, { fg = c })
+    -- Background bar segments (statusline bar with text overlay)
+    vim.api.nvim_set_hl(0, "NeoviaMcBar_" .. key, { fg = dark_bg, bg = c, bold = true })
   end
   -- Usage percentage text inherits normal fg
   vim.api.nvim_set_hl(0, "NeoviaMcUsage", {})
@@ -473,10 +527,17 @@ local function show_popup()
 
   -- Build lines
   local lines = format_popup_lines(detail)
+  if #lines == 0 then
+    vim.notify("magic-context: nui.nvim not available", vim.log.levels.WARN)
+    return
+  end
 
-  -- Create buffer
+  -- Create buffer and render NuiLine objects with highlights
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  local ns = vim.api.nvim_create_namespace("neovia_mc_popup")
+  for i, line in ipairs(lines) do
+    line:render(buf, ns, i)
+  end
   vim.bo[buf].modifiable = false
   vim.bo[buf].bufhidden = "wipe"
 
@@ -494,21 +555,18 @@ local function show_popup()
     col = col,
     style = "minimal",
     border = "rounded",
-    title = " Magic Context ",
+    title = " Magic Context (q to close) ",
     title_pos = "center",
   })
 
   -- Close on q or Escape
-  vim.keymap.set("n", "q", function()
+  local function close()
     if vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_win_close(win, true)
     end
-  end, { buffer = buf, nowait = true })
-  vim.keymap.set("n", "<Esc>", function()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-  end, { buffer = buf, nowait = true })
+  end
+  vim.keymap.set("n", "q", close, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true })
 end
 
 ------------------------------------------------------------------------
@@ -557,18 +615,37 @@ function M.setup()
 
   define_highlights()
 
+  local augroup = vim.api.nvim_create_augroup("NeoviaMagicContext", { clear = true })
+
   -- Re-define highlights on colorscheme change
   vim.api.nvim_create_autocmd("ColorScheme", {
-    group = vim.api.nvim_create_augroup("NeoviaMagicContext", { clear = true }),
+    group = augroup,
     callback = define_highlights,
   })
+
+  -- Retry initial fetch until we get a snapshot (opencode may not be connected yet)
+  state.init_timer = vim.uv.new_timer()
+  if state.init_timer then
+    local attempts = 0
+    state.init_timer:start(2000, 3000, vim.schedule_wrap(function()
+      attempts = attempts + 1
+      M.refresh()
+      if state.snapshot or attempts >= 10 then
+        if state.init_timer and not state.init_timer:is_closing() then
+          state.init_timer:stop()
+          state.init_timer:close()
+        end
+        state.init_timer = nil
+      end
+    end))
+  end
 end
 
---- Get context bar for lualine (statusline-format string).
---- @param width number?  Character width (default 20)
+--- Get context bar for lualine (progress bar with colored segments).
+--- @param width number?  Bar width in characters (default 25)
 --- @return string
 function M.context_bar(width)
-  return format_bar_lualine(state.snapshot, width or 20)
+  return format_bar_lualine(state.snapshot, width or 25)
 end
 
 --- Get memory display info for lualine.
@@ -607,10 +684,15 @@ M._internal = {
 
   reset = function()
     initialised = false
+    if state.init_timer and not state.init_timer:is_closing() then
+      state.init_timer:stop()
+      state.init_timer:close()
+    end
     state = {
       snapshot = nil,
       port = nil,
       session_id = nil,
+      init_timer = nil,
     }
   end,
 }

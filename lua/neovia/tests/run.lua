@@ -2,6 +2,9 @@
 -- lua/neovia/tests/run.lua
 -- Run neovia tests: nvim -l lua/neovia/tests/run.lua [spec_pattern]
 
+-- Ensure stdpath() resolves to neovia-specific directories
+vim.env.NVIM_APPNAME = "neovia"
+
 -- Resolve paths relative to this script
 local script = debug.getinfo(1, "S").source:sub(2)
 local test_dir = vim.fn.fnamemodify(script, ":h")
@@ -14,9 +17,11 @@ vim.opt.packpath:remove(vim.fn.expand("~/.local/share/nvim/site"))
 -- Add project root so require("neovia.*") resolves
 vim.opt.runtimepath:prepend(root)
 
--- Add plenary from the lazy.nvim store
+-- Add plenary and nui from the lazy.nvim store
 local plenary_path = vim.fn.expand("~/.local/share/neovia/lazy/plenary.nvim")
 vim.opt.runtimepath:append(plenary_path)
+local nui_path = vim.fn.expand("~/.local/share/neovia/lazy/nui.nvim")
+vim.opt.runtimepath:append(nui_path)
 
 -- Run specs
 local target = arg[1] or test_dir

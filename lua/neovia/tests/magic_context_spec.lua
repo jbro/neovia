@@ -4,6 +4,13 @@
 local mc = require("neovia.magic_context")
 local I = mc._internal
 
+--- Extract plain text from a list of NuiLine objects.
+--- @param lines table[]
+--- @return string
+local function lines_text(lines)
+  return table.concat(vim.tbl_map(function(l) return l:content() end, lines), "\n")
+end
+
 ------------------------------------------------------------------------
 -- project_hash
 ------------------------------------------------------------------------
@@ -44,7 +51,7 @@ describe("port_file_path", function()
     local path = I.port_file_path("/Users/jbr/Private/neovia")
     local hash = I.project_hash("/Users/jbr/Private/neovia")
     local expected = (vim.env.HOME or "") .. "/.local/share"
-      .. "/opencode/storage/plugin/magic-context/rpc/"
+      .. "/cortexkit/magic-context/rpc/"
       .. hash
       .. "/port"
     assert.equals(expected, path)
@@ -174,7 +181,7 @@ end)
 ------------------------------------------------------------------------
 
 describe("format_bar_lualine", function()
-  it("returns a statusline-format string with highlight groups", function()
+  it("returns a progress bar with colored segments and total percentage", function()
     local snap = {
       inputTokens = 1000,
       usagePercentage = 42,
@@ -186,10 +193,51 @@ describe("format_bar_lualine", function()
       toolCallTokens = 200,
       toolDefinitionTokens = 100,
     }
-    local bar = I.format_bar_lualine(snap, 20)
+    local bar = I.format_bar_lualine(snap, 25)
     assert.is_string(bar)
-    -- Should contain statusline highlight group references
-    assert.is_truthy(bar:find("%%#"), "should contain highlight groups")
+    -- Should contain bar highlight groups (background color)
+    assert.is_truthy(bar:find("NeoviaMcBar_system"), "should contain system bar highlight")
+    assert.is_truthy(bar:find("NeoviaMcBar_tool_calls"), "should contain tool_calls bar highlight")
+    -- Should end with total percentage
+    assert.is_truthy(bar:find("NeoviaMcUsage"), "should contain usage highlight")
+    assert.is_truthy(bar:find("42%%%%"), "should contain total percentage")
+  end)
+
+  it("shows segment percentages inside wide enough segments", function()
+    local snap = {
+      inputTokens = 100,
+      usagePercentage = 50,
+      systemPromptTokens = 0,
+      compartmentTokens = 0,
+      factTokens = 0,
+      memoryTokens = 0,
+      conversationTokens = 0,
+      toolCallTokens = 100,
+      toolDefinitionTokens = 0,
+    }
+    -- Single segment at 100% of 20 chars = 20 chars wide
+    local bar = I.format_bar_lualine(snap, 20)
+    -- "100" should appear inside the segment
+    assert.is_truthy(bar:find("100"), "should show percentage inside wide segment")
+  end)
+
+  it("omits segments with 0 fraction", function()
+    local snap = {
+      inputTokens = 1000,
+      usagePercentage = 50,
+      systemPromptTokens = 500,
+      compartmentTokens = 0,
+      factTokens = 0,
+      memoryTokens = 0,
+      conversationTokens = 0,
+      toolCallTokens = 500,
+      toolDefinitionTokens = 0,
+    }
+    local bar = I.format_bar_lualine(snap, 20)
+    assert.is_truthy(bar:find("NeoviaMcBar_system"), "should include system")
+    assert.is_truthy(bar:find("NeoviaMcBar_tool_calls"), "should include tool_calls")
+    assert.is_falsy(bar:find("NeoviaMcBar_compartments"), "should omit compartments")
+    assert.is_falsy(bar:find("NeoviaMcBar_facts"), "should omit facts")
   end)
 
   it("returns empty string when snapshot is nil", function()
@@ -256,9 +304,9 @@ describe("format_popup_lines", function()
     local lines = I.format_popup_lines(detail)
     assert.is_table(lines)
     assert.is_true(#lines > 0, "should produce output lines")
-    -- Each element should be a string
+    -- Each element should be a NuiLine
     for _, line in ipairs(lines) do
-      assert.is_string(line)
+      assert.is_function(line.content, "each line should be a NuiLine")
     end
   end)
 
@@ -312,11 +360,67 @@ describe("format_popup_lines", function()
       nextNudgeAfter = 0,
     }
     local lines = I.format_popup_lines(detail)
-    local text = table.concat(lines, "\n")
+    local text = lines_text(lines)
     -- Should contain a legend/key section explaining colors
     assert.is_truthy(text:find("System"), "should mention System Prompt category")
     assert.is_truthy(text:find("Conversation"), "should mention Conversation category")
     assert.is_truthy(text:find("Tool"), "should mention Tool category")
+  end)
+
+  it("handles lastDreamerRunAt as vim.NIL (JSON null)", function()
+    local detail = {
+      sessionId = "ses_abc123",
+      usagePercentage = 0,
+      inputTokens = 0,
+      systemPromptTokens = 0,
+      compartmentCount = 0,
+      compartmentTokens = 0,
+      factCount = 0,
+      factTokens = 0,
+      memoryCount = 0,
+      memoryBlockCount = 0,
+      memoryTokens = 0,
+      conversationTokens = 0,
+      toolCallTokens = 0,
+      toolDefinitionTokens = 0,
+      pendingOpsCount = 0,
+      historianRunning = false,
+      compartmentInProgress = false,
+      sessionNoteCount = 0,
+      readySmartNoteCount = 0,
+      cacheTtl = "5m",
+      lastDreamerRunAt = vim.NIL,
+      projectIdentity = vim.NIL,
+      tagCounter = 0,
+      activeTags = 0,
+      droppedTags = 0,
+      totalTags = 0,
+      activeBytes = 0,
+      contextLimit = 0,
+      cacheTtlMs = 300000,
+      cacheRemainingMs = 0,
+      cacheExpired = false,
+      executeThreshold = 65,
+      executeThresholdMode = "percentage",
+      protectedTagCount = 20,
+      nudgeInterval = 3,
+      historyBudgetPercentage = 30,
+      historyBlockTokens = 0,
+      compressionBudget = vim.NIL,
+      compressionUsage = vim.NIL,
+      lastResponseTime = 0,
+      lastNudgeTokens = 0,
+      lastNudgeBand = "",
+      lastTransformError = vim.NIL,
+      isSubagent = false,
+      pendingOps = {},
+      nextNudgeAfter = 0,
+    }
+    local lines = I.format_popup_lines(detail)
+    assert.is_table(lines)
+    local text = lines_text(lines)
+    assert.is_truthy(text:find("no runs yet"),
+      "should show 'no runs yet' when lastDreamerRunAt is vim.NIL")
   end)
 
   it("shows historian as running when active", function()
@@ -337,7 +441,7 @@ describe("format_popup_lines", function()
       toolDefinitionTokens = 2500,
       pendingOpsCount = 0,
       historianRunning = true,
-      compartmentInProgress = true,
+      compartmentInProgress = false,
       sessionNoteCount = 0,
       readySmartNoteCount = 0,
       cacheTtl = "5m",
@@ -369,9 +473,83 @@ describe("format_popup_lines", function()
       nextNudgeAfter = 0,
     }
     local lines = I.format_popup_lines(detail)
-    local text = table.concat(lines, "\n")
+    local text = table.concat(vim.tbl_map(function(l) return l:content() end, lines), "\n")
     assert.is_truthy(text:lower():find("running"),
       "should indicate historian is running")
+  end)
+
+  it("returns NuiLine objects with highlights for context bar", function()
+    local detail = {
+      sessionId = "ses_abc123",
+      usagePercentage = 61,
+      inputTokens = 122500,
+      systemPromptTokens = 6500,
+      compartmentCount = 0,
+      compartmentTokens = 0,
+      factCount = 0,
+      factTokens = 0,
+      memoryCount = 3,
+      memoryBlockCount = 3,
+      memoryTokens = 140,
+      conversationTokens = 3900,
+      toolCallTokens = 92500,
+      toolDefinitionTokens = 19500,
+      pendingOpsCount = 34,
+      historianRunning = false,
+      compartmentInProgress = false,
+      sessionNoteCount = 0,
+      readySmartNoteCount = 0,
+      cacheTtl = "5m",
+      lastDreamerRunAt = nil,
+      projectIdentity = nil,
+      tagCounter = 125,
+      activeTags = 118,
+      droppedTags = 7,
+      totalTags = 125,
+      activeBytes = 122500,
+      contextLimit = 200000,
+      cacheTtlMs = 300000,
+      cacheRemainingMs = 200000,
+      cacheExpired = false,
+      executeThreshold = 65,
+      executeThresholdMode = "percentage",
+      protectedTagCount = 20,
+      nudgeInterval = 3,
+      historyBudgetPercentage = 30,
+      historyBlockTokens = 0,
+      compressionBudget = nil,
+      compressionUsage = nil,
+      lastResponseTime = 0,
+      lastNudgeTokens = 0,
+      lastNudgeBand = "",
+      lastTransformError = nil,
+      isSubagent = false,
+      pendingOps = {},
+      nextNudgeAfter = 0,
+    }
+    local lines = I.format_popup_lines(detail)
+    assert.is_table(lines)
+    assert.is_true(#lines > 0)
+
+    -- Every element should be a NuiLine (has :content() method)
+    for i, line in ipairs(lines) do
+      assert.is_function(line.content,
+        string.format("line %d should be a NuiLine (missing :content())", i))
+    end
+
+    -- Context bar line (line index 2, after "Context Usage")
+    -- should have multiple NuiText children with highlight groups
+    local bar_line = lines[2]
+    local bar_text = bar_line:content()
+    assert.is_truthy(bar_text:find("\u{2588}"),
+      "context bar should contain block characters")
+
+    -- Color key swatches should have segment highlights
+    local all_text = table.concat(
+      vim.tbl_map(function(l) return l:content() end, lines), "\n")
+    assert.is_truthy(all_text:find("Color Key"), "should have Color Key section")
+    assert.is_truthy(all_text:find("System"), "color key should list System")
+    assert.is_truthy(all_text:find("Tool Calls"), "color key should list Tool Calls")
   end)
 end)
 
@@ -455,7 +633,7 @@ describe("M.context_bar", function()
   end)
 
   it("returns empty string when no snapshot is available", function()
-    local bar = mc.context_bar(20)
+    local bar = mc.context_bar(25)
     assert.equals("", bar)
   end)
 
@@ -471,7 +649,7 @@ describe("M.context_bar", function()
       toolCallTokens = 200,
       toolDefinitionTokens = 100,
     })
-    local bar = mc.context_bar(20)
+    local bar = mc.context_bar(25)
     assert.is_string(bar)
     assert.is_true(#bar > 0)
   end)
@@ -703,5 +881,146 @@ describe("define_highlights", function()
   it("is idempotent", function()
     I.define_highlights()
     I.define_highlights()  -- should not error
+  end)
+end)
+
+------------------------------------------------------------------------
+-- Integration: live RPC server
+------------------------------------------------------------------------
+
+--- Helper: check if the magic-context RPC server is reachable.
+--- Returns the port number or nil.
+local function live_rpc_port()
+  local dir = vim.uv.cwd()
+  if not dir then return nil end
+  local path = I.port_file_path(dir)
+  local port = I.read_port(path)
+  if not port then return nil end
+  local ok, result = pcall(vim.system, {
+    "curl", "-sf", "--max-time", "1",
+    string.format("http://127.0.0.1:%d/health", port),
+  }, { text = true })
+  if not ok or not result then return nil end
+  local out = result:wait()
+  if out.code ~= 0 then return nil end
+  return port
+end
+
+describe("integration: live RPC", function()
+  local port = live_rpc_port()
+
+  before_each(function()
+    if not port then pending("RPC server not running") end
+    I.reset()
+    I.set_port(port)
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("port file exists at the cortexkit storage path", function()
+    local dir = vim.uv.cwd()
+    assert.is_not_nil(dir)
+    local path = I.port_file_path(dir)
+    assert.is_truthy(path:find("cortexkit/magic%-context/rpc/"),
+      "port file path should use cortexkit storage: " .. path)
+    local p = I.read_port(path)
+    assert.is_number(p)
+    assert.is_true(p > 0 and p <= 65535, "port should be valid: " .. tostring(p))
+  end)
+
+  it("health endpoint responds with ok and pid", function()
+    local ok, result = pcall(vim.system, {
+      "curl", "-sf", "--max-time", "2",
+      string.format("http://127.0.0.1:%d/health", port),
+    }, { text = true })
+    assert.is_true(ok)
+    local out = result:wait()
+    assert.equals(0, out.code)
+    local decode_ok, data = pcall(vim.fn.json_decode, out.stdout)
+    assert.is_true(decode_ok)
+    assert.equals(true, data.ok)
+    assert.is_number(data.pid)
+  end)
+
+  it("sidebar-snapshot returns expected fields", function()
+    local dir = vim.uv.cwd()
+    local body = vim.fn.json_encode({ sessionId = "integration-test", directory = dir })
+    local ok, result = pcall(vim.system, {
+      "curl", "-sf", "--max-time", "2",
+      "-X", "POST",
+      "-H", "Content-Type: application/json",
+      "-d", body,
+      string.format("http://127.0.0.1:%d/rpc/sidebar-snapshot", port),
+    }, { text = true })
+    assert.is_true(ok)
+    local out = result:wait()
+    assert.equals(0, out.code, "curl should succeed; got: " .. (out.stderr or ""))
+    local decode_ok, snap = pcall(vim.fn.json_decode, out.stdout)
+    assert.is_true(decode_ok, "response should be valid JSON")
+    -- Validate required fields from the snapshot schema
+    assert.is_number(snap.usagePercentage)
+    assert.is_number(snap.inputTokens)
+    assert.is_number(snap.systemPromptTokens)
+    assert.is_number(snap.compartmentCount)
+    assert.is_number(snap.factCount)
+    assert.is_number(snap.memoryCount)
+    assert.is_number(snap.memoryBlockCount)
+    assert.is_number(snap.compartmentTokens)
+    assert.is_number(snap.conversationTokens)
+    assert.is_number(snap.toolCallTokens)
+    assert.is_number(snap.toolDefinitionTokens)
+    assert.is_boolean(snap.historianRunning)
+    assert.is_boolean(snap.compartmentInProgress)
+  end)
+
+  it("status-detail returns superset of snapshot fields", function()
+    local dir = vim.uv.cwd()
+    local body = vim.fn.json_encode({ sessionId = "integration-test", directory = dir })
+    local ok, result = pcall(vim.system, {
+      "curl", "-sf", "--max-time", "2",
+      "-X", "POST",
+      "-H", "Content-Type: application/json",
+      "-d", body,
+      string.format("http://127.0.0.1:%d/rpc/status-detail", port),
+    }, { text = true })
+    assert.is_true(ok)
+    local out = result:wait()
+    assert.equals(0, out.code)
+    local decode_ok, detail = pcall(vim.fn.json_decode, out.stdout)
+    assert.is_true(decode_ok, "response should be valid JSON")
+    -- Snapshot fields (superset)
+    assert.is_number(detail.usagePercentage)
+    assert.is_number(detail.inputTokens)
+    assert.is_number(detail.memoryCount)
+    -- Detail-only fields
+    assert.is_number(detail.activeTags)
+    assert.is_number(detail.droppedTags)
+    assert.is_number(detail.totalTags)
+    assert.is_number(detail.executeThreshold)
+    assert.is_string(detail.executeThresholdMode)
+    assert.is_number(detail.protectedTagCount)
+    assert.is_boolean(detail.cacheExpired)
+    assert.is_number(detail.cacheTtlMs)
+  end)
+
+  it("fetch_snapshot populates state from live server", function()
+    local dir = vim.uv.cwd()
+    I.fetch_snapshot("integration-test", dir)
+    local snap = I.get_snapshot()
+    assert.is_not_nil(snap, "snapshot should be populated after fetch")
+    assert.is_number(snap.usagePercentage)
+    assert.is_number(snap.memoryCount)
+  end)
+
+  it("context_bar renders from live snapshot", function()
+    local dir = vim.uv.cwd()
+    I.fetch_snapshot("integration-test", dir)
+    local bar = mc.context_bar(20)
+    assert.is_string(bar)
+    -- Should contain highlight groups (lualine format)
+    assert.is_truthy(bar:find("%%#") or bar:find("%%"),
+      "bar should contain statusline formatting: " .. bar)
   end)
 end)
