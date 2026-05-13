@@ -31,6 +31,17 @@ return {
         },
       },
       fzf_colors = true,
+      files = {
+        -- Show gitignored files (--no-ignore) but still hide .git and .worktrees,
+        -- matching neo-tree's never_show list.
+        fd_opts = "--color=never --type f --hidden --follow --no-ignore"
+          .. " --exclude .git --exclude .worktrees",
+      },
+      grep = {
+        rg_opts = "--column --line-number --no-heading --color=always"
+          .. " --smart-case --max-columns=4096 --no-ignore"
+          .. " -g '!.git/' -g '!.worktrees/' -e",
+      },
     },
   },
 }
