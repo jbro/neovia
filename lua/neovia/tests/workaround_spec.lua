@@ -149,4 +149,56 @@ describe("maybe_refresh_output", function()
     -- Should not error (pcall protects)
     wa.maybe_refresh_output("/proj/a", "message.updated")
   end)
+
+  it("does NOT call render_output when output window is focused", function()
+    vim.fn.getcwd = function(_, _) return "/proj/a" end
+    local rendered = false
+    local fake_win = 42
+    package.loaded["opencode.ui.ui"] = {
+      render_output = function() rendered = true end,
+    }
+    package.loaded["opencode.state"] = {
+      windows = { output_win = fake_win },
+    }
+    -- Stub nvim_get_current_win to return the output window
+    local saved_get_win = vim.api.nvim_get_current_win
+    vim.api.nvim_get_current_win = function() return fake_win end
+
+    wa.maybe_refresh_output("/proj/a", "message.updated")
+    assert.is_false(rendered)
+
+    vim.api.nvim_get_current_win = saved_get_win
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("calls render_output when a different window is focused", function()
+    vim.fn.getcwd = function(_, _) return "/proj/a" end
+    local rendered = false
+    package.loaded["opencode.ui.ui"] = {
+      render_output = function() rendered = true end,
+    }
+    package.loaded["opencode.state"] = {
+      windows = { output_win = 42 },
+    }
+    local saved_get_win = vim.api.nvim_get_current_win
+    vim.api.nvim_get_current_win = function() return 99 end
+
+    wa.maybe_refresh_output("/proj/a", "message.updated")
+    assert.is_true(rendered)
+
+    vim.api.nvim_get_current_win = saved_get_win
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("calls render_output when opencode.state is not loaded", function()
+    vim.fn.getcwd = function(_, _) return "/proj/a" end
+    local rendered = false
+    package.loaded["opencode.ui.ui"] = {
+      render_output = function() rendered = true end,
+    }
+    package.loaded["opencode.state"] = nil
+
+    wa.maybe_refresh_output("/proj/a", "message.updated")
+    assert.is_true(rendered)
+  end)
 end)

@@ -55,14 +55,30 @@ local REFRESH_EVENTS = {
   ["session.error"] = true,
 }
 
+--- Check whether the opencode output window currently has focus.
+--- When focused the user is reading output; re-rendering would
+--- reset their scroll position (render_full_session always calls
+--- scroll_to_bottom). Skip the refresh and let the next event
+--- after they leave the window catch up.
+--- @return boolean
+local function output_focused()
+  local ok_st, oc_state = pcall(require, "opencode.state")
+  if not ok_st or not oc_state then return false end
+  local wins = oc_state.windows
+  if not wins or not wins.output_win then return false end
+  return wins.output_win == vim.api.nvim_get_current_win()
+end
+
 --- Force the opencode.nvim output window to re-fetch messages if the
 --- event is relevant and the directory is the current worktree.
+--- Skips when the output window is focused to preserve scroll position.
 --- @param dir string|nil  Worktree directory from the SSE event.
 --- @param event_type string  The SSE event type (e.g. "message.updated").
 function M.maybe_refresh_output(dir, event_type)
   if not dir then return end
   if not REFRESH_EVENTS[event_type] then return end
   if dir ~= vim.fn.getcwd(-1, 0) then return end
+  if output_focused() then return end
 
   local ok, ui = pcall(require, "opencode.ui.ui")
   if ok and ui and ui.render_output then
