@@ -719,17 +719,22 @@ function M.switch_to(dir)
     }
   end
 
-  -- Restore saved buffers (or leave noname on first visit)
+  -- Restore saved buffers or show a fresh noname buffer on first visit
   local target = state[dir]
   local ok_nav, navigate = pcall(require, "neovia.navigate")
-  if ok_nav and #target.buffer_paths > 0 then
-    local bufs = relist_buffers(target.buffer_paths)
-    -- Open the first restored buffer in the code window
-    if #bufs > 0 then
-      local win = navigate.find_code_win()
-      if win then
-        vim.api.nvim_set_current_win(win)
-        vim.api.nvim_win_set_buf(win, bufs[1])
+  if ok_nav then
+    local win = navigate.find_code_win()
+    if win then
+      if #target.buffer_paths > 0 then
+        local bufs = relist_buffers(target.buffer_paths)
+        if #bufs > 0 then
+          vim.api.nvim_set_current_win(win)
+          vim.api.nvim_win_set_buf(win, bufs[1])
+        end
+      else
+        -- First visit: replace the stale buffer with a fresh noname buffer
+        local fresh = vim.api.nvim_create_buf(true, false)
+        vim.api.nvim_win_set_buf(win, fresh)
       end
     end
   end

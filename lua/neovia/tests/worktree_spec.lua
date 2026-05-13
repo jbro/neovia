@@ -1104,25 +1104,32 @@ describe("switch_to", function()
     assert.is_true(layout_applied, "Expected layout.apply() to be called after switch")
   end)
 
-  it("leaves noname buffer in code window on first visit", function()
+  it("shows a fresh noname buffer in code window on first visit", function()
     vim.cmd.tcd(dir_a)
     I.set_state({
       [dir_a] = I.make_entry({ branch = "main" }),
       [dir_b] = I.make_entry({ branch = "feat", buffer_paths = {} }),
     })
 
-    -- Create a code window
-    local code_buf = vim.api.nvim_create_buf(true, false)
-    vim.api.nvim_win_set_buf(0, code_buf)
+    -- Simulate an open file belonging to worktree A
+    local old_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(old_buf, dir_a .. "/old_file.lua")
+    vim.api.nvim_win_set_buf(0, old_buf)
 
     wt.switch_to(dir_b)
 
-    -- The code window should still be there (noname or original buffer)
+    -- The code window must exist and show a fresh noname buffer,
+    -- NOT the old worktree's buffer.
     local navigate = require("neovia.navigate")
     local code_win = navigate.find_code_win()
     assert.is_not_nil(code_win, "code window should exist after first visit")
 
-    pcall(vim.api.nvim_buf_delete, code_buf, { force = true })
+    local shown_buf = vim.api.nvim_win_get_buf(code_win)
+    local shown_name = vim.api.nvim_buf_get_name(shown_buf)
+    assert.equals("", shown_name,
+      "code window should show a noname buffer on first visit, got: " .. shown_name)
+
+    pcall(vim.api.nvim_buf_delete, old_buf, { force = true })
   end)
 
   it("tells neo-tree the new root after switching", function()
