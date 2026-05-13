@@ -16,13 +16,11 @@ local initialised = false
 ------------------------------------------------------------------------
 
 --- @class neovia.magic_context.State
---- @field snapshot table?   Last sidebar-snapshot response.
 --- @field port number?      Discovered RPC server port.
 --- @field session_id string? Active opencode session ID.
 
 --- @type neovia.magic_context.State
 local state = {
-  snapshot = nil,
   port = nil,
   session_id = nil,
 }
@@ -288,7 +286,7 @@ end
 -- Port discovery
 ------------------------------------------------------------------------
 
---- Read the port number from a port file.
+--- Read a plain port number from a legacy port file.
 --- @param path string
 --- @return number?
 local function read_port(path)
@@ -301,12 +299,68 @@ local function read_port(path)
   return port
 end
 
---- Discover and cache the RPC server port for the current directory.
+--- Read port from a per-PID JSON port file (port-<pid>.json).
+--- Returns (port, pid) or (nil, nil).
+--- @param path string
+--- @return number?, number?
+local function read_pid_port(path)
+  local fd = io.open(path, "r")
+  if not fd then return nil, nil end
+  local content = fd:read("*a")
+  fd:close()
+  if not content then return nil, nil end
+  local ok, data = pcall(vim.fn.json_decode, content)
+  if not ok or type(data) ~= "table" then return nil, nil end
+  return tonumber(data.port), tonumber(data.pid)
+end
+
+--- Check if a PID is still running.
+--- @param pid number
+--- @return boolean
+local function pid_alive(pid)
+  -- signal 0: check existence without actually signalling
+  local ok = vim.uv.kill(pid, 0)
+  return ok == 0
+end
+
+--- Discover the RPC server port for the current directory.
+--- Prefers per-PID port files (port-<pid>.json) with a live process over
+--- the legacy plain port file which can go stale across server restarts.
 --- @param dir string?
 --- @return number?
 local function discover_port(dir)
   dir = dir or vim.uv.cwd()
   if not dir then return nil end
+
+  local rpc_dir = RPC_BASE .. project_hash(dir)
+
+  -- Scan for per-PID port files; pick the newest one with a running process.
+  local handle = vim.uv.fs_scandir(rpc_dir)
+  if handle then
+    local best_port, best_time = nil, 0
+    while true do
+      local name, ftype = vim.uv.fs_scandir_next(handle)
+      if not name then break end
+      if (ftype == "file" or ftype == nil) and name:match("^port%-%d+%.json$") then
+        local full = rpc_dir .. "/" .. name
+        local port, pid = read_pid_port(full)
+        if port and pid and pid_alive(pid) then
+          local stat = vim.uv.fs_stat(full)
+          local mtime = stat and stat.mtime and stat.mtime.sec or 0
+          if mtime > best_time then
+            best_port = port
+            best_time = mtime
+          end
+        end
+      end
+    end
+    if best_port then
+      state.port = best_port
+      return best_port
+    end
+  end
+
+  -- Fallback: legacy plain port file.
   local path = port_file_path(dir)
   local port = read_port(path)
   if port then
@@ -332,36 +386,6 @@ end
 ------------------------------------------------------------------------
 -- RPC fetch
 ------------------------------------------------------------------------
-
---- Fetch a sidebar-snapshot from the magic-context RPC server.
---- Synchronous (blocks briefly).
---- @param session_id string
---- @param dir string
---- @return table?
-local function fetch_snapshot(session_id, dir)
-  local port = state.port
-  if not port then return nil end
-
-  local url = string.format("http://127.0.0.1:%d/rpc/sidebar-snapshot", port)
-  local body = vim.fn.json_encode({ sessionId = session_id, directory = dir })
-
-  local ok, result = pcall(vim.system, {
-    "curl", "-sf", "--max-time", "2",
-    "-X", "POST",
-    "-H", "Content-Type: application/json",
-    "-d", body,
-    url,
-  }, { text = true })
-
-  if not ok or not result then return nil end
-  local out = result:wait()
-  if out.code ~= 0 or not out.stdout or out.stdout == "" then return nil end
-
-  local decode_ok, data = pcall(vim.fn.json_decode, out.stdout)
-  if not decode_ok or type(data) ~= "table" then return nil end
-
-  return data
-end
 
 --- Fetch status-detail from the magic-context RPC server.
 --- Synchronous (blocks briefly). Returns the detail table or nil.
@@ -424,10 +448,8 @@ local function show_popup()
   local dir = vim.uv.cwd()
   if not dir then return end
 
-  -- Ensure port is discovered
-  if not state.port then
-    discover_port(dir)
-  end
+  -- Always re-read the port file (tiny I/O) so we pick up server restarts.
+  discover_port(dir)
   if not state.port then
     vim.notify("magic-context: RPC server not found", vim.log.levels.WARN)
     return
@@ -440,15 +462,22 @@ local function show_popup()
     return
   end
 
-  -- Fetch detail
+  -- Fetch detail; retry once with a fresh port in case the server restarted.
   local detail = fetch_detail(session_id, dir)
   if not detail then
-    vim.notify("magic-context: could not fetch status", vim.log.levels.WARN)
+    local old_port = state.port
+    discover_port(dir)
+    if state.port and state.port ~= old_port then
+      detail = fetch_detail(session_id, dir)
+    end
+  end
+  if not detail then
+    vim.notify(string.format(
+      "magic-context: could not fetch status (port=%s, session=%s, dir=%s)",
+      tostring(state.port), session_id, dir
+    ), vim.log.levels.WARN)
     return
   end
-
-  -- Also update the cached snapshot from the detail (it's a superset)
-  state.snapshot = detail
 
   -- Build lines
   local lines = format_popup_lines(detail)
@@ -529,8 +558,9 @@ M._internal = {
   format_popup_lines = format_popup_lines,
   fmt_tokens = fmt_tokens,
   read_port = read_port,
+  read_pid_port = read_pid_port,
+  pid_alive = pid_alive,
   resolve_session_id = resolve_session_id,
-  fetch_snapshot = fetch_snapshot,
   define_highlights = define_highlights,
 
   get_port = function() return state.port end,
@@ -539,7 +569,6 @@ M._internal = {
   reset = function()
     initialised = false
     state = {
-      snapshot = nil,
       port = nil,
       session_id = nil,
     }
