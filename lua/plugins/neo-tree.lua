@@ -81,6 +81,9 @@ return {
           -- All opens target the code window explicitly.
           ["<cr>"] = "open_in_code_win",
           ["<2-LeftMouse>"] = "open_in_code_win",
+          -- Let <Space> fall through to global <leader> mappings
+          -- instead of being consumed by neo-tree's buffer-local handler.
+          ["<Space>"] = "none",
           -- Read-only: disable file-editing actions
           ["a"] = "none",
           ["d"] = "none",
