@@ -21,6 +21,7 @@
 **Module (core) layer:**
 - Purpose: implement project-specific behaviour and integration glue for worktrees, sessions, server management, layout, notes, status and tabline.
 - Location: `lua/neovia/` (e.g. `lua/neovia/worktree.lua`, `lua/neovia/server.lua`, `lua/neovia/notes.lua`, `lua/neovia/layout.lua`, `lua/neovia/diffview.lua`).
+ - Location: `lua/neovia/` (e.g. `lua/neovia/worktree.lua`, `lua/neovia/server.lua`, `lua/neovia/notes.lua`, `lua/neovia/layout.lua`, `lua/neovia/diffview.lua`, `lua/neovia/review.lua`).
 - Contains: core modules, utilities (`fs.lua`, `env.lua`, `reload.lua`, `sse.lua`, `session.lua`, `navigate.lua`, `pr.lua`, `mode.lua`, `theme.lua`, `version.lua`).
 - Depends on: Neovim Lua API, optional plugins (`neo-tree`, `fzf-lua`, `diffview`), and external commands (`git`, `opencode`, `curl`, `lsof`, `pgrep`).
 - Used by: `init.lua` at startup, and plugin specs for runtime wiring.
@@ -61,6 +62,13 @@
 - Purpose: per-worktree markdown notes displayed in a dedicated bottom split.
 - Location: `lua/neovia/notes.lua` (storage path uses `vim.fn.sha256(dir)` and `stdpath('cache')/notes/<sha256>.md`).
 - Pattern: unlisted `buftype=acwrite` buffers with explicit `BufWriteCmd` handlers and autocmds to auto-save on `BufLeave`.
+
+## Review comments
+
+**Purpose:** Provide per-worktree code review comments that render as buffer extmarks, appear in diffview file panels, and persist to disk as JSON so external tools (OpenCode) can modify comment state.
+
+- Location: `lua/neovia/review.lua` (storage path uses `stdpath('state')/review/<sha256(dir)>.json`).
+- Pattern: in-memory cache keyed by absolute worktree path; comments persist immediately to `stdpath('state')/review/<hash>.json`, file watchers auto-start on first access, and extmarks render in file buffers and diffview panels.
 
 ## Entry Points
 

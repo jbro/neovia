@@ -97,11 +97,11 @@ The user does not edit files directly -- OpenCode does. The user's role is
 reviewing diffs, navigating code, and directing OpenCode. Plugins serve
 reading and navigation, not authoring.
 
-### 0003 - Worktree module uses per-directory SSE subscriptions (2026-03-26)
+### 0003 - Worktree module uses global SSE connection (2026-05-13)
 
-Each SSE connection to `opencode serve` is scoped to one directory.
-The worktree module opens a separate subscription per worktree for
-real-time status tracking. Status states: idle, responding, needs_attention.
+One SSE connection to `/global/event` replaces per-directory subscriptions.
+Events include a `directory` field for routing to the correct worktree
+state entry. Status states: idle, responding, needs_attention.
 
 ### 0005 - Read-only mode and curated leader keymap (2026-03-27)
 
@@ -147,7 +147,7 @@ disk; the plugin connects via `server.url` + `port` in attach mode
 (`auto_kill = false`). `<leader>oE` provides server management
 (status `s`, restart `r`, shutdown `q`, redraw `d`). The worktree
 module's `OpencodeEvent:server.connected` autocmd is repeating (not
-`once`) so server restarts trigger SSE re-subscription.
+`once`) so server restarts trigger SSE reconnection.
 
 ### 0011 - Neo-tree replaces netrw, session notes in bottom split (2026-04-23)
 
@@ -170,3 +170,14 @@ tabline shows `[diff]` indicator when the diffview tab is active.
 (`wn`/`wp`/`ww`) lands on whichever tab (code or diff) was last active
 for the target worktree, tracked via `last_view` in worktree state.
 Worktree deletion closes associated diffview tabs.
+
+### 0013 - Global SSE replaces per-directory subscriptions (2026-05-14)
+
+`/global/event` is a multiplexed SSE stream that delivers events for
+all directories with a `directory` field in each envelope. One connection
+replaces N per-directory subscriptions, eliminating subscription lifecycle
+management. `neovia.workaround` calls `render_output()` on status-relevant
+events for the current worktree because opencode.nvim's own per-directory
+SSE stream is broken by a compression bug (opencode >= 1.14.42, issue
+#26697). Remove `workaround.lua` and its test when the upstream fix lands
+or opencode.nvim migrates to `/global/event`.

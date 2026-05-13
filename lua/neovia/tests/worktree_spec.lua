@@ -780,128 +780,73 @@ end)
 
 
 ------------------------------------------------------------------------
--- unsubscribe_all
+-- disconnect_sse
 ------------------------------------------------------------------------
 
-describe("unsubscribe_all", function()
+describe("disconnect_sse", function()
   after_each(function()
     I.reset()
   end)
 
-  it("calls shutdown on all subscriptions", function()
-    local shutdown_count = 0
-    local mock_sub = {
-      shutdown = function() shutdown_count = shutdown_count + 1 end,
-      is_running = function() return true end,
-    }
-    I.set_state({
-      ["/a"] = I.make_entry({ branch = "main", subscription = mock_sub }),
-      ["/b"] = I.make_entry({ branch = "feat", subscription = mock_sub }),
-    })
-
-    I.unsubscribe_all()
-
-    assert.equals(2, shutdown_count)
-    -- Subscriptions should be nil'd
-    assert.is_nil(I.get_state()["/a"].subscription)
-    assert.is_nil(I.get_state()["/b"].subscription)
-  end)
-
-  it("handles entries without subscriptions", function()
-    I.set_state({
-      ["/a"] = I.make_entry({ branch = "main" }),
-    })
-
-    -- Should not error
-    I.unsubscribe_all()
-  end)
-
-  it("tolerates shutdown errors", function()
-    local mock_sub = {
-      shutdown = function() error("connection closed") end,
-      is_running = function() return false end,
-    }
-    I.set_state({
-      ["/a"] = I.make_entry({ branch = "main", subscription = mock_sub }),
-    })
-
-    -- pcall inside unsubscribe_all should catch the error
-    I.unsubscribe_all()
-    assert.is_nil(I.get_state()["/a"].subscription)
+  it("is a no-op when sse module is not loaded", function()
+    -- Should not error even without an active connection
+    I.disconnect_sse()
   end)
 end)
 
 ------------------------------------------------------------------------
--- subscribe_one
+-- get_base_url
 ------------------------------------------------------------------------
 
-describe("subscribe_one", function()
+describe("get_base_url", function()
   after_each(function()
-    I.reset()
-  end)
-
-  it("is a no-op when opencode.state is not loaded", function()
-    -- Ensure opencode.state is not in package.loaded
-    package.loaded["opencode.state"] = nil
-
-    I.set_state({
-      ["/proj/a"] = I.make_entry({ branch = "main" }),
-    })
-
-    -- Should not error
-    I.subscribe_one("/proj/a")
-    assert.is_nil(I.get_state()["/proj/a"].subscription)
-  end)
-
-  it("is a no-op when api_client is nil", function()
-    package.loaded["opencode.state"] = { api_client = nil }
-
-    I.set_state({
-      ["/proj/a"] = I.make_entry({ branch = "main" }),
-    })
-
-    I.subscribe_one("/proj/a")
-    assert.is_nil(I.get_state()["/proj/a"].subscription)
-
     package.loaded["opencode.state"] = nil
   end)
 
-  it("subscribes and stores the handle in state", function()
-    local mock_handle = {
-      shutdown = function() end,
-      is_running = function() return true end,
-    }
+  it("returns nil when opencode.state is not loaded", function()
+    package.loaded["opencode.state"] = nil
+    assert.is_nil(I.get_base_url())
+  end)
+
+  it("returns nil when opencode_server is nil", function()
+    package.loaded["opencode.state"] = { opencode_server = nil }
+    assert.is_nil(I.get_base_url())
+  end)
+
+  it("returns nil when url is missing", function()
     package.loaded["opencode.state"] = {
-      api_client = {
-        subscribe_to_events = function(_, _, _)
-          return mock_handle
-        end,
-      },
+      opencode_server = { port = 4096 },
     }
+    assert.is_nil(I.get_base_url())
+  end)
 
-    I.set_state({
-      ["/proj/a"] = I.make_entry({ branch = "main" }),
-    })
+  it("returns url as-is (already includes port)", function()
+    package.loaded["opencode.state"] = {
+      opencode_server = { url = "http://localhost:4096", port = 4096 },
+    }
+    assert.equals("http://localhost:4096", I.get_base_url())
+  end)
 
-    I.subscribe_one("/proj/a")
-    assert.equals(mock_handle, I.get_state()["/proj/a"].subscription)
-
-    package.loaded["opencode.state"] = nil
+  it("strips trailing slash from url", function()
+    package.loaded["opencode.state"] = {
+      opencode_server = { url = "http://localhost:4096/", port = 4096 },
+    }
+    assert.equals("http://localhost:4096", I.get_base_url())
   end)
 end)
 
 ------------------------------------------------------------------------
--- ensure_subscriptions
+-- ensure_sse
 ------------------------------------------------------------------------
 
-describe("ensure_subscriptions", function()
+describe("ensure_sse", function()
   after_each(function()
     I.reset()
     package.loaded["opencode.state"] = nil
   end)
 
   it("removes state for worktrees that no longer exist on disk", function()
-    -- ensure_subscriptions calls list_worktrees which runs git, so in
+    -- ensure_sse calls list_worktrees which runs git, so in
     -- headless test with no git repo it returns {}. This means all
     -- entries get pruned.
     I.set_state({
@@ -909,7 +854,7 @@ describe("ensure_subscriptions", function()
       ["/gone/b"] = I.make_entry({ branch = "also-gone" }),
     })
 
-    I.ensure_subscriptions()
+    I.ensure_sse()
 
     assert.is_nil(I.get_state()["/gone/a"])
     assert.is_nil(I.get_state()["/gone/b"])
@@ -2158,7 +2103,7 @@ describe("_delete_continue", function()
     local wt_entry = { path = "/proj/detached", branch = "(detached)", head = "abc", bare = false }
     wt._delete_continue(wt_entry)
 
-    -- Should have worktree remove + ensure_subscriptions (worktree list), but no branch -d
+    -- Should have worktree remove + ensure_sse (worktree list), but no branch -d
     local has_branch_d = false
     for _, cmd in ipairs(git_cmds) do
       if cmd[2] == "branch" and cmd[3] == "-d" then has_branch_d = true end

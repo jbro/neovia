@@ -39,7 +39,7 @@ local initialised = false
 local dir_timer = nil
 
 -- Forward declarations
-local ensure_subscriptions, list_worktrees, unsubscribe_all
+local ensure_sse, list_worktrees, disconnect_sse
 local find_current_worktree, prompt_branch
 
 ------------------------------------------------------------------------
@@ -245,39 +245,82 @@ local function apply_event(entry, event)
 end
 
 ------------------------------------------------------------------------
--- SSE delegation (delegated to neovia.sse)
+-- SSE delegation (delegated to neovia.sse via /global/event)
 ------------------------------------------------------------------------
 
 local ok_sse, sse_mod = pcall(require, "neovia.sse")
+local ok_wa, workaround = pcall(require, "neovia.workaround")
 
---- SSE event callback: process event using apply_event.
---- @param dir string
+--- Get the server base URL from opencode.state.
+--- The url field already includes the port (e.g. "http://localhost:4096").
+--- @return string|nil
+local function get_base_url()
+  local oc_state = package.loaded["opencode.state"]
+  if not oc_state then return nil end
+  local srv = oc_state.opencode_server
+  if not srv or not srv.url then return nil end
+  return srv.url:gsub("/$", "")
+end
+
+--- SSE event callback: route global events by directory.
+--- For server.connected (dir=nil), apply to all entries.
+--- @param dir string|nil
 --- @param event table
 local function process_event(dir, event)
-  if ok_sse then
+  if not ok_sse then return end
+  if dir then
     sse_mod.process_event(state, dir, event, apply_event)
+    -- WORKAROUND: force opencode.nvim output re-render since its own
+    -- per-directory SSE stream is broken. See lua/neovia/workaround.lua.
+    if ok_wa then
+      workaround.maybe_refresh_output(dir, event.type)
+    end
+  else
+    -- Broadcast events (e.g. server.connected) apply to all entries
+    for d, _ in pairs(state) do
+      sse_mod.process_event(state, d, event, apply_event)
+    end
   end
 end
 
---- Subscribe to SSE events for a single worktree directory.
---- @param dir string
-local function subscribe_one(dir)
-  if ok_sse then
-    sse_mod.subscribe_one(state, dir, process_event)
+--- Populate state entries from list_worktrees(), remove stale ones,
+--- and ensure the global SSE connection is alive.
+ensure_sse = function()
+  if not ok_sse then return end
+
+  local worktrees = list_worktrees()
+  if #worktrees == 0 then return end
+
+  local valid = {} --- @type table<string, boolean>
+  for _, wt in ipairs(worktrees) do
+    valid[wt.path] = true
+    if not state[wt.path] then
+      state[wt.path] = {
+        status = "unknown",
+        branch = wt.branch,
+        pending_permissions = {},
+        buffer_paths = {},
+      }
+    end
+  end
+
+  -- Remove state for worktrees that no longer exist on disk
+  for d, _ in pairs(state) do
+    if not valid[d] then
+      state[d] = nil
+    end
+  end
+
+  local base_url = get_base_url()
+  if base_url then
+    sse_mod.ensure_connection(base_url, process_event)
   end
 end
 
---- Ensure every known worktree has an active SSE subscription.
-ensure_subscriptions = function()
+--- Shut down the global SSE connection.
+disconnect_sse = function()
   if ok_sse then
-    sse_mod.ensure_subscriptions(state, list_worktrees(), process_event)
-  end
-end
-
---- Shut down all SSE subscriptions.
-unsubscribe_all = function()
-  if ok_sse then
-    sse_mod.unsubscribe_all(state)
+    sse_mod.disconnect()
   end
 end
 
@@ -294,11 +337,11 @@ function M.setup()
 
   local group = vim.api.nvim_create_augroup("neovia_worktree", { clear = true })
 
-  -- Clean up subscriptions on exit
+  -- Clean up SSE connection on exit
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
-    callback = function() unsubscribe_all() end,
-    desc = "neovia: clean up worktree SSE subscriptions",
+    callback = function() disconnect_sse() end,
+    desc = "neovia: clean up worktree SSE connection",
   })
 
   -- Refresh worktree list on directory change (debounced)
@@ -314,30 +357,30 @@ function M.setup()
       t:start(500, 0, vim.schedule_wrap(function()
         if not t:is_closing() then t:close() end
         if dir_timer == t then dir_timer = nil end
-        ensure_subscriptions()
+        ensure_sse()
         vim.cmd.redrawtabline()
       end))
     end,
-    desc = "neovia: refresh worktree subscriptions on tcd",
+    desc = "neovia: refresh worktree state on tcd",
   })
 
-  -- Defer subscription until opencode server is ready.
+  -- Connect to SSE when the opencode server is ready.
   -- Not once=true: the server may restart (external process) and
-  -- fire this event again, so we need to re-subscribe each time.
+  -- fire this event again, so we need to reconnect each time.
   vim.api.nvim_create_autocmd("User", {
     group = group,
     pattern = "OpencodeEvent:server.connected",
     callback = function()
-      vim.defer_fn(function() ensure_subscriptions() end, 1000)
+      vim.defer_fn(function() ensure_sse() end, 1000)
     end,
-    desc = "neovia: subscribe to worktree SSE on server ready",
+    desc = "neovia: connect to global SSE on server ready",
   })
 
   -- Also try immediately in case the server is already running
   vim.defer_fn(function()
     local oc_state = package.loaded["opencode.state"]
     if oc_state and oc_state.api_client then
-      ensure_subscriptions()
+      ensure_sse()
     end
   end, 2000)
 
@@ -1036,8 +1079,8 @@ function M._delete_continue(wt)
   -- Clean up state
   state[wt.path] = nil
 
-  -- Refresh subscriptions
-  ensure_subscriptions()
+  -- Refresh state (SSE connection stays alive, stale entry already removed)
+  ensure_sse()
 
   vim.notify("Deleted worktree " .. wt.branch, vim.log.levels.INFO)
 end
@@ -1160,8 +1203,8 @@ end
 function M.pick()
   M.setup()
 
-  -- Refresh worktree list and subscriptions
-  ensure_subscriptions()
+  -- Refresh worktree list and SSE state
+  ensure_sse()
 
   local ok, fzf = pcall(require, "fzf-lua")
   if not ok then
@@ -1293,9 +1336,9 @@ M._internal = {
   relist_buffers = relist_buffers,
   wipeout_buffers_for_dir = wipeout_buffers_for_dir,
   process_event = process_event,
-  subscribe_one = subscribe_one,
-  ensure_subscriptions = ensure_subscriptions,
-  unsubscribe_all = unsubscribe_all,
+  ensure_sse = ensure_sse,
+  disconnect_sse = disconnect_sse,
+  get_base_url = get_base_url,
   resolve_git_common_dir = resolve_git_common_dir,
   strip_worktrees_ignored = strip_worktrees_ignored,
   strip_all_worktrees_ignored = strip_all_worktrees_ignored,
@@ -1321,7 +1364,7 @@ M._internal = {
 
   --- Reset module to uninitialised state (for test isolation).
   reset = function()
-    unsubscribe_all()
+    disconnect_sse()
     state = {}
     initialised = false
     neo_tree_patched = false

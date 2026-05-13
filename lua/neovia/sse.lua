@@ -1,34 +1,85 @@
 -- neovia sse module
--- SSE subscription lifecycle for worktree status tracking.
--- Operates on a state table provided by the caller (worktree module).
+-- Single global SSE connection to /global/event for worktree status tracking.
+-- Replaces per-directory subscriptions with one multiplexed stream that
+-- routes events by the `directory` field in each envelope.
 
 local M = {}
 
---- Subscribe to SSE events for a single worktree directory.
---- @param state table<string, table>  Per-dir state table.
---- @param dir string
---- @param event_callback fun(dir: string, event: table)
-function M.subscribe_one(state, dir, event_callback)
-  local oc_state = package.loaded["opencode.state"]
-  if not oc_state then return end
+--- The active SSE connection handle (nil when disconnected).
+local handle = nil
 
-  local api_client = oc_state.api_client
-  if not api_client then return end
+------------------------------------------------------------------------
+-- Event parsing
+------------------------------------------------------------------------
 
-  local handle = api_client:subscribe_to_events(dir, function(event)
+--- Parse a /global/event envelope into (directory, inner_event).
+--- Returns nil, nil for malformed or sync-wrapper events.
+--- @param raw table|nil  Raw decoded JSON from the SSE stream.
+--- @return string|nil dir
+--- @return table|nil event  Inner event with {type, properties, id}.
+local function parse_global_event(raw)
+  if type(raw) ~= "table" then return nil, nil end
+  local payload = raw.payload
+  if type(payload) ~= "table" then return nil, nil end
+  -- Skip sync wrapper events (duplicates of real events)
+  if payload.type == "sync" then return nil, nil end
+  return raw.directory, payload -- directory is nil for server.connected
+end
+
+------------------------------------------------------------------------
+-- Connection lifecycle
+------------------------------------------------------------------------
+
+--- Open a single SSE connection to /global/event.
+--- Shuts down any existing connection first.
+--- @param base_url string  Server base URL (e.g. "http://localhost:4096").
+--- @param on_event fun(dir: string|nil, event: table)  Called for each parsed event.
+function M.connect(base_url, on_event)
+  M.disconnect()
+
+  local ok, server_job = pcall(require, "opencode.server_job")
+  if not ok or not server_job then return end
+
+  local url = base_url .. "/global/event"
+
+  handle = server_job.stream_api(url, "GET", nil, function(chunk)
+    chunk = chunk:gsub("^data:%s*", "")
+    local ok_json, raw = pcall(vim.json.decode, vim.trim(chunk))
+    if not ok_json or not raw then return end
+    local dir, event = parse_global_event(raw)
+    if not event then return end
     vim.schedule(function()
-      event_callback(dir, event)
+      on_event(dir, event)
     end)
   end)
-
-  if state[dir] then
-    state[dir].subscription = handle
-  end
 end
+
+--- Ensure the global SSE connection is alive, reconnecting if needed.
+--- @param base_url string
+--- @param on_event fun(dir: string|nil, event: table)
+function M.ensure_connection(base_url, on_event)
+  local alive = handle
+    and type(handle.is_running) == "function"
+    and handle.is_running()
+  if alive then return end
+  M.connect(base_url, on_event)
+end
+
+--- Shut down the global SSE connection.
+function M.disconnect()
+  if not handle then return end
+  if type(handle.shutdown) == "function" then
+    pcall(handle.shutdown)
+  end
+  handle = nil
+end
+
+------------------------------------------------------------------------
+-- Event processing
+------------------------------------------------------------------------
 
 --- Process a single SSE event and update state for the given directory.
 --- Calls apply_fn(entry, event) and redraws if changed.
---- Triggers magic-context refresh on completed assistant messages.
 --- @param state table<string, table>
 --- @param dir string
 --- @param event table
@@ -43,61 +94,12 @@ function M.process_event(state, dir, event, apply_fn)
   end
 end
 
---- Ensure every known worktree has an active SSE subscription.
---- @param state table<string, table>
---- @param worktrees table[]  Output of list_worktrees().
---- @param event_callback fun(dir: string, event: table)
-function M.ensure_subscriptions(state, worktrees, event_callback)
-  if #worktrees == 0 then return end
+------------------------------------------------------------------------
+-- Test internals
+------------------------------------------------------------------------
 
-  local valid = {} --- @type table<string, boolean>
-
-  for _, wt in ipairs(worktrees) do
-    valid[wt.path] = true
-
-    if not state[wt.path] then
-      state[wt.path] = {
-        status = "unknown",
-        branch = wt.branch,
-        pending_permissions = {},
-        buffer_paths = {},
-      }
-    end
-
-    local entry = state[wt.path]
-    local alive = entry.subscription
-      and type(entry.subscription.is_running) == "function"
-      and entry.subscription.is_running()
-    if not alive then
-      if entry.subscription and type(entry.subscription.shutdown) == "function" then
-        pcall(entry.subscription.shutdown)
-      end
-      entry.subscription = nil
-      M.subscribe_one(state, wt.path, event_callback)
-    end
-  end
-
-  -- Remove state for worktrees that no longer exist on disk
-  for dir, _ in pairs(state) do
-    if not valid[dir] then
-      local entry = state[dir]
-      if entry.subscription and type(entry.subscription.shutdown) == "function" then
-        pcall(entry.subscription.shutdown)
-      end
-      state[dir] = nil
-    end
-  end
-end
-
---- Shut down all SSE subscriptions.
---- @param state table<string, table>
-function M.unsubscribe_all(state)
-  for _, entry in pairs(state) do
-    if entry.subscription and type(entry.subscription.shutdown) == "function" then
-      pcall(entry.subscription.shutdown)
-    end
-    entry.subscription = nil
-  end
-end
+M._internal = {
+  parse_global_event = parse_global_event,
+}
 
 return M
