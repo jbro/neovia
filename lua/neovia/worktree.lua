@@ -249,7 +249,6 @@ end
 ------------------------------------------------------------------------
 
 local ok_sse, sse_mod = pcall(require, "neovia.sse")
-local ok_wa, workaround = pcall(require, "neovia.workaround")
 
 --- Get the server base URL from opencode.state.
 --- The url field already includes the port (e.g. "http://localhost:4096").
@@ -270,11 +269,6 @@ local function process_event(dir, event)
   if not ok_sse then return end
   if dir then
     sse_mod.process_event(state, dir, event, apply_event)
-    -- WORKAROUND: force opencode.nvim output re-render since its own
-    -- per-directory SSE stream is broken. See lua/neovia/workaround.lua.
-    if ok_wa then
-      workaround.maybe_refresh_output(dir, event.type)
-    end
   else
     -- Broadcast events (e.g. server.connected) apply to all entries
     for d, _ in pairs(state) do

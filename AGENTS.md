@@ -176,8 +176,4 @@ Worktree deletion closes associated diffview tabs.
 `/global/event` is a multiplexed SSE stream that delivers events for
 all directories with a `directory` field in each envelope. One connection
 replaces N per-directory subscriptions, eliminating subscription lifecycle
-management. `neovia.workaround` calls `render_output()` on status-relevant
-events for the current worktree because opencode.nvim's own per-directory
-SSE stream is broken by a compression bug (opencode >= 1.14.42, issue
-#26697). Remove `workaround.lua` and its test when the upstream fix lands
-or opencode.nvim migrates to `/global/event`.
+management.
