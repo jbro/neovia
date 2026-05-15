@@ -517,6 +517,57 @@ function M.ensure_running()
   return ensure_running(gcd)
 end
 
+--- Reconnect the opencode.nvim plugin to a (new) server port.
+--- Creates a new OpencodeServer instance via from_custom() and sets it
+--- in the plugin's reactive state store. This triggers the API client
+--- and EventManager to re-subscribe to the new server automatically.
+--- No-op when opencode.nvim is not loaded.
+--- @param port number  The new server port.
+function M.reconnect_plugin(port)
+  local ok_srv, OpencodeServer = pcall(require, "opencode.opencode_server")
+  if not ok_srv then return end
+  local ok_state, state = pcall(require, "opencode.state")
+  if not ok_state then return end
+
+  -- Shut down the old server instance (cleans up SSE, port mapping).
+  if state.opencode_server then
+    local ok_sj, server_job = pcall(require, "opencode.server_job")
+    if ok_sj and state.opencode_server.port then
+      pcall(server_job.unregister_port_usage, state.opencode_server.port)
+    end
+    pcall(state.opencode_server.shutdown, state.opencode_server)
+  end
+
+  -- Create a new server instance pointing at the new port.
+  local url = string.format("http://127.0.0.1:%d", port)
+  local new_server = OpencodeServer.from_custom(url, port, "attach")
+  state.jobs.set_server(new_server)
+
+  -- Update config so future ensure_server() calls use the right port.
+  local ok_cfg, cfg = pcall(require, "opencode.config")
+  if ok_cfg then
+    cfg.server = { url = "http://127.0.0.1", port = port, auto_kill = false }
+  end
+end
+
+--- Disconnect the opencode.nvim plugin from the server.
+--- Shuts down the current server instance and clears state.
+--- No-op when opencode.nvim is not loaded.
+function M.disconnect_plugin()
+  local ok_state, state = pcall(require, "opencode.state")
+  if not ok_state then return end
+
+  if state.opencode_server then
+    local ok_sj, server_job = pcall(require, "opencode.server_job")
+    if ok_sj and state.opencode_server.port then
+      pcall(server_job.unregister_port_usage, state.opencode_server.port)
+    end
+    pcall(state.opencode_server.shutdown, state.opencode_server)
+  end
+
+  state.jobs.clear_server()
+end
+
 M._internal = {
   state_dir = state_dir,
   port_file = port_file,

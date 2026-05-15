@@ -165,11 +165,13 @@ end, { desc = "Server status" })
 
 vim.keymap.set("n", "<leader>oEr", function()
   vim.notify("opencode server: restarting...", vim.log.levels.INFO)
-  require("neovia.server").restart(function(err, port)
+  local srv = require("neovia.server")
+  srv.restart(function(err, port)
     vim.schedule(function()
       if err then
         vim.notify("opencode server: restart failed: " .. err, vim.log.levels.ERROR)
       else
+        srv.reconnect_plugin(port)
         vim.notify(("opencode server: restarted on port %d"):format(port), vim.log.levels.INFO)
         require("neovia.layout").apply()
       end
@@ -178,18 +180,15 @@ vim.keymap.set("n", "<leader>oEr", function()
 end, { desc = "Restart server" })
 
 vim.keymap.set("n", "<leader>oEq", function()
-  local stopped = require("neovia.server").stop()
+  local srv = require("neovia.server")
+  srv.disconnect_plugin()
+  local stopped = srv.stop()
   if stopped then
     vim.notify("opencode server: stopped", vim.log.levels.INFO)
   else
     vim.notify("opencode server: was not running", vim.log.levels.WARN)
   end
 end, { desc = "Shutdown server" })
-
-vim.keymap.set("n", "<leader>oEd", function()
-  vim.notify("opencode: reconnecting and restoring layout...", vim.log.levels.INFO)
-  require("neovia.layout").apply()
-end, { desc = "Redraw UI" })
 
 ------------------------------------------------------------------------
 -- Magic Context integration (context/memory status from RPC)
