@@ -20,9 +20,8 @@
 
 **Module (core) layer:**
 - Purpose: implement project-specific behaviour and integration glue for worktrees, sessions, server management, layout, notes, status and tabline.
-- Location: `lua/neovia/` (e.g. `lua/neovia/worktree.lua`, `lua/neovia/server.lua`, `lua/neovia/notes.lua`, `lua/neovia/layout.lua`, `lua/neovia/diffview.lua`).
- - Location: `lua/neovia/` (e.g. `lua/neovia/worktree.lua`, `lua/neovia/server.lua`, `lua/neovia/notes.lua`, `lua/neovia/layout.lua`, `lua/neovia/diffview.lua`, `lua/neovia/review.lua`).
-- Contains: core modules, utilities (`fs.lua`, `env.lua`, `reload.lua`, `sse.lua`, `session.lua`, `navigate.lua`, `pr.lua`, `mode.lua`, `theme.lua`, `version.lua`).
+ - Location: `lua/neovia/` (e.g. `lua/neovia/worktree.lua`, `lua/neovia/server.lua`, `lua/neovia/notes.lua`, `lua/neovia/layout.lua`, `lua/neovia/diffview.lua`, `lua/neovia/review.lua`, `lua/neovia/magic_context.lua`).
+ - Contains: core modules, utilities (`fs.lua`, `env.lua`, `reload.lua`, `sse.lua`, `session.lua`, `navigate.lua`, `pr.lua`, `mode.lua`, `theme.lua`, `version.lua`, `magic_context.lua`).
 - Depends on: Neovim Lua API, optional plugins (`neo-tree`, `fzf-lua`, `diffview`), and external commands (`git`, `opencode`, `curl`, `lsof`, `pgrep`).
 - Used by: `init.lua` at startup, and plugin specs for runtime wiring.
 
@@ -37,8 +36,8 @@
 1. User triggers a worktree change (picker or tabline) — `lua/neovia/worktree.lua::M.switch_to`.
 2. Current buffers are snapshot via session helpers — `lua/neovia/session.lua` (collect/unlist/relist) and `lua/neovia/worktree.lua` saves model/session state.
 3. Directory change executes `vim.cmd.tcd(dir)` and opencode-related DirChanged hooks run (opencode.nvim integration).
-4. Deferred UI updates run: neo-tree root set via `:Neotree dir=` (configured in `lua/plugins/neo-tree.lua`), layout repair via `lua/neovia/layout.lua`, and notes buffer swap via `lua/neovia/notes.lua`.
-5. SSE events and opencode API calls update per-worktree runtime state (`lua/neovia/sse.lua`, `lua/neovia/worktree.lua`) and the tabline/tatus components (`lua/neovia/tabline.lua`).
+ 4. Deferred UI updates run: neo-tree root set via `:Neotree dir=` (configured in `lua/plugins/neo-tree.lua`), layout repair via `lua/neovia/layout.lua`, and notes buffer swap via `lua/neovia/notes.lua`.
+ 5. A single global SSE connection to `/global/event` (`lua/neovia/sse.lua`) delivers multiplexed envelopes; events include a `directory` field and are routed to per-worktree runtime state in `lua/neovia/worktree.lua`. Tabline/status components (`lua/neovia/tabline.lua`) consume the updated per-worktree state.
 
 **Server lifecycle flow (opencode):**
 
@@ -52,6 +51,11 @@
 - Purpose: represent per-directory runtime state (status, pending permissions, saved buffers, session_id, saved model state, neo-tree expanded nodes).
 - Location: `lua/neovia/worktree.lua` (`state` table and `M._internal.make_entry`).
 - Pattern: table keyed by absolute worktree path.
+
+**Global SSE connection**
+- Purpose: open a single SSE stream to `/global/event`, parse envelopes into (directory, payload), and dispatch events to per-worktree processors.
+- Location: `lua/neovia/sse.lua` (parsing, connection lifecycle, and per-event dispatch helpers).
+- Used by: `lua/neovia/worktree.lua` to keep per-worktree `status` and `pending_permissions` up-to-date.
 
 **Server info (persisted)**
 - Purpose: persist opencode server `port` and `pid` so multiple Neovim instances/clients discover the running server.
