@@ -1311,6 +1311,22 @@ function M.get_current_status()
   }
 end
 
+--- Return the current opencode model name (provider prefix stripped).
+--- Reads live state from opencode; returns nil when unavailable.
+--- @return string|nil
+function M.get_current_model()
+  local cwd = tab_cwd()
+  if not state[cwd] then return nil end
+
+  local ok, oc_state = pcall(require, "opencode.state")
+  if not ok or not oc_state then return nil end
+  local model = oc_state.current_model
+  if not model then return nil end
+
+  -- Strip "provider/" prefix (e.g. "anthropic/claude-opus-4-6" -> "claude-opus-4-6")
+  return model:match("[^/]+$") or model
+end
+
 --- Build the worktree tabline string from current state.
 --- Convenience wrapper that calls get_entries() then tabline.build().
 --- @param worktrees? neovia.WorktreeEntry[]

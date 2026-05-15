@@ -43,6 +43,15 @@ local function opencode_status_color()
   return info.hl
 end
 
+--- Build the opencode model name for the statusline.
+--- Shows the current model (provider prefix stripped).
+--- @return string
+local function opencode_model()
+  local ok, wt = pcall(require, "neovia.worktree")
+  if not ok then return "" end
+  return wt.get_current_model() or ""
+end
+
 --- Build the opencode version string for the statusline.
 --- Shows the running server version; turns yellow when the local binary
 --- is newer (i.e. upgrade happened but server not restarted).
@@ -168,6 +177,7 @@ return {
         },
         lualine_x = {
           { opencode_version, color = opencode_version_color },
+          { opencode_model },
           { opencode_status, color = opencode_status_color },
           "filetype",
         },

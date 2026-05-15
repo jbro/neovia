@@ -2595,6 +2595,84 @@ describe("get_current_status", function()
 end)
 
 ------------------------------------------------------------------------
+-- get_current_model (public API for lualine statusline)
+------------------------------------------------------------------------
+
+describe("get_current_model", function()
+  after_each(function()
+    I.reset()
+    package.loaded["opencode.state"] = nil
+  end)
+
+  it("returns the model name from live opencode state", function()
+    package.loaded["opencode.state"] = {
+      current_model = "anthropic/claude-opus-4-6",
+    }
+    local cwd = I.tab_cwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    local result = wt.get_current_model()
+    assert.equals("claude-opus-4-6", result)
+  end)
+
+  it("returns nil when opencode is not loaded", function()
+    package.loaded["opencode.state"] = nil
+    local cwd = I.tab_cwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    assert.is_nil(wt.get_current_model())
+  end)
+
+  it("returns nil when no state exists for current directory", function()
+    package.loaded["opencode.state"] = {
+      current_model = "anthropic/claude-opus-4-6",
+    }
+    -- no worktree state set
+    assert.is_nil(wt.get_current_model())
+  end)
+
+  it("returns nil when current_model is nil", function()
+    package.loaded["opencode.state"] = {
+      current_model = nil,
+    }
+    local cwd = I.tab_cwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    assert.is_nil(wt.get_current_model())
+  end)
+
+  it("strips provider prefix from model name", function()
+    package.loaded["opencode.state"] = {
+      current_model = "openai/o3",
+    }
+    local cwd = I.tab_cwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    assert.equals("o3", wt.get_current_model())
+  end)
+
+  it("returns full name when no provider prefix exists", function()
+    package.loaded["opencode.state"] = {
+      current_model = "local-model",
+    }
+    local cwd = I.tab_cwd()
+    I.set_state({
+      [cwd] = I.make_entry({ branch = "main" }),
+    })
+
+    assert.equals("local-model", wt.get_current_model())
+  end)
+end)
+
+------------------------------------------------------------------------
 -- find_current_worktree
 ------------------------------------------------------------------------
 
