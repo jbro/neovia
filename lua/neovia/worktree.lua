@@ -1005,13 +1005,6 @@ function M._delete_continue(wt)
     entry.subscription = nil
   end
 
-  -- Clean up review comments for this worktree
-  local ok_rev, review_mod = pcall(require, "neovia.review")
-  if ok_rev then
-    review_mod.unwatch(wt.path)
-    review_mod.clear(wt.path)
-  end
-
   -- Close any diffview tab for this worktree
   local ok_dv, dv_mod = pcall(require, "neovia.diffview")
   if ok_dv then

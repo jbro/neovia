@@ -202,11 +202,6 @@ vim.keymap.set("n", "<leader>oc", function() require("neovia.magic_context").sho
 require("neovia.notes").setup()
 
 ------------------------------------------------------------------------
--- Review (per-worktree code review comments on diffs)
-------------------------------------------------------------------------
-require("neovia.review").setup()
-
-------------------------------------------------------------------------
 -- Read-only mode
 ------------------------------------------------------------------------
 require("neovia.mode").setup({ auto_relock = true })
@@ -228,21 +223,6 @@ vim.keymap.set("n", "<leader>tm", function() require("neovia.theme").set_flavour
 vim.keymap.set("n", "<leader>td", function() require("neovia.theme").set_flavour("mocha") end, { desc = "Mocha (darkest)" })
 vim.keymap.set("n", "<leader>tn", function() require("neovia.theme").toggle() end, { desc = "Next flavour" })
 vim.keymap.set("n", "<leader>q", "<cmd>qa<cr>", { desc = "Quit all" })
-
--- Bracket-style navigation (duplicates of leader keymaps for quick access).
-local function jump_review(dir)
-  local ok, review = pcall(require, "neovia.review")
-  if not ok then return end
-  local buf = vim.api.nvim_get_current_buf()
-  local line = review.jump_to_comment(buf, vim.fn.line("."), dir)
-  if line then
-    vim.api.nvim_win_set_cursor(0, { line, 0 })
-  else
-    vim.notify("No review comments in this file", vim.log.levels.INFO)
-  end
-end
-vim.keymap.set("n", "]r", function() jump_review("next") end, { desc = "Next review comment" })
-vim.keymap.set("n", "[r", function() jump_review("prev") end, { desc = "Previous review comment" })
 
 ------------------------------------------------------------------------
 -- LSP configuration (native 0.11+)

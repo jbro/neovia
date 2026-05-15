@@ -102,6 +102,8 @@ return {
             ["<leader>orT"] = false, -- revert this (use git)
             ["<leader>orr"] = false, -- restore file snapshot (use git)
             ["<leader>orR"] = false, -- restore all snapshots (use git)
+            ["<leader>oy"] = false,  -- custom override below (diffview-aware)
+            ["<leader>oY"] = false,  -- inline paste (use oy for structured context)
             ["<leader>og"] = { "toggle_focus", desc = "Toggle OpenCode focus" },
             ["<leader>on"] = { "open_input_new_session", desc = "New session" },
           },
@@ -124,6 +126,19 @@ return {
 
         },
       })
+
+      -- Visual selection keymaps: skip open_input on diffview tabs
+      -- so the opencode window doesn't invade the diffview layout.
+      local function on_diffview_tab()
+        local ok_dv, dv = pcall(require, "neovia.diffview")
+        return ok_dv and dv.is_diffview_tab(vim.api.nvim_get_current_tabpage())
+      end
+
+      vim.keymap.set("v", "<leader>oy", function()
+        local api = require("opencode.api")
+        local range = { start = vim.fn.line("'<"), stop = vim.fn.line("'>") }
+        api.add_visual_selection(on_diffview_tab() and { open_input = false } or nil, range)
+      end, { desc = "Add visual selection to context" })
 
       -- Override reference picker to open files in the code window
       -- instead of tabedit (which creates a new tab, breaking layout).
