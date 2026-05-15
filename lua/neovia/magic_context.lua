@@ -18,11 +18,17 @@ local initialised = false
 --- @class neovia.magic_context.State
 --- @field port number?      Discovered RPC server port.
 --- @field session_id string? Active opencode session ID.
+--- @field last_notification_id number Last acked notification ID for RPC drain.
+--- @field last_drain_at number  Monotonic ms timestamp of last drain call.
+--- @field sse_cb_id string?  Registered worktree SSE activity callback ID.
 
 --- @type neovia.magic_context.State
 local state = {
   port = nil,
   session_id = nil,
+  last_notification_id = 0,
+  last_drain_at = 0,
+  sse_cb_id = nil,
 }
 
 ------------------------------------------------------------------------
@@ -283,6 +289,81 @@ local function format_popup_lines(detail)
 end
 
 ------------------------------------------------------------------------
+-- Notification drain (SSE-driven)
+------------------------------------------------------------------------
+-- Drains pending notifications from the magic-context RPC server.
+-- Called on every SSE event via on_sse_activity(), throttled to at most
+-- once per DRAIN_INTERVAL_MS.  This keeps isTuiConnected() = true inside
+-- magic-context so that sendIgnoredMessage() uses the toast path (which
+-- succeeds harmlessly on the opencode HTTP API) instead of injecting
+-- phantom user messages via prompt({noReply:true}).
+
+--- @type integer  Minimum ms between drain calls (must be < 3000 TUI_CONNECTED_WINDOW_MS).
+local DRAIN_INTERVAL_MS = 2000
+
+--- Override for the actual drain function (for testing).
+--- @type fun()|nil
+local drain_fn_override = nil
+
+--- Clock function — returns monotonic ms.  Overridable for tests.
+--- @type fun(): number
+local clock_fn = function() return vim.uv.now() end
+
+--- Process notification messages returned from a drain call.
+--- Advances last_notification_id and surfaces toast payloads via vim.notify.
+--- @param messages table[]
+local function handle_notifications(messages)
+  for _, msg in ipairs(messages) do
+    if msg.id and msg.id > state.last_notification_id then
+      state.last_notification_id = msg.id
+    end
+    if msg.type == "toast" and type(msg.payload) == "table" then
+      local text = msg.payload.message or msg.payload.title or ""
+      if text ~= "" then
+        vim.notify(text, vim.log.levels.INFO)
+      end
+    end
+  end
+end
+
+--- Fire one async drain to the pending-notifications RPC endpoint.
+local function drain_notifications()
+  local port = state.port
+  if not port then return end
+
+  local url = string.format("http://127.0.0.1:%d/rpc/pending-notifications", port)
+  local body = vim.fn.json_encode({ lastReceivedId = state.last_notification_id })
+
+  pcall(vim.system, {
+    "curl", "-sf", "--max-time", "1",
+    "-X", "POST",
+    "-H", "Content-Type: application/json",
+    "-d", body,
+    url,
+  }, { text = true }, function(out)
+    vim.schedule(function()
+      if out.code ~= 0 or not out.stdout or out.stdout == "" then return end
+      local ok, data = pcall(vim.fn.json_decode, out.stdout)
+      if not ok or type(data) ~= "table" then return end
+      local messages = data.messages
+      if type(messages) == "table" and #messages > 0 then
+        handle_notifications(messages)
+      end
+    end)
+  end)
+end
+
+--- Called on every SSE event.  Throttles actual drain to DRAIN_INTERVAL_MS.
+local function on_sse_activity()
+  if not state.port then return end
+  local now = clock_fn()
+  if (now - state.last_drain_at) < DRAIN_INTERVAL_MS then return end
+  state.last_drain_at = now
+  local fn = drain_fn_override or drain_notifications
+  fn()
+end
+
+------------------------------------------------------------------------
 -- Port discovery
 ------------------------------------------------------------------------
 
@@ -538,11 +619,23 @@ function M.setup()
     group = vim.api.nvim_create_augroup("NeoviaMagicContext", { clear = true }),
     callback = define_highlights,
   })
+
+  -- Register notification drain as a worktree SSE activity callback.
+  local ok_wt, wt = pcall(require, "neovia.worktree")
+  if ok_wt then
+    state.sse_cb_id = wt.register_sse_activity_cb(on_sse_activity)
+  end
 end
 
 --- Show the full status-detail popup.
 function M.show_popup()
   show_popup()
+end
+
+--- Signal SSE activity to trigger a throttled notification drain.
+--- Called via the worktree SSE activity callback registered in setup().
+function M.on_sse_activity()
+  on_sse_activity()
 end
 
 ------------------------------------------------------------------------
@@ -563,15 +656,37 @@ M._internal = {
   discover_port = discover_port,
   resolve_session_id = resolve_session_id,
   define_highlights = define_highlights,
+  handle_notifications = handle_notifications,
+  on_sse_activity = on_sse_activity,
 
   get_port = function() return state.port end,
   set_port = function(p) state.port = p end,
+  get_last_notification_id = function() return state.last_notification_id end,
+
+  --- Override the drain function for testing (nil = use real drain).
+  --- @param fn fun()|nil
+  set_drain_fn = function(fn) drain_fn_override = fn end,
+
+  --- Advance the drain clock by ms (for testing throttle behaviour).
+  --- @param ms number
+  advance_drain_clock = function(ms)
+    state.last_drain_at = state.last_drain_at - ms
+  end,
 
   reset = function()
     initialised = false
+    drain_fn_override = nil
+    -- Unregister SSE callback before clearing state.
+    if state.sse_cb_id then
+      local ok_wt, wt = pcall(require, "neovia.worktree")
+      if ok_wt then wt.unregister_sse_activity_cb(state.sse_cb_id) end
+    end
     state = {
       port = nil,
       session_id = nil,
+      last_notification_id = 0,
+      last_drain_at = 0,
+      sse_cb_id = nil,
     }
   end,
 }

@@ -3967,7 +3967,109 @@ describe("patch_neo_tree_git_lookup", function()
     package.loaded["neo-tree.git"] = nil
     package.loaded["neo-tree.utils"] = nil
 
-    -- Should not error
+     -- Should not error
     I.patch_neo_tree_git_lookup()
+  end)
+end)
+
+------------------------------------------------------------------------
+-- SSE activity callbacks
+------------------------------------------------------------------------
+
+describe("register_sse_activity_cb", function()
+  after_each(function()
+    I.reset()
+  end)
+
+  it("registers a callback and returns an id", function()
+    local id = wt.register_sse_activity_cb(function() end)
+    assert.is_string(id)
+    assert.is_true(#id > 0)
+  end)
+
+  it("returns unique ids for each registration", function()
+    local id1 = wt.register_sse_activity_cb(function() end)
+    local id2 = wt.register_sse_activity_cb(function() end)
+    assert.are_not.equal(id1, id2)
+  end)
+
+  it("unregisters a callback by id", function()
+    local called = false
+    local id = wt.register_sse_activity_cb(function() called = true end)
+    wt.unregister_sse_activity_cb(id)
+
+    -- Trigger process_event — callback should not fire.
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+    I.set_state({
+      ["/proj/x"] = I.make_entry({ status = "idle", branch = "main" }),
+    })
+    I.process_event("/proj/x", {
+      type = "session.idle",
+      properties = {},
+    })
+    assert.is_false(called)
+  end)
+
+  it("unregister is a no-op for unknown id", function()
+    -- Should not error
+    wt.unregister_sse_activity_cb("nonexistent")
+  end)
+
+  it("reset clears all registered callbacks", function()
+    local called = false
+    wt.register_sse_activity_cb(function() called = true end)
+    I.reset()
+
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+    I.set_state({
+      ["/proj/x"] = I.make_entry({ status = "idle", branch = "main" }),
+    })
+    I.process_event("/proj/x", {
+      type = "session.idle",
+      properties = {},
+    })
+    assert.is_false(called)
+  end)
+end)
+
+describe("process_event calls SSE activity callbacks", function()
+  before_each(function()
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ status = "idle", branch = "main" }),
+    })
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("fires registered callbacks on each event", function()
+    local count = 0
+    wt.register_sse_activity_cb(function() count = count + 1 end)
+    I.process_event("/proj/a", { type = "session.idle", properties = {} })
+    I.process_event("/proj/a", { type = "session.idle", properties = {} })
+    assert.equals(2, count)
+  end)
+
+  it("fires multiple registered callbacks", function()
+    local a, b = false, false
+    wt.register_sse_activity_cb(function() a = true end)
+    wt.register_sse_activity_cb(function() b = true end)
+    I.process_event("/proj/a", { type = "session.idle", properties = {} })
+    assert.is_true(a)
+    assert.is_true(b)
+  end)
+
+  it("does not error if a callback errors", function()
+    wt.register_sse_activity_cb(function() error("boom") end)
+    local ok_call = true
+    wt.register_sse_activity_cb(function() ok_call = true end)
+    -- Should not propagate the error
+    I.process_event("/proj/a", { type = "session.idle", properties = {} })
+    assert.is_true(ok_call)
   end)
 end)

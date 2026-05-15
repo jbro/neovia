@@ -684,6 +684,184 @@ describe("resolve_segment_colors", function()
 end)
 
 ------------------------------------------------------------------------
+-- handle_notifications
+------------------------------------------------------------------------
+
+describe("handle_notifications", function()
+  before_each(function()
+    I.reset()
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("advances last_notification_id to the highest seen id", function()
+    I.handle_notifications({
+      { id = 3, type = "toast", payload = { title = "a" } },
+      { id = 7, type = "toast", payload = { title = "b" } },
+      { id = 5, type = "toast", payload = { title = "c" } },
+    })
+    assert.equals(7, I.get_last_notification_id())
+  end)
+
+  it("does not regress last_notification_id on lower ids", function()
+    I.handle_notifications({
+      { id = 10, type = "toast", payload = { title = "first" } },
+    })
+    I.handle_notifications({
+      { id = 3, type = "toast", payload = { title = "old" } },
+    })
+    assert.equals(10, I.get_last_notification_id())
+  end)
+
+  it("starts from 0 after reset", function()
+    I.handle_notifications({
+      { id = 42, type = "toast", payload = { title = "x" } },
+    })
+    I.reset()
+    assert.equals(0, I.get_last_notification_id())
+  end)
+
+  it("handles empty message list", function()
+    I.handle_notifications({})
+    assert.equals(0, I.get_last_notification_id())
+  end)
+
+  it("handles messages without id field", function()
+    I.handle_notifications({
+      { type = "toast", payload = { title = "no-id" } },
+    })
+    assert.equals(0, I.get_last_notification_id())
+  end)
+end)
+
+------------------------------------------------------------------------
+-- drain_throttle (SSE-driven notification drain)
+------------------------------------------------------------------------
+
+describe("drain_throttle", function()
+  before_each(function()
+    I.reset()
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("fires on first call", function()
+    I.set_port(9999)
+    local called = false
+    I.set_drain_fn(function() called = true end)
+    I.on_sse_activity()
+    assert.is_true(called)
+  end)
+
+  it("throttles subsequent calls within the window", function()
+    I.set_port(9999)
+    local count = 0
+    I.set_drain_fn(function() count = count + 1 end)
+    I.on_sse_activity()
+    I.on_sse_activity()
+    I.on_sse_activity()
+    assert.equals(1, count)
+  end)
+
+  it("fires again after throttle window expires", function()
+    I.set_port(9999)
+    local count = 0
+    I.set_drain_fn(function() count = count + 1 end)
+    I.on_sse_activity()
+    assert.equals(1, count)
+    -- Simulate time passing beyond throttle window
+    I.advance_drain_clock(3000)
+    I.on_sse_activity()
+    assert.equals(2, count)
+  end)
+
+  it("does not fire when port is nil", function()
+    local called = false
+    I.set_drain_fn(function() called = true end)
+    I.on_sse_activity()
+    assert.is_false(called)
+  end)
+
+  it("resets throttle state on reset()", function()
+    I.set_port(9999)
+    local count = 0
+    I.set_drain_fn(function() count = count + 1 end)
+    I.on_sse_activity()
+    assert.equals(1, count)
+    I.reset()
+    I.set_port(9999)
+    I.set_drain_fn(function() count = count + 1 end)
+    I.on_sse_activity()
+    assert.equals(2, count)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- setup registers SSE activity callback with worktree module
+------------------------------------------------------------------------
+
+describe("setup SSE callback registration", function()
+  after_each(function()
+    I.reset()
+    -- Clean up any registered callbacks from worktree
+    local ok_wt, wt = pcall(require, "neovia.worktree")
+    if ok_wt then wt._internal.reset() end
+  end)
+
+  it("registers on_sse_activity as a worktree SSE callback during setup", function()
+    local mc = require("neovia.magic_context")
+    I.reset()
+    mc.setup()
+
+    -- Verify the callback is registered by triggering it through worktree
+    I.set_port(9999)
+    local count = 0
+    I.set_drain_fn(function() count = count + 1 end)
+
+    local ok_wt, wt = pcall(require, "neovia.worktree")
+    assert.is_true(ok_wt, "worktree module should load")
+
+    -- Stub redraw commands and set up minimal state for process_event
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+    wt._internal.set_state({
+      ["/test/proj"] = wt._internal.make_entry({ status = "idle", branch = "main" }),
+    })
+
+    wt._internal.process_event("/test/proj", { type = "session.idle", properties = {} })
+    assert.equals(1, count, "drain should fire via worktree SSE callback")
+  end)
+
+  it("unregisters the callback on reset", function()
+    local mc = require("neovia.magic_context")
+    I.reset()
+    mc.setup()
+
+    I.set_port(9999)
+    local count = 0
+    I.set_drain_fn(function() count = count + 1 end)
+
+    -- Reset magic_context — should unregister the callback
+    I.reset()
+
+    local ok_wt, wt = pcall(require, "neovia.worktree")
+    assert.is_true(ok_wt)
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+    wt._internal.set_state({
+      ["/test/proj"] = wt._internal.make_entry({ status = "idle", branch = "main" }),
+    })
+
+    wt._internal.process_event("/test/proj", { type = "session.idle", properties = {} })
+    assert.equals(0, count, "drain should not fire after magic_context reset")
+  end)
+end)
+
+------------------------------------------------------------------------
 -- Integration: live RPC server
 ------------------------------------------------------------------------
 

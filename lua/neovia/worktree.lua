@@ -38,6 +38,13 @@ local initialised = false
 --- @type uv_timer_t|nil
 local dir_timer = nil
 
+--- Registered SSE activity callbacks, keyed by unique string ID.
+--- @type table<string, fun()>
+local sse_activity_cbs = {}
+
+--- Monotonic counter for callback IDs.
+local sse_activity_cb_next = 0
+
 -- Forward declarations
 local ensure_sse, list_worktrees, disconnect_sse
 local find_current_worktree, prompt_branch
@@ -263,6 +270,7 @@ end
 
 --- SSE event callback: route global events by directory.
 --- For server.connected (dir=nil), apply to all entries.
+--- After routing, fires all registered SSE activity callbacks.
 --- @param dir string|nil
 --- @param event table
 local function process_event(dir, event)
@@ -274,6 +282,10 @@ local function process_event(dir, event)
     for d, _ in pairs(state) do
       sse_mod.process_event(state, d, event, apply_event)
     end
+  end
+  -- Fire registered SSE activity callbacks (e.g. magic-context drain).
+  for _, cb in pairs(sse_activity_cbs) do
+    pcall(cb)
   end
 end
 
@@ -1330,6 +1342,24 @@ function M.build_tabline(worktrees)
   return tl.build(M.get_entries(worktrees))
 end
 
+--- Register a callback to be called on every SSE event.
+--- Returns a string ID that can be passed to unregister_sse_activity_cb.
+--- @param fn fun()
+--- @return string id
+function M.register_sse_activity_cb(fn)
+  sse_activity_cb_next = sse_activity_cb_next + 1
+  local id = "sse_cb_" .. sse_activity_cb_next
+  sse_activity_cbs[id] = fn
+  return id
+end
+
+--- Remove a previously registered SSE activity callback.
+--- No-op if the ID is not found.
+--- @param id string
+function M.unregister_sse_activity_cb(id)
+  sse_activity_cbs[id] = nil
+end
+
 ------------------------------------------------------------------------
 -- Test internals (exposed for unit tests only)
 ------------------------------------------------------------------------
@@ -1376,6 +1406,8 @@ M._internal = {
     state = {}
     initialised = false
     neo_tree_patched = false
+    sse_activity_cbs = {}
+    sse_activity_cb_next = 0
     if dir_timer then
       dir_timer:stop()
       dir_timer:close()
