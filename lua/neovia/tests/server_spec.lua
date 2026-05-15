@@ -698,5 +698,146 @@ describe("cleanup_orphans", function()
   end)
 end)
 
+------------------------------------------------------------------------
+-- integration: server lifecycle
+------------------------------------------------------------------------
 
+describe("integration: server lifecycle", function()
+  local server_started = false
+
+  before_each(function()
+    -- Fail if a server is already running — we must not hijack or
+    -- tear down a server we did not start.
+    local pre = server.status()
+    assert.is_not.equals("running", pre.state,
+      "an opencode server is already running (pid " .. tostring(pre.pid)
+      .. "); stop it before running integration tests")
+  end)
+
+  after_each(function()
+    if server_started then
+      server.stop()
+      server_started = false
+    end
+  end)
+
+  it("ensure_running starts a server and returns a valid port", function()
+    local port, err = server.ensure_running()
+    assert.is_nil(err, "ensure_running should not return an error: " .. tostring(err))
+    assert.is_number(port)
+    assert.is_true(port > 0 and port <= 65535, "port should be valid: " .. tostring(port))
+    server_started = true
+  end)
+
+  it("status reports running with port and pid after start", function()
+    local port = server.ensure_running()
+    assert.is_number(port)
+    server_started = true
+
+    local s = server.status()
+    assert.equals("running", s.state)
+    assert.equals(port, s.port)
+    assert.is_number(s.pid)
+    assert.is_true(I.pid_alive(s.pid), "server PID should be alive")
+  end)
+
+  it("read_port returns the same port as ensure_running", function()
+    local port = server.ensure_running()
+    assert.is_number(port)
+    server_started = true
+
+    assert.equals(port, server.read_port())
+  end)
+
+  it("health endpoint responds after start", function()
+    local port = server.ensure_running()
+    assert.is_number(port)
+    server_started = true
+
+    local ok, result = pcall(vim.system, {
+      "curl", "-sf", "--max-time", "2",
+      string.format("http://127.0.0.1:%d/health", port),
+    }, { text = true })
+    assert.is_true(ok, "curl should not error")
+    local out = result:wait()
+    assert.equals(0, out.code, "health endpoint should respond: " .. (out.stderr or ""))
+  end)
+
+  it("stop kills the server and status returns stopped", function()
+    local port = server.ensure_running()
+    assert.is_number(port)
+
+    local s = server.status()
+    local pid = s.pid
+    assert.is_true(I.pid_alive(pid), "server should be alive before stop")
+
+    local stopped = server.stop()
+    assert.is_true(stopped, "stop should return true")
+    -- server_started stays false — we already stopped it
+
+    local post = server.status()
+    assert.equals("stopped", post.state)
+    -- Give the OS a moment to reap the process
+    vim.wait(500, function() return not I.pid_alive(pid) end)
+    assert.is_false(I.pid_alive(pid), "server PID should be dead after stop")
+  end)
+
+  it("restart starts a new server with a different PID", function()
+    local port1 = server.ensure_running()
+    assert.is_number(port1)
+    local pid1 = server.status().pid
+
+    local done = false
+    local err2, port2
+    server.restart(function(e, p)
+      err2 = e
+      port2 = p
+      done = true
+    end)
+    vim.wait(15000, function() return done end, 50)
+    assert.is_true(done, "restart callback should fire within timeout")
+    server_started = true
+
+    assert.is_nil(err2, "restart should not error: " .. tostring(err2))
+    assert.is_number(port2)
+    assert.is_true(port2 > 0 and port2 <= 65535)
+
+    local s = server.status()
+    assert.equals("running", s.state)
+    assert.is_not.equals(pid1, s.pid, "restart should produce a new PID")
+  end)
+
+  it("restart produces a server whose health endpoint responds on the new port", function()
+    local port1 = server.ensure_running()
+    assert.is_number(port1)
+
+    local done = false
+    local err2, port2
+    server.restart(function(e, p)
+      err2 = e
+      port2 = p
+      done = true
+    end)
+    vim.wait(15000, function() return done end, 50)
+    assert.is_true(done, "restart callback should fire within timeout")
+    server_started = true
+
+    assert.is_nil(err2)
+    assert.is_number(port2)
+
+    -- Old port should no longer respond
+    local old_result = vim.system({
+      "curl", "-sf", "--max-time", "2",
+      string.format("http://127.0.0.1:%d/health", port1),
+    }, { text = true }):wait()
+    assert.is_not.equals(0, old_result.code, "old port should not respond after restart")
+
+    -- New port should respond
+    local new_result = vim.system({
+      "curl", "-sf", "--max-time", "2",
+      string.format("http://127.0.0.1:%d/health", port2),
+    }, { text = true }):wait()
+    assert.equals(0, new_result.code, "new port should respond after restart: " .. (new_result.stderr or ""))
+  end)
+end)
 

@@ -687,29 +687,54 @@ end)
 -- Integration: live RPC server
 ------------------------------------------------------------------------
 
---- Helper: check if the magic-context RPC server is reachable.
---- Returns the port number or nil.
-local function live_rpc_port()
+--- Poll for the magic-context RPC port to become available and healthy.
+--- The opencode server loads magic-context as a plugin which starts its
+--- own RPC server; the port file may appear slightly after the opencode
+--- health endpoint is ready.
+--- @param timeout_ms number  Maximum time to wait.
+--- @return number?  port, or nil on timeout.
+local function await_rpc_port(timeout_ms)
   local dir = vim.uv.cwd()
   if not dir then return nil end
-  local path = I.port_file_path(dir)
-  local port = I.read_port(path)
-  if not port then return nil end
-  local ok, result = pcall(vim.system, {
-    "curl", "-sf", "--max-time", "1",
-    string.format("http://127.0.0.1:%d/health", port),
-  }, { text = true })
-  if not ok or not result then return nil end
-  local out = result:wait()
-  if out.code ~= 0 then return nil end
+  local port
+  vim.wait(timeout_ms, function()
+    port = I.discover_port(dir)
+    if not port then return false end
+    local ok, result = pcall(vim.system, {
+      "curl", "-sf", "--max-time", "1",
+      string.format("http://127.0.0.1:%d/health", port),
+    }, { text = true })
+    if not ok or not result then return false end
+    return result:wait().code == 0
+  end, 200)
   return port
 end
 
 describe("integration: live RPC", function()
-  local port = live_rpc_port()
+  local port
+  local server_started = false
 
   before_each(function()
-    if not port then pending("RPC server not running") end
+    if not port then
+      local ok_srv, srv = pcall(require, "neovia.server")
+      if not ok_srv then pending("neovia.server not available") end
+
+      -- Fail if a server is already running — we must not hijack or
+      -- tear down a server we did not start.
+      local pre = srv.status()
+      assert.is_not.equals("running", pre.state,
+        "an opencode server is already running (pid " .. tostring(pre.pid)
+        .. "); stop it before running integration tests")
+
+      -- Start our own server.
+      local srv_port, err = srv.ensure_running()
+      if not srv_port then pending("could not start opencode server: " .. (err or "unknown")) end
+      server_started = true
+
+      -- Wait for the magic-context RPC port to become healthy.
+      port = await_rpc_port(15000)
+      if not port then pending("magic-context RPC server did not start within 15s") end
+    end
     I.reset()
     I.set_port(port)
   end)
@@ -802,6 +827,16 @@ describe("integration: live RPC", function()
     assert.is_number(detail.protectedTagCount)
     assert.is_boolean(detail.cacheExpired)
     assert.is_number(detail.cacheTtlMs)
+  end)
+
+  -- Tear down: stop the server we started for integration tests.
+  -- Plenary has no after_all, so this runs as the final "test".
+  it("teardown: stop opencode server", function()
+    if server_started then
+      local ok_srv, srv = pcall(require, "neovia.server")
+      if ok_srv then srv.stop() end
+      server_started = false
+    end
   end)
 
 end)

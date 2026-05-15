@@ -560,6 +560,7 @@ M._internal = {
   read_port = read_port,
   read_pid_port = read_pid_port,
   pid_alive = pid_alive,
+  discover_port = discover_port,
   resolve_session_id = resolve_session_id,
   define_highlights = define_highlights,
 
