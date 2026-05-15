@@ -3,3 +3,4 @@
 .tmp
 .env.lua
 .worktrees/
+.opencode/
