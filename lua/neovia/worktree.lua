@@ -310,10 +310,27 @@ ensure_sse = function()
     end
   end
 
-  -- Remove state for worktrees that no longer exist on disk
+   -- Remove state for worktrees that no longer exist on disk
   for d, _ in pairs(state) do
     if not valid[d] then
       state[d] = nil
+    end
+  end
+
+  -- If the current worktree was deleted externally, switch to main.
+  -- This can happen when another session (e.g., opencode CLI or other user)
+  -- deletes a worktree while we're viewing it.
+  local cwd = tab_cwd()
+  if cwd and not valid[cwd] then
+    local main_path = nil
+    for _, wt in ipairs(worktrees) do
+      if not wt.bare then
+        main_path = wt.path
+        break
+      end
+    end
+    if main_path then
+      M.switch_to(main_path)
     end
   end
 
