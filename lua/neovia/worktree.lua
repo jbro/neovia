@@ -487,6 +487,40 @@ local function save_session_id(dir)
   end
 end
 
+--- Restore the saved session ID for a directory after a worktree switch.
+--- handle_directory_change() is async (Promise-based) and picks the most
+--- recently updated session across ALL worktrees in a git repo, which may
+--- not match the session the user was previously working in.  This function
+--- polls until active_session settles, then calls switch_session if the
+--- loaded session differs from the saved one.
+--- @param dir string
+--- @param attempts? number  remaining poll attempts (default 20, ~1 s total)
+local function restore_session_id(dir, attempts)
+  attempts = attempts or 20
+  local entry = state[dir]
+  if not entry or not entry.session_id then return end
+
+  local ok, oc_state = pcall(require, "opencode.state")
+  if not ok then return end
+
+  -- active_session is nil while handle_directory_change is in flight.
+  if not oc_state.active_session then
+    if attempts > 0 then
+      vim.defer_fn(function() restore_session_id(dir, attempts - 1) end, 50)
+    end
+    return
+  end
+
+  -- Already on the correct session — nothing to do.
+  if oc_state.active_session.id == entry.session_id then return end
+
+  -- Switch to the saved session.
+  local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
+  if ok_rt and session_runtime.switch_session then
+    session_runtime.switch_session(entry.session_id)
+  end
+end
+
 --- Save the current opencode model/variant/mode into state for a directory.
 --- @param dir string
 local function save_model_state(dir)
@@ -823,6 +857,11 @@ function M.switch_to(dir)
     -- it disrupts the output window, apply repairs it.
     local ok, layout = pcall(require, "neovia.layout")
     if ok then layout.apply() end
+
+    -- Correct the session if handle_directory_change picked the wrong
+    -- one (it selects by time.updated, which may belong to another
+    -- worktree in the same git repo).
+    restore_session_id(dir)
 
     -- Restore saved model/variant/mode after the session switch has
     -- settled.  set_model auto-clears variant (via a subscriber), so
@@ -1386,6 +1425,7 @@ M._internal = {
   prompt_branch = prompt_branch,
   tab_cwd = tab_cwd,
   save_session_id = save_session_id,
+  restore_session_id = restore_session_id,
   save_neo_tree_expanded = save_neo_tree_expanded,
   restore_neo_tree_expanded = restore_neo_tree_expanded,
 

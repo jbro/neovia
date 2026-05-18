@@ -4064,12 +4064,106 @@ describe("process_event calls SSE activity callbacks", function()
     assert.is_true(b)
   end)
 
-  it("does not error if a callback errors", function()
+   it("does not error if a callback errors", function()
     wt.register_sse_activity_cb(function() error("boom") end)
     local ok_call = true
     wt.register_sse_activity_cb(function() ok_call = true end)
     -- Should not propagate the error
     I.process_event("/proj/a", { type = "session.idle", properties = {} })
     assert.is_true(ok_call)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- restore_session_id
+------------------------------------------------------------------------
+
+describe("restore_session_id", function()
+  local saved_oc_state, saved_oc_runtime
+
+  before_each(function()
+    saved_oc_state = package.loaded["opencode.state"]
+    saved_oc_runtime = package.loaded["opencode.services.session_runtime"]
+    I.set_state({
+      ["/proj/main"] = I.make_entry({
+        status = "idle",
+        branch = "main",
+        session_id = "session-main-001",
+      }),
+      ["/proj/feat"] = I.make_entry({
+        status = "idle",
+        branch = "feat",
+        session_id = "session-feat-001",
+      }),
+    })
+  end)
+
+  after_each(function()
+    package.loaded["opencode.state"] = saved_oc_state
+    package.loaded["opencode.services.session_runtime"] = saved_oc_runtime
+    I.reset()
+  end)
+
+  it("calls switch_session when active session differs from saved", function()
+    local switched_to = nil
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-feat-001" },  -- wrong session
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    I.restore_session_id("/proj/main")
+    assert.equals("session-main-001", switched_to)
+  end)
+
+  it("does not call switch_session when active session matches saved", function()
+    local switched_to = nil
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-main-001" },  -- correct session
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    I.restore_session_id("/proj/main")
+    assert.is_nil(switched_to)
+  end)
+
+  it("is a no-op when no session_id is saved", function()
+    local switched_to = nil
+    I.set_state({
+      ["/proj/new"] = I.make_entry({ status = "idle", branch = "new" }),
+    })
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-any" },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    I.restore_session_id("/proj/new")
+    assert.is_nil(switched_to)
+  end)
+
+  it("is a no-op when state entry does not exist", function()
+    local switched_to = nil
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-any" },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    I.restore_session_id("/proj/nonexistent")
+    assert.is_nil(switched_to)
+  end)
+
+  it("is a no-op when opencode.state is not available", function()
+    package.loaded["opencode.state"] = nil
+    package.loaded["opencode.services.session_runtime"] = nil
+
+    -- Should not error
+    I.restore_session_id("/proj/main")
   end)
 end)

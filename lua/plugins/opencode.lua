@@ -158,6 +158,81 @@ return {
         end
       end
 
+      -- Guard event handlers with a sessionID check to prevent cross-worktree
+      -- event processing. opencode.nvim's /global/event stream delivers events
+      -- for all worktrees, but many handlers process them unconditionally.
+      -- Wrap handlers to skip events whose sessionID does not match the active
+      -- session (following the pattern on_message_updated already uses).
+      -- This prevents:
+      -- - Messages/parts from other sessions corrupting the display
+      -- - Permissions/questions from other sessions interfering with current flow
+      -- - Restore points from other sessions contaminating state
+      -- - File edits from other sessions triggering unintended hooks
+      local ok_ev, ev = pcall(require, "opencode.ui.renderer.events")
+      if ok_ev then
+        local oc_state = require("opencode.state")
+
+        -- Create a reusable wrapper factory for handlers that check sessionID
+        local function make_session_guard(orig_handler)
+          return function(properties)
+            if not properties then return end
+            local sid = properties.sessionID
+            local active = oc_state.active_session
+            if sid and active and active.id ~= sid then return end
+            return orig_handler(properties)
+          end
+        end
+
+        -- Wrap all unguarded handlers
+        local handlers_to_wrap = {
+          "on_message_removed",
+          "on_part_removed",
+          "on_permission_replied",
+          "on_question_asked",
+          "on_permission_updated",
+          "clear_question_display",
+          "on_session_compacted",
+          "on_session_error",
+          "on_file_edited",
+          "on_restore_points",
+        }
+
+        local orig_handlers = {}
+        for _, handler_name in ipairs(handlers_to_wrap) do
+          if ev[handler_name] then
+            orig_handlers[handler_name] = ev[handler_name]
+            ev[handler_name] = make_session_guard(orig_handlers[handler_name])
+          end
+        end
+
+        -- Map event subscriptions to their handler names for unsubscribe
+        local event_to_handler = {
+          ["message.removed"] = "on_message_removed",
+          ["message.part.removed"] = "on_part_removed",
+          ["permission.replied"] = "on_permission_replied",
+          ["question.asked"] = "on_question_asked",
+          ["permission.asked"] = "on_permission_updated",
+          ["permission.updated"] = "on_permission_updated",
+          ["question.replied"] = "clear_question_display",
+          ["question.rejected"] = "clear_question_display",
+          ["session.compacted"] = "on_session_compacted",
+          ["session.error"] = "on_session_error",
+          ["file.edited"] = "on_file_edited",
+          ["custom.restore_point.created"] = "on_restore_points",
+        }
+
+        -- Swap already-registered handlers in the live event_manager.
+        local em = oc_state.event_manager
+        if em then
+          for event_name, handler_name in pairs(event_to_handler) do
+            if orig_handlers[handler_name] then
+              em:unsubscribe(event_name, orig_handlers[handler_name])
+              em:subscribe(event_name, ev[handler_name])
+            end
+          end
+        end
+      end
+
       -- gf in opencode output: open file in the code window (left pane)
       local gf_group = vim.api.nvim_create_augroup("neovia_opencode_gf", { clear = true })
       vim.api.nvim_create_autocmd("FileType", {
