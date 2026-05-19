@@ -172,13 +172,25 @@ return {
       if ok_ev then
         local oc_state = require("opencode.state")
 
-        -- Create a reusable wrapper factory for handlers that check sessionID
+        -- Create a reusable wrapper factory for handlers that check sessionID.
+        -- Allows events from the active session and its child sessions
+        -- (subagent tasks spawned via the task tool). Child sessions are
+        -- identified via render_state:get_task_part_by_child_session(), the
+        -- same mechanism opencode.nvim uses internally.
+        local ok_ctx, oc_ctx = pcall(require, "opencode.ui.renderer.ctx")
         local function make_session_guard(orig_handler)
           return function(properties)
             if not properties then return end
             local sid = properties.sessionID
             local active = oc_state.active_session
-            if sid and active and active.id ~= sid then return end
+            if sid and active and active.id ~= sid then
+              -- Allow child-session events (subagent tasks) through
+              local rs = ok_ctx and oc_ctx.render_state
+              if not rs or not rs.get_task_part_by_child_session
+                or not rs:get_task_part_by_child_session(sid) then
+                return
+              end
+            end
             return orig_handler(properties)
           end
         end
