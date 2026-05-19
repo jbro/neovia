@@ -4166,4 +4166,86 @@ describe("restore_session_id", function()
     -- Should not error
     I.restore_session_id("/proj/main")
   end)
+
+  -- Bug: on first visit to a worktree, session_id is nil so
+  -- restore_session_id returns early. handle_directory_change picks the
+  -- most recently updated session across ALL worktrees (for git projects),
+  -- which may belong to a different worktree. neovia must correct this.
+  it("queries API and switches when no session_id is saved (first visit)", function()
+    -- Set up a first-visit worktree (no session_id)
+    I.set_state({
+      ["/proj/new-wt"] = I.make_entry({
+        status = "idle",
+        branch = "new-feature",
+        -- session_id is nil: first visit
+      }),
+    })
+
+    -- opencode picked the wrong session (from another worktree)
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-other-worktree" },
+      api_client = {
+        -- list_sessions returns sessions for the target directory;
+        -- the server filters by the directory query param.
+        list_sessions = function(_, directory)
+          local Promise = { new = function()
+            local p = {}
+            function p:and_then(fn)
+              fn({
+                { id = "session-new-wt-001", parentID = nil,
+                  time = { updated = 100 } },
+                { id = "session-new-wt-child", parentID = "session-new-wt-001",
+                  time = { updated = 200 } },
+              })
+              return p
+            end
+            function p:catch() return p end
+            return p
+          end }
+          return Promise.new()
+        end,
+      },
+    }
+
+    local switched_to = nil
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    I.restore_session_id("/proj/new-wt")
+
+    -- The and_then callback uses vim.schedule, so flush the event loop.
+    vim.wait(100, function() return switched_to ~= nil end)
+
+    -- Should have queried API for sessions in the target directory
+    -- and switched to the most recent non-child session.
+    assert.equals("session-new-wt-001", switched_to,
+      "on first visit, should query API and switch to a session for the target directory")
+    -- Should also save the discovered session_id for future switches.
+    assert.equals("session-new-wt-001", I.get_state()["/proj/new-wt"].session_id,
+      "discovered session_id should be saved in state")
+  end)
+
+  -- Bug: even when session_id is saved, if the active session belongs to
+  -- a different directory, neovia should verify and correct immediately
+  -- rather than trusting the saved ID blindly.
+  it("verifies active session directory matches target after switch", function()
+    -- Session ID is saved, but handle_directory_change loaded a session
+    -- from a different worktree before restore_session_id could correct.
+    -- The wrong session is briefly visible. This tests that restore_session_id
+    -- acts immediately when active_session.id differs from saved.
+    local switched_to = nil
+    package.loaded["opencode.state"] = {
+      -- Wrong session loaded by handle_directory_change
+      active_session = { id = "session-feat-001" },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    -- Saved session_id exists and differs from active
+    I.restore_session_id("/proj/main")
+    assert.equals("session-main-001", switched_to,
+      "should switch to saved session immediately")
+  end)
 end)

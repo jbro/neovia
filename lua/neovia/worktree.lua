@@ -510,12 +510,16 @@ end
 --- not match the session the user was previously working in.  This function
 --- polls until active_session settles, then calls switch_session if the
 --- loaded session differs from the saved one.
+---
+--- On first visit (session_id is nil), queries the API for sessions in the
+--- target directory and picks the most recent non-child session, correcting
+--- the wrong session that handle_directory_change may have selected.
 --- @param dir string
 --- @param attempts? number  remaining poll attempts (default 20, ~1 s total)
 local function restore_session_id(dir, attempts)
   attempts = attempts or 20
   local entry = state[dir]
-  if not entry or not entry.session_id then return end
+  if not entry then return end
 
   local ok, oc_state = pcall(require, "opencode.state")
   if not ok then return end
@@ -528,14 +532,51 @@ local function restore_session_id(dir, attempts)
     return
   end
 
-  -- Already on the correct session — nothing to do.
-  if oc_state.active_session.id == entry.session_id then return end
-
-  -- Switch to the saved session.
-  local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
-  if ok_rt and session_runtime.switch_session then
-    session_runtime.switch_session(entry.session_id)
+  -- Saved session_id: switch if it differs from active.
+  if entry.session_id then
+    if oc_state.active_session.id == entry.session_id then return end
+    local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
+    if ok_rt and session_runtime.switch_session then
+      session_runtime.switch_session(entry.session_id)
+    end
+    return
   end
+
+  -- First visit: no saved session_id. handle_directory_change may have
+  -- picked a session from another worktree. Query the API for sessions
+  -- in the target directory and switch to the most recent non-child one.
+  if not oc_state.api_client then return end
+  oc_state.api_client
+    :list_sessions(dir)
+    :and_then(function(sessions)
+      vim.schedule(function()
+        if not sessions or type(sessions) ~= "table" or #sessions == 0 then
+          return
+        end
+        table.sort(sessions, function(a, b)
+          return a.time.updated > b.time.updated
+        end)
+        -- Pick the most recent non-child session for this directory.
+        local best = nil
+        for _, s in ipairs(sessions) do
+          if s.parentID == nil then
+            best = s
+            break
+          end
+        end
+        if not best then return end
+        -- Save for future switches.
+        entry.session_id = best.id
+        -- Switch only if the active session differs.
+        local cur = oc_state.active_session
+        if cur and cur.id == best.id then return end
+        local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
+        if ok_rt and session_runtime.switch_session then
+          session_runtime.switch_session(best.id)
+        end
+      end)
+    end)
+    :catch(function() end) -- silently ignore API failures
 end
 
 --- Save the current opencode model/variant/mode into state for a directory.
