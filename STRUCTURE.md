@@ -25,8 +25,8 @@
 
 **lua/neovia/**:
 - Purpose: core behaviour and integration logic for worktrees, server lifecycle, notes, sessions, layout, diffview integration, SSE handling and tests.
- - Contains: `worktree.lua`, `server.lua`, `notes.lua`, `layout.lua`, `session.lua`, `sse.lua`, `diffview.lua`, `tabline.lua`, `pr.lua`, `env.lua`, `fs.lua`, `reload.lua`, `mode.lua`, `theme.lua`, `version.lua`, `review.lua`, `magic_context.lua`, and a `tests/` subdirectory.
- - Key files: `lua/neovia/worktree.lua` (worktree lifecycle), `lua/neovia/server.lua` (opencode server management), `lua/neovia/notes.lua` (session notes buffer management), `lua/neovia/review.lua` (per-worktree review comments and extmark rendering), `lua/neovia/sse.lua` (global SSE connection to `/global/event`), `lua/neovia/magic_context.lua` (magic-context RPC client and status popup).
+  - Contains: `worktree.lua`, `server.lua`, `notes.lua`, `layout.lua`, `session.lua`, `sse.lua`, `diffview.lua`, `tabline.lua`, `pr.lua`, `env.lua`, `fs.lua`, `reload.lua`, `mode.lua`, `theme.lua`, `version.lua`, `magic_context.lua`, and a `tests/` subdirectory.
+  - Key files: `lua/neovia/worktree.lua` (worktree lifecycle), `lua/neovia/server.lua` (opencode server management), `lua/neovia/notes.lua` (session notes buffer management), `lua/neovia/sse.lua` (global SSE connection to `/global/event`), `lua/neovia/magic_context.lua` (magic-context RPC client and status popup).
 
 ## Key File Locations
 
