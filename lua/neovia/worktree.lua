@@ -494,10 +494,17 @@ end
 ------------------------------------------------------------------------
 
 --- Save the active opencode session ID into state for the given directory.
+--- Only writes when the entry has no session_id yet (first save).  Once
+--- set, session_id is updated exclusively by restore_session_id (which
+--- queries the API for the correct directory-scoped session) and resync().
+--- This prevents overwriting a known-good session_id with a stale
+--- active_session that handle_directory_change selected from the wrong
+--- worktree before switch_session (async) has completed.
 --- @param dir string
 local function save_session_id(dir)
   local entry = state[dir]
   if not entry then return end
+  if entry.session_id then return end -- already tracked; don't overwrite
   local ok, oc_state = pcall(require, "opencode.state")
   if ok and oc_state.active_session and oc_state.active_session.id then
     entry.session_id = oc_state.active_session.id

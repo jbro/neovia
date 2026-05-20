@@ -3306,6 +3306,35 @@ describe("save_session_id", function()
     -- Should not overwrite: active_session.id is nil
     assert.equals("old-id", I.get_state()["/proj/a"].session_id)
   end)
+
+  -- Bug: save_session_id reads oc_state.active_session.id, but when
+  -- switch_session (async) hasn't completed yet, active_session still
+  -- has the wrong session from handle_directory_change.  save_session_id
+  -- should not overwrite a known-good entry.session_id with the wrong
+  -- active session.
+  it("does not overwrite saved session_id with stale active_session", function()
+    -- Worktree B has the correct session saved; switch_session was called
+    -- but hasn't completed (active_session still shows wrong session from
+    -- handle_directory_change).
+    I.set_state({
+      ["/proj/b"] = I.make_entry({
+        branch = "feature-b",
+        session_id = "session-b-correct",
+      }),
+    })
+    package.loaded["opencode.state"] = {
+      -- Wrong session: handle_directory_change picked this from worktree A
+      -- because it was most recently updated.  switch_session("session-b-correct")
+      -- was called but the async HTTP call hasn't resolved yet.
+      active_session = { id = "session-a-wrong" },
+    }
+
+    I.save_session_id("/proj/b")
+
+    -- Should preserve the known-good session_id, not overwrite with stale active_session
+    assert.equals("session-b-correct", I.get_state()["/proj/b"].session_id,
+      "save_session_id should not overwrite a known-good session_id with a stale active_session")
+  end)
 end)
 
 ------------------------------------------------------------------------
