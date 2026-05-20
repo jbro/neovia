@@ -802,12 +802,25 @@ function M.switch_to(dir)
   -- Unlist current file buffers
   unlist_file_buffers()
 
-  -- tcd to target.  opencode.nvim's DirChanged autocmd fires
-  -- synchronously here, calling set_current_cwd and
-  -- handle_directory_change.  We do NOT pre-set current_cwd
-  -- ourselves because that would trigger the event manager's SSE
-  -- reconnection before the session switch, creating a gap where
-  -- streaming events are lost.
+  -- When we have a saved session_id for the target, pre-set opencode's
+  -- current_cwd so its DirChanged autocmd short-circuits (the guard
+  -- `state.current_cwd == event.file` returns early).  This prevents
+  -- handle_directory_change from firing and picking the wrong session
+  -- (it selects by most-recently-updated across all worktrees).
+  -- We then call switch_session ourselves in the deferred block.
+  --
+  -- On first visit (no session_id), we let handle_directory_change run
+  -- so it can create or discover a session for the new directory.
+  local target_entry = state[dir]
+  local pre_set_cwd = false
+  if target_entry and target_entry.session_id then
+    local ok_oc, oc_state = pcall(require, "opencode.state")
+    if ok_oc and oc_state.context and oc_state.context.set_current_cwd then
+      oc_state.context.set_current_cwd(dir)
+      pre_set_cwd = true
+    end
+  end
+
   vim.cmd.tcd(dir)
 
   -- Ensure target has a state entry
@@ -923,10 +936,22 @@ function M.switch_to(dir)
     local ok, layout = pcall(require, "neovia.layout")
     if ok then layout.apply() end
 
-    -- Correct the session if handle_directory_change picked the wrong
-    -- one (it selects by time.updated, which may belong to another
-    -- worktree in the same git repo).
-    restore_session_id(dir)
+    -- Session correction.  When we pre-set current_cwd above,
+    -- handle_directory_change was skipped entirely, so we switch to
+    -- the saved session ourselves.  Otherwise (first visit, no saved
+    -- session_id), restore_session_id queries the API to find or
+    -- correct the session handle_directory_change may have picked.
+    if pre_set_cwd then
+      local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
+      if ok_rt and session_runtime.switch_session then
+        local target_sid = state[dir] and state[dir].session_id
+        if target_sid then
+          session_runtime.switch_session(target_sid)
+        end
+      end
+    else
+      restore_session_id(dir)
+    end
 
     -- Restore saved model/variant/mode after the session switch has
     -- settled.  set_model auto-clears variant (via a subscriber), so

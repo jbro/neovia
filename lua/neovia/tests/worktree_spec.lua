@@ -3366,25 +3366,26 @@ describe("switch_to session switching", function()
     I.reset()
     package.loaded["opencode.state"] = nil
     package.loaded["opencode.core"] = nil
+    package.loaded["opencode.services.session_runtime"] = nil
   end)
 
-  it("does not pre-set opencode current_cwd before tcd", function()
-    -- set_current_cwd was previously called before tcd to suppress
-    -- opencode.nvim's DirChanged handler. This caused the event manager
-    -- to tear down and reconnect SSE prematurely, creating a gap where
-    -- streaming events were lost. Now we let DirChanged handle everything.
+  it("pre-sets current_cwd before tcd when session_id is known", function()
+    -- When we know the target session, pre-set current_cwd so opencode.nvim's
+    -- DirChanged autocmd short-circuits (state.current_cwd == event.file).
+    -- This prevents handle_directory_change from picking the wrong MRU session.
     local cwd_set_calls = {}
+    local tcd_at_call = nil
     package.loaded["opencode.state"] = {
       active_session = { id = "s1" },
       context = {
         set_current_cwd = function(path)
+          tcd_at_call = vim.fn.getcwd(-1, 0)
           table.insert(cwd_set_calls, path)
         end,
       },
     }
-    package.loaded["opencode.core"] = {
+    package.loaded["opencode.services.session_runtime"] = {
       switch_session = function() end,
-      handle_directory_change = function() end,
     }
 
     vim.cmd.tcd(dir_a)
@@ -3395,28 +3396,49 @@ describe("switch_to session switching", function()
 
     wt.switch_to(dir_b)
 
-    assert.equals(0, #cwd_set_calls,
-      "set_current_cwd should NOT be called by switch_to; DirChanged handles it")
+    assert.equals(1, #cwd_set_calls,
+      "set_current_cwd should be called once when session_id is known")
+    assert.equals(dir_b, cwd_set_calls[1],
+      "set_current_cwd should be called with the target directory")
+    assert.equals(dir_a, tcd_at_call,
+      "set_current_cwd must be called BEFORE tcd (cwd should still be dir_a)")
   end)
 
-  it("does not call core.switch_session or handle_directory_change", function()
-    -- Session switching is now handled by opencode.nvim's DirChanged
-    -- autocmd, which fires synchronously during tcd. neovia should not
-    -- call these functions directly to avoid racing with the event
-    -- manager's SSE reconnection.
+  it("does not pre-set current_cwd on first visit (no session_id)", function()
+    -- On first visit, session_id is nil. Let handle_directory_change run
+    -- so it can create or discover a session for the new directory.
+    local cwd_set_calls = {}
+    package.loaded["opencode.state"] = {
+      active_session = { id = "s1" },
+      context = {
+        set_current_cwd = function(path)
+          table.insert(cwd_set_calls, path)
+        end,
+      },
+    }
+
+    vim.cmd.tcd(dir_a)
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }), -- no session_id
+    })
+
+    wt.switch_to(dir_b)
+
+    assert.equals(0, #cwd_set_calls,
+      "set_current_cwd should NOT be called on first visit (no session_id)")
+  end)
+
+  it("calls switch_session in deferred block when session_id is known", function()
+    -- When current_cwd is pre-set, handle_directory_change is skipped.
+    -- switch_to must call switch_session itself to load the correct session.
+    local switched_to = nil
     package.loaded["opencode.state"] = {
       active_session = { id = "s1" },
       context = { set_current_cwd = function() end },
     }
-    local switch_called = false
-    local hdc_called = false
-    package.loaded["opencode.core"] = {
-      switch_session = function()
-        switch_called = true
-      end,
-      handle_directory_change = function()
-        hdc_called = true
-      end,
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
     }
 
     vim.cmd.tcd(dir_a)
@@ -3427,10 +3449,11 @@ describe("switch_to session switching", function()
 
     wt.switch_to(dir_b)
 
-    assert.is_false(switch_called,
-      "core.switch_session should NOT be called by switch_to")
-    assert.is_false(hdc_called,
-      "handle_directory_change should NOT be called by switch_to")
+    -- switch_session is called in a vim.schedule block; flush.
+    vim.wait(200, function() return switched_to ~= nil end)
+
+    assert.equals("target-session-99", switched_to,
+      "switch_session should be called with the saved session_id")
   end)
 
   it("saves current session_id before switching away", function()
@@ -3438,9 +3461,8 @@ describe("switch_to session switching", function()
       active_session = { id = "current-session-77" },
       context = { set_current_cwd = function() end },
     }
-    package.loaded["opencode.core"] = {
+    package.loaded["opencode.services.session_runtime"] = {
       switch_session = function() end,
-      handle_directory_change = function() end,
     }
 
     vim.cmd.tcd(dir_a)
@@ -3601,6 +3623,49 @@ describe("switch_to session switching", function()
 
     assert.equals(0, #set_model_calls,
       "should not call set_model when target has no saved model_state")
+  end)
+
+  -- Bug: switching back to a worktree after sending a prompt in a new
+  -- worktree caused handle_directory_change to pick the MRU session
+  -- (from the new worktree) instead of the saved one.  The fix is to
+  -- pre-set current_cwd so handle_directory_change never fires, and
+  -- switch_to calls switch_session directly.
+  it("prevents handle_directory_change from clobbering session on revisit", function()
+    local switched_to = nil
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-feat-new" },  -- stale from new worktree
+      context = {
+        set_current_cwd = function() end,
+      },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    vim.cmd.tcd(dir_a)
+    -- Worktree A was just visited (has saved session_id).
+    -- Worktree B (main) also has a saved session_id.
+    I.set_state({
+      [dir_a] = I.make_entry({
+        branch = "feat",
+        session_id = "session-feat-new",
+      }),
+      [dir_b] = I.make_entry({
+        branch = "main",
+        session_id = "session-main-001",
+      }),
+    })
+
+    -- Switch to main (dir_b). Previously, handle_directory_change would
+    -- fire and pick session-feat-new (MRU). Now current_cwd is pre-set
+    -- so handle_directory_change short-circuits, and switch_to calls
+    -- switch_session directly with the saved session_id.
+    wt.switch_to(dir_b)
+
+    vim.wait(200, function() return switched_to ~= nil end)
+
+    assert.equals("session-main-001", switched_to,
+      "switch_to must load the saved session, not the MRU from another worktree")
   end)
 end)
 
