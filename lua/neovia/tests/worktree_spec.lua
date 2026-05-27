@@ -624,7 +624,7 @@ describe("unlist_file_buffers", function()
     vim.api.nvim_buf_delete(buf2, { force = true })
   end)
 
-  it("stops treesitter on buffers before unlisting (fold race workaround)", function()
+  it("preserves treesitter on unlisted buffers so re-display is fast", function()
     local ok_ts, ts = pcall(require, "vim.treesitter")
     if not ok_ts then return pending("vim.treesitter unavailable in test runner") end
 
@@ -639,8 +639,9 @@ describe("unlist_file_buffers", function()
     I.unlist_file_buffers()
 
     assert.is_false(vim.bo[buf].buflisted)
-    -- After unlist, treesitter highlighter should have been stopped.
-    assert.is_falsy(ts.highlighter.active[buf])
+    -- Treesitter highlighter stays active so foldexpr doesn't
+    -- need a full re-parse when the buffer is re-displayed.
+    assert.is_truthy(ts.highlighter.active[buf])
 
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
@@ -1132,51 +1133,103 @@ describe("switch_to", function()
     pcall(vim.api.nvim_buf_delete, old_buf, { force = true })
   end)
 
-  it("tells neo-tree the new root after switching", function()
+  it("navigates neo-tree to the new root asynchronously after switching", function()
+    -- Flush any leftover vim.schedule callbacks from prior tests
+    local flushed = false
+    vim.schedule(function() flushed = true end)
+    vim.wait(200, function() return flushed end)
+
     vim.cmd.tcd(dir_a)
     I.set_state({
       [dir_a] = I.make_entry({ branch = "main" }),
       [dir_b] = I.make_entry({ branch = "feat" }),
     })
 
-    local neotree_dir_cmd = nil
-    local orig_cmd = vim.cmd
-    local mt = getmetatable(vim.cmd) or {}
-    -- Wrap vim.cmd to capture the Neotree dir= call specifically
-    vim.cmd = setmetatable({}, {
-      __call = function(_, c)
-        if type(c) == "string" and c:find("Neotree") and c:find("dir=") then
-          neotree_dir_cmd = c
-        end
-        -- Always delegate so layout.apply() etc. still work
-        orig_cmd(c)
+    -- Mock neo-tree.sources.manager with a navigate spy
+    local navigate_calls = {}
+    package.loaded["neo-tree.sources.manager"] = {
+      get_state = function()
+        return { path = dir_a }
       end,
-      __index = function(_, k)
-        return mt.__index and mt.__index(vim.cmd, k) or rawget(orig_cmd, k)
+      navigate = function(mgr_state, path, path_to_reveal, callback, async)
+        table.insert(navigate_calls, {
+          path = path,
+          async = async,
+        })
       end,
-    })
+    }
 
     wt.switch_to(dir_b)
 
-    -- Neotree dir= is deferred via vim.schedule; flush pending callbacks
-    -- (keep the wrapper active during the wait so the scheduled call is captured)
-    vim.wait(200, function() return neotree_dir_cmd ~= nil end)
+    -- The navigate call is deferred via vim.schedule; flush
+    local schedule_flushed = false
+    vim.schedule(function() schedule_flushed = true end)
+    vim.wait(500, function() return schedule_flushed end)
 
-    -- Restore vim.cmd before assertions so cleanup works
-    vim.cmd = orig_cmd
+    assert.equals(1, #navigate_calls,
+      "expected exactly one manager.navigate call after switch")
+    assert.equals(dir_b, navigate_calls[1].path,
+      "navigate should target the new worktree directory")
+    assert.is_true(navigate_calls[1].async,
+      "navigate should use async=true to avoid blocking the UI")
 
-    assert.is_truthy(neotree_dir_cmd, "expected a Neotree dir= command after switch")
-    assert.is_truthy(neotree_dir_cmd:find("dir="), "expected Neotree dir= argument")
+    package.loaded["neo-tree.sources.manager"] = nil
   end)
 
-  it("clears neo-tree git status for target worktree before navigating", function()
+  it("clears neo-tree git status for parent roots but preserves target's own entry", function()
+    vim.cmd.tcd(dir_a)
+    local child_dir = dir_a .. "/.worktrees/feat"
+    vim.fn.mkdir(child_dir, "p")
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [child_dir] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Mock neo-tree.git with parent and child entries.
+    -- Parent root (dir_a) prefixes child_dir, so its status should be cleared.
+    -- child_dir is the target itself, so its status should be preserved.
+    local fake_neo_git = {
+      worktrees = {
+        [dir_a] = {
+          status = { ["lib/init.lua"] = "M" },
+          git_dir = dir_a .. "/.git",
+        },
+        [child_dir] = {
+          status = { ["some/file.lua"] = "M" },
+          git_dir = child_dir .. "/.git",
+        },
+      },
+      _upward_worktree_cache = {},
+    }
+    package.loaded["neo-tree.git"] = fake_neo_git
+
+    wt.switch_to(child_dir)
+
+    -- The vim.schedule callback needs to run
+    local schedule_flushed = false
+    vim.schedule(function() schedule_flushed = true end)
+    vim.wait(500, function() return schedule_flushed end)
+
+    assert.is_nil(fake_neo_git.worktrees[dir_a].status,
+      "parent root status should be cleared before Neotree dir=")
+    assert.is_not_nil(fake_neo_git.worktrees[child_dir].status,
+      "target's own status should be preserved (warm cache for async refresh)")
+
+    package.loaded["neo-tree.git"] = nil
+    vim.fn.delete(child_dir, "rf")
+  end)
+
+  it("preserves neo-tree git status for the target's own root entry", function()
     vim.cmd.tcd(dir_a)
     I.set_state({
       [dir_a] = I.make_entry({ branch = "main" }),
       [dir_b] = I.make_entry({ branch = "feat" }),
     })
 
-    -- Mock neo-tree.git module with a worktree entry that has cached status
+    -- Mock neo-tree.git with a worktree entry whose root IS the target dir.
+    -- Switching to dir_b should keep dir_b's own status warm (async refresh
+    -- handles staleness) instead of nilling it and forcing a synchronous
+    -- full rescan.
     local fake_neo_git = {
       worktrees = {
         [dir_b] = {
@@ -1190,15 +1243,59 @@ describe("switch_to", function()
 
     wt.switch_to(dir_b)
 
-    -- The vim.schedule callback needs to run
-    vim.wait(200, function()
-      return fake_neo_git.worktrees[dir_b].status == nil
-    end)
+    -- The vim.schedule callback that clears status needs to run.
+    -- Use a sentinel: schedule our own callback after switch_to's and
+    -- wait for it — guarantees all prior vim.schedule calls have fired.
+    local schedule_flushed = false
+    vim.schedule(function() schedule_flushed = true end)
+    vim.wait(500, function() return schedule_flushed end)
 
-    assert.is_nil(fake_neo_git.worktrees[dir_b].status,
-      "git status should be cleared for target worktree before Neotree dir=")
+    assert.is_not_nil(fake_neo_git.worktrees[dir_b].status,
+      "status for the target's own root should be preserved (warm cache)")
 
     package.loaded["neo-tree.git"] = nil
+  end)
+
+  it("clears neo-tree git status for parent root when switching to child worktree", function()
+    vim.cmd.tcd(dir_a)
+    local child_dir = dir_a .. "/.worktrees/feat"
+    vim.fn.mkdir(child_dir, "p")
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [child_dir] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Mock neo-tree.git with both parent and child worktree entries.
+    -- The parent root (dir_a) prefixes the target (child_dir) but is not
+    -- an exact match — its status should be cleared.
+    local fake_neo_git = {
+      worktrees = {
+        [dir_a] = {
+          status = { ["old/file.lua"] = "M" },
+          git_dir = dir_a .. "/.git",
+        },
+        [child_dir] = {
+          status = { ["new/file.lua"] = "A" },
+          git_dir = child_dir .. "/.git",
+        },
+      },
+      _upward_worktree_cache = {},
+    }
+    package.loaded["neo-tree.git"] = fake_neo_git
+
+    wt.switch_to(child_dir)
+
+    vim.wait(200, function()
+      return fake_neo_git.worktrees[dir_a].status == nil
+    end)
+
+    assert.is_nil(fake_neo_git.worktrees[dir_a].status,
+      "parent root status should be cleared when switching to child worktree")
+    assert.is_not_nil(fake_neo_git.worktrees[child_dir].status,
+      "child worktree's own status should be preserved")
+
+    package.loaded["neo-tree.git"] = nil
+    vim.fn.delete(child_dir, "rf")
   end)
 
   it("does not include notes buffer in saved buffer_paths", function()

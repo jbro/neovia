@@ -910,14 +910,16 @@ function M.switch_to(dir)
       patch_neo_tree_git_lookup()
       strip_all_worktrees_ignored()
 
-      -- Clear the target worktree's cached git status so neo-tree
-      -- takes the full-scan path instead of short-circuiting on a
-      -- stale raw_status_text_cache match.  We keep the worktree
-      -- entry (deleting it causes assertion crashes in async jobs)
-      -- but nil out its status table.
+      -- Clear cached git status for parent worktree roots so neo-tree
+      -- does not short-circuit on a stale raw_status_text_cache match.
+      -- Skip the target's own entry (root == dir): keep its status as
+      -- a warm cache and let status_async refresh it in the background.
+      -- This avoids the expensive synchronous full-scan that Neotree
+      -- dir= performs when status is nil — the main bottleneck when
+      -- switching to the main worktree (full repo checkout).
       if ok_git and neo_git.worktrees then
         for root, wt in pairs(neo_git.worktrees) do
-          if vim.startswith(dir, root) then
+          if root ~= dir and vim.startswith(dir, root) then
             wt.status = nil
           end
         end
@@ -928,8 +930,14 @@ function M.switch_to(dir)
     restore_neo_tree_expanded(dir)
 
     -- Tell neo-tree the new root (bind_to_cwd is off, so we do it explicitly).
-    -- This triggers status_async which re-populates the cache for the new path.
-    pcall(vim.cmd, "Neotree dir=" .. vim.fn.fnameescape(dir))
+    -- Use manager.navigate() with async=true instead of :Neotree dir= which
+    -- hardcodes async=false and forces a synchronous filesystem rescan.
+    -- The async path uses libuv readdir callbacks so the UI stays responsive.
+    local ok_mgr, neo_mgr = pcall(require, "neo-tree.sources.manager")
+    if ok_mgr then
+      local mgr_state = neo_mgr.get_state("filesystem")
+      neo_mgr.navigate(mgr_state, dir, nil, nil, true)
+    end
 
     -- Layout check: opencode.nvim's session swap is async, so if
     -- it disrupts the output window, apply repairs it.

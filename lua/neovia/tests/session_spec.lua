@@ -117,6 +117,26 @@ describe("unlist_file_buffers", function()
     vim.api.nvim_buf_delete(buf, { force = true })
   end)
 
+   it("does not stop treesitter on unlisted buffers", function()
+    local buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf, "/tmp/sess_ts_keep.lua")
+
+    -- Stub vim.treesitter.stop to track whether it is called
+    local original_stop = vim.treesitter.stop
+    local stop_called = false
+    vim.treesitter.stop = function(...)
+      stop_called = true
+      return original_stop(...)
+    end
+
+    session.unlist_file_buffers()
+
+    assert.is_false(stop_called, "treesitter.stop should not be called during unlist")
+
+    vim.treesitter.stop = original_stop
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+
   it("suppresses autocmds during unlisting", function()
     local buf = vim.api.nvim_create_buf(true, false)
     vim.api.nvim_buf_set_name(buf, "/tmp/sess_ei_suppress.lua")
