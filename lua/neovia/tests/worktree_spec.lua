@@ -1068,6 +1068,104 @@ describe("switch_to", function()
     end
   end)
 
+  it("saves last_buffer_path from code window before switching", function()
+    vim.cmd.tcd(dir_a)
+
+    -- Create two listed file buffers in dir_a
+    local buf1 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf1, dir_a .. "/first.lua")
+    local buf2 = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(buf2, dir_a .. "/second.lua")
+
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({ branch = "feat" }),
+    })
+
+    -- Focus the second buffer in the code window
+    local navigate = require("neovia.navigate")
+    local win = navigate.find_code_win()
+    assert.is_not_nil(win, "code window must exist")
+    vim.api.nvim_win_set_buf(win, buf2)
+
+    wt.switch_to(dir_b)
+
+    -- dir_a state should have saved the focused buffer path
+    local entry_a = I.get_state()[dir_a]
+    assert.is_not_nil(entry_a.last_buffer_path)
+    assert.equals(vim.api.nvim_buf_get_name(buf2), entry_a.last_buffer_path)
+
+    -- Cleanup
+    pcall(vim.api.nvim_buf_delete, buf1, { force = true })
+    pcall(vim.api.nvim_buf_delete, buf2, { force = true })
+  end)
+
+  it("restores last focused buffer in code window on worktree switch", function()
+    vim.cmd.tcd(dir_a)
+
+    -- dir_b has two saved buffers; the second was last focused
+    local path1 = dir_b .. "/alpha.lua"
+    local path2 = dir_b .. "/beta.lua"
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({
+        branch = "feat",
+        buffer_paths = { path1, path2 },
+        last_buffer_path = path2,
+      }),
+    })
+
+    wt.switch_to(dir_b)
+
+    -- The code window should show beta.lua (last focused), not alpha.lua
+    local navigate = require("neovia.navigate")
+    local code_win = navigate.find_code_win()
+    assert.is_not_nil(code_win, "code window must exist after switch")
+
+    local shown_buf = vim.api.nvim_win_get_buf(code_win)
+    local shown_name = vim.api.nvim_buf_get_name(shown_buf)
+    assert.equals(path2, shown_name,
+      "code window should show last focused buffer, got: " .. shown_name)
+
+    -- Cleanup
+    local b1 = vim.fn.bufnr(path1)
+    local b2 = vim.fn.bufnr(path2)
+    if b1 ~= -1 then pcall(vim.api.nvim_buf_delete, b1, { force = true }) end
+    if b2 ~= -1 then pcall(vim.api.nvim_buf_delete, b2, { force = true }) end
+  end)
+
+  it("falls back to first buffer when last_buffer_path is nil", function()
+    vim.cmd.tcd(dir_a)
+
+    local path1 = dir_b .. "/alpha.lua"
+    local path2 = dir_b .. "/beta.lua"
+    I.set_state({
+      [dir_a] = I.make_entry({ branch = "main" }),
+      [dir_b] = I.make_entry({
+        branch = "feat",
+        buffer_paths = { path1, path2 },
+        -- no last_buffer_path
+      }),
+    })
+
+    wt.switch_to(dir_b)
+
+    -- Should fall back to first buffer
+    local navigate = require("neovia.navigate")
+    local code_win = navigate.find_code_win()
+    assert.is_not_nil(code_win, "code window must exist after switch")
+
+    local shown_buf = vim.api.nvim_win_get_buf(code_win)
+    local shown_name = vim.api.nvim_buf_get_name(shown_buf)
+    assert.equals(path1, shown_name,
+      "code window should show first buffer when no last_buffer_path, got: " .. shown_name)
+
+    local b1 = vim.fn.bufnr(path1)
+    local b2 = vim.fn.bufnr(path2)
+    if b1 ~= -1 then pcall(vim.api.nvim_buf_delete, b1, { force = true }) end
+    if b2 ~= -1 then pcall(vim.api.nvim_buf_delete, b2, { force = true }) end
+  end)
+
   it("creates a state entry for an unknown target directory", function()
     vim.cmd.tcd(dir_a)
     I.set_state({

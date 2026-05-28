@@ -25,6 +25,7 @@ local M = {}
 --- @field session_id string|nil  cached opencode session ID (used by resync and fork)
 --- @field model_state neovia.ModelState|nil  saved model/variant/mode for restore on switch
 --- @field neo_tree_expanded string[]|nil  saved expanded node IDs (absolute paths) for restore on switch
+--- @field last_buffer_path string|nil  path of the buffer displayed in the code window when switching away
 --- @field last_view "code"|"diff"|nil  which tab (code or diffview) was last active
 
 --- Per-directory state. Keyed by absolute path.
@@ -778,6 +779,16 @@ function M.switch_to(dir)
   local current_entry = state[cwd]
   if current_entry then
     current_entry.buffer_paths = collect_file_buffers()
+    -- Save which buffer was focused in the code window
+    local ok_nav_save, nav_save = pcall(require, "neovia.navigate")
+    if ok_nav_save then
+      local code_win = nav_save.find_code_win()
+      if code_win then
+        local cbuf = vim.api.nvim_win_get_buf(code_win)
+        local cname = vim.api.nvim_buf_get_name(cbuf)
+        current_entry.last_buffer_path = cname ~= "" and cname or nil
+      end
+    end
     save_session_id(cwd)
     save_model_state(cwd)
     save_neo_tree_expanded(cwd)
@@ -833,6 +844,7 @@ function M.switch_to(dir)
       session_id = nil,
       model_state = nil,
       neo_tree_expanded = nil,
+      last_buffer_path = nil,
       last_view = nil,
     }
   end
@@ -847,7 +859,17 @@ function M.switch_to(dir)
         local bufs = relist_buffers(target.buffer_paths)
         if #bufs > 0 then
           vim.api.nvim_set_current_win(win)
-          vim.api.nvim_win_set_buf(win, bufs[1])
+          -- Prefer the buffer that was focused when we left this worktree
+          local restore_buf = bufs[1]
+          if target.last_buffer_path then
+            for _, b in ipairs(bufs) do
+              if vim.api.nvim_buf_get_name(b) == target.last_buffer_path then
+                restore_buf = b
+                break
+              end
+            end
+          end
+          vim.api.nvim_win_set_buf(win, restore_buf)
         end
       else
         -- First visit: replace the stale buffer with a fresh noname buffer
@@ -1566,6 +1588,7 @@ M._internal = {
       session_id = nil,
       model_state = nil,
       neo_tree_expanded = nil,
+      last_buffer_path = nil,
       last_view = nil,
     }, overrides or {})
   end,
