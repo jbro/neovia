@@ -688,6 +688,161 @@ describe("buffer_list", function()
 end)
 
 ------------------------------------------------------------------------
+-- strip_ansi
+------------------------------------------------------------------------
+
+describe("strip_ansi", function()
+  it("removes ANSI escape sequences", function()
+    local result = I.strip_ansi("\27[32msrc/foo.lua\27[0m")
+    assert.equals("src/foo.lua", result)
+  end)
+
+  it("returns plain string unchanged", function()
+    assert.equals("src/foo.lua", I.strip_ansi("src/foo.lua"))
+  end)
+
+  it("handles multiple escape sequences", function()
+    local result = I.strip_ansi("\27[1;31mpath\27[0m:\27[34m42\27[0m")
+    assert.equals("path:42", result)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- parse_fzf_entry
+------------------------------------------------------------------------
+
+describe("parse_fzf_entry", function()
+  -- Tests run without fzf-lua loaded, so they exercise the fallback path.
+  -- The fzf-lua path is tested implicitly via fzf_file_action in live use.
+  local function opts(cwd) return { cwd = cwd } end
+
+  it("parses a plain file path", function()
+    local abs, line = I.parse_fzf_entry("init.lua", opts(project_root))
+    -- Fallback uses resolve() which prepends vim cwd, not opts.cwd
+    assert.is_truthy(abs:match("init%.lua$"))
+    assert.is_nil(line)
+  end)
+
+  it("parses an absolute file path", function()
+    local abs, line = I.parse_fzf_entry(project_root .. "/init.lua", opts(project_root))
+    assert.equals(project_root .. "/init.lua", abs)
+    assert.is_nil(line)
+  end)
+
+  it("strips ANSI codes before parsing", function()
+    local abs, line = I.parse_fzf_entry(
+      "\27[32m" .. project_root .. "/init.lua\27[0m", opts(project_root))
+    assert.equals(project_root .. "/init.lua", abs)
+    assert.is_nil(line)
+  end)
+
+  it("returns nil for an empty entry", function()
+    local abs, line = I.parse_fzf_entry("", opts(project_root))
+    assert.is_nil(abs)
+    assert.is_nil(line)
+  end)
+
+  it("parses path:line without col or text", function()
+    local abs, line = I.parse_fzf_entry(
+      project_root .. "/init.lua:10", opts(project_root))
+    assert.equals(project_root .. "/init.lua", abs)
+    assert.equals(10, line)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- fzf_file_action (fzf-lua default action routing)
+------------------------------------------------------------------------
+
+describe("fzf_file_action", function()
+  after_each(function()
+    vim.cmd("only")
+  end)
+
+  it("opens a plain file path in the code window, not the opencode window", function()
+    -- Set up: code window + opencode window (focused)
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+    local code_win = vim.api.nvim_get_current_win()
+
+    vim.cmd("vsplit")
+    local oc_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_buf)
+    local oc_win = vim.api.nvim_get_current_win()
+
+    -- Simulate fzf-lua calling the action with a selected file
+    navigate.fzf_file_action({ test_file }, {})
+
+    -- File must open in the code window, not the opencode window
+    assert.equals(code_win, vim.api.nvim_get_current_win())
+    local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(code_win))
+    assert.is_truthy(bufname:match("init%.lua$"))
+
+    -- The opencode window must still show its original buffer
+    assert.equals(oc_buf, vim.api.nvim_win_get_buf(oc_win))
+
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+    vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+
+  it("opens a grep-style entry (path:line:col:text) at the correct line", function()
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+    local code_win = vim.api.nvim_get_current_win()
+
+    vim.cmd("vsplit")
+    local oc_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_buf)
+
+    -- Simulate live_grep entry format
+    navigate.fzf_file_action({ test_file .. ":5:1: some match text" }, {})
+
+    assert.equals(code_win, vim.api.nvim_get_current_win())
+    local cursor = vim.api.nvim_win_get_cursor(code_win)
+    assert.equals(5, cursor[1])
+
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+    vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+
+  it("creates a code window when only opencode windows exist", function()
+    local oc_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[oc_buf].filetype = "opencode_output"
+    vim.api.nvim_win_set_buf(0, oc_buf)
+
+    local win_count_before = #vim.api.nvim_tabpage_list_wins(0)
+
+    navigate.fzf_file_action({ test_file }, {})
+
+    local win_count_after = #vim.api.nvim_tabpage_list_wins(0)
+    assert.is_true(win_count_after > win_count_before)
+
+    -- Current window should not be an opencode window
+    assert.is_false(navigate.is_opencode_win(vim.api.nvim_get_current_win()))
+
+    vim.api.nvim_buf_delete(oc_buf, { force = true })
+  end)
+
+  it("handles multiple selected entries (opens last)", function()
+    local code_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_win_set_buf(0, code_buf)
+
+    -- Create a second real file for multi-select
+    local second_file = project_root .. "/lua/neovia/navigate.lua"
+
+    navigate.fzf_file_action({ test_file, second_file }, {})
+
+    -- Should end up with the last file open in the code window
+    local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(0))
+    assert.is_truthy(bufname:match("navigate%.lua$"))
+
+    vim.api.nvim_buf_delete(code_buf, { force = true })
+  end)
+end)
+
+------------------------------------------------------------------------
 -- reset (reload contract)
 ------------------------------------------------------------------------
 

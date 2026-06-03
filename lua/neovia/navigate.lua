@@ -248,6 +248,62 @@ function M.open()
   end
 end
 
+--- Strip ANSI escape sequences from a string.
+--- @param s string
+--- @return string
+local function strip_ansi(s)
+  return s:gsub("\27%[[%d;]*m", "")
+end
+
+--- Parse a fzf-lua selected entry using fzf-lua's own path module.
+--- Falls back to simple parse_path when fzf-lua is unavailable (tests).
+--- @param entry string  A single fzf-lua selected entry.
+--- @param opts table    fzf-lua opts passed to the action.
+--- @return string? abs_path, integer? line
+local function parse_fzf_entry(entry, opts)
+  local ok_path, fzf_path = pcall(require, "fzf-lua.path")
+  if ok_path and fzf_path.entry_to_file then
+    local e = fzf_path.entry_to_file(entry, opts)
+    if not e or not e.path then return nil, nil end
+    local abs = e.path
+    if not vim.startswith(abs, "/") then
+      local cwd = opts and (opts.cwd or opts._cwd) or vim.fn.getcwd()
+      abs = cwd .. "/" .. abs
+    end
+    local line = (e.line and e.line > 0) and e.line or nil
+    return abs, line
+  end
+
+  -- Fallback: strip ANSI + simple parse (for tests without fzf-lua)
+  local clean = strip_ansi(entry)
+  clean = vim.trim(clean)
+  if clean == "" then return nil, nil end
+
+  -- Try grep-style format first: path:line:col:text
+  local grep_path, grep_line = clean:match("^(.+):(%d+):%d+:")
+  if grep_path then
+    return resolve(grep_path), tonumber(grep_line)
+  end
+
+  local path, line = parse_path(clean)
+  return resolve(path), line
+end
+
+--- fzf-lua compatible action that opens selected files in the code window.
+--- Designed to replace the default file_edit action so that files always
+--- open in the code panel instead of the current (possibly opencode) window.
+--- @param selected string[]  Selected entries from fzf-lua.
+--- @param opts table         fzf-lua options (may contain cwd).
+function M.fzf_file_action(selected, opts)
+  if not selected or #selected == 0 then return end
+  for _, entry in ipairs(selected) do
+    local abs, line = parse_fzf_entry(entry, opts or {})
+    if abs then
+      M.open_in_code_win(abs, line)
+    end
+  end
+end
+
 ------------------------------------------------------------------------
 -- Test internals
 ------------------------------------------------------------------------
@@ -299,6 +355,8 @@ end
 
 M._internal = {
   parse_path = parse_path,
+  parse_fzf_entry = parse_fzf_entry,
+  strip_ansi = strip_ansi,
   is_sidebar_win = is_sidebar_win,
   is_notes_win = is_notes_win,
   find_code_win = find_code_win,

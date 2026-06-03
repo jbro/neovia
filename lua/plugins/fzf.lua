@@ -31,6 +31,15 @@ return {
         },
       },
       fzf_colors = true,
+      -- Route all file-opening actions through navigate.open_in_code_win
+      -- so files always land in the code panel, not in opencode/sidebar windows.
+      actions = {
+        files = {
+          ["default"] = function(selected, opts)
+            require("neovia.navigate").fzf_file_action(selected, opts)
+          end,
+        },
+      },
       files = {
         -- Show gitignored files (--no-ignore) but still hide .git and .worktrees,
         -- matching neo-tree's never_show list.
