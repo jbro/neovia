@@ -778,6 +778,129 @@ describe("process_event", function()
   end)
 end)
 
+------------------------------------------------------------------------
+-- Cross-worktree event isolation
+------------------------------------------------------------------------
+
+describe("cross-worktree event isolation", function()
+  before_each(function()
+    vim.cmd.redrawstatus = function() end
+    vim.cmd.redrawtabline = function() end
+    I.set_state({
+      ["/proj/main"] = I.make_entry({ status = "idle", branch = "main" }),
+      ["/proj/feat"] = I.make_entry({ status = "idle", branch = "feat/work" }),
+    })
+  end)
+
+  after_each(function()
+    I.reset()
+  end)
+
+  it("permission.asked on feat does not change main state", function()
+    I.process_event("/proj/feat", {
+      type = "permission.asked",
+      properties = { id = "perm-feat-1" },
+    })
+
+    -- feat should be needs_attention with the permission tracked
+    local feat = I.get_state()["/proj/feat"]
+    assert.equals("needs_attention", feat.status)
+    assert.is_true(feat.pending_permissions["perm-feat-1"])
+
+    -- main should be completely unchanged
+    local main = I.get_state()["/proj/main"]
+    assert.equals("idle", main.status)
+    assert.same({}, main.pending_permissions)
+  end)
+
+  it("message.updated on feat does not change main state", function()
+    I.process_event("/proj/feat", {
+      type = "message.updated",
+      properties = { info = { role = "assistant", time = { created = 100 } } },
+    })
+
+    assert.equals("responding", I.get_state()["/proj/feat"].status)
+    assert.equals("idle", I.get_state()["/proj/main"].status)
+  end)
+
+  it("session.idle on feat does not change main state", function()
+    -- First set feat to responding
+    I.get_state()["/proj/feat"].status = "responding"
+    I.get_state()["/proj/feat"].pending_permissions = { x = true }
+    I.get_state()["/proj/main"].status = "responding"
+
+    I.process_event("/proj/feat", {
+      type = "session.idle",
+      properties = {},
+    })
+
+    -- feat is idle with cleared permissions
+    assert.equals("idle", I.get_state()["/proj/feat"].status)
+    assert.same({}, I.get_state()["/proj/feat"].pending_permissions)
+
+    -- main is still responding (untouched)
+    assert.equals("responding", I.get_state()["/proj/main"].status)
+  end)
+
+  it("permission lifecycle on feat is fully isolated from main", function()
+    -- Simulate a full permission lifecycle on feat while main has its own
+    -- pending permission. Neither should interfere with the other.
+    I.get_state()["/proj/main"].status = "needs_attention"
+    I.get_state()["/proj/main"].pending_permissions = { ["perm-main-1"] = true }
+
+    -- feat starts responding
+    I.process_event("/proj/feat", {
+      type = "message.updated",
+      properties = { info = { role = "assistant", time = { created = 100 } } },
+    })
+    assert.equals("responding", I.get_state()["/proj/feat"].status)
+
+    -- feat gets a permission request
+    I.process_event("/proj/feat", {
+      type = "permission.asked",
+      properties = { id = "perm-feat-1" },
+    })
+    assert.equals("needs_attention", I.get_state()["/proj/feat"].status)
+    assert.is_true(I.get_state()["/proj/feat"].pending_permissions["perm-feat-1"])
+
+    -- Main still has its own state
+    assert.equals("needs_attention", I.get_state()["/proj/main"].status)
+    assert.is_true(I.get_state()["/proj/main"].pending_permissions["perm-main-1"])
+    assert.is_nil(I.get_state()["/proj/main"].pending_permissions["perm-feat-1"])
+
+    -- feat permission replied
+    I.process_event("/proj/feat", {
+      type = "permission.replied",
+      properties = { requestID = "perm-feat-1" },
+    })
+    assert.equals("responding", I.get_state()["/proj/feat"].status)
+    assert.same({}, I.get_state()["/proj/feat"].pending_permissions)
+
+    -- Main is unchanged
+    assert.equals("needs_attention", I.get_state()["/proj/main"].status)
+    assert.is_true(I.get_state()["/proj/main"].pending_permissions["perm-main-1"])
+  end)
+
+  it("server.connected (dir=nil) applies to all entries without cross-talk", function()
+    -- Both worktrees start as unknown
+    I.get_state()["/proj/main"].status = "unknown"
+    I.get_state()["/proj/feat"].status = "unknown"
+
+    -- server.connected events have dir=nil, which means process_event
+    -- broadcasts to all entries. Test that both receive it.
+    -- Note: we call process_event with nil dir, which in production code
+    -- iterates all entries. Here we simulate what the broadcast does:
+    for d, _ in pairs(I.get_state()) do
+      I.process_event(d, {
+        type = "server.connected",
+        properties = {},
+      })
+    end
+
+    assert.equals("idle", I.get_state()["/proj/main"].status)
+    assert.equals("idle", I.get_state()["/proj/feat"].status)
+  end)
+end)
 
 
 ------------------------------------------------------------------------

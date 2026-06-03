@@ -109,6 +109,61 @@ describe("opencode event handler session guards", function()
     end)
   end)
 
+  describe("on_permission_updated guard (permission.asked / permission.updated)", function()
+    it("skips permission from non-active session", function()
+      local called = false
+      local received_perm = nil
+
+      local orig = function(permission)
+        called = true
+        received_perm = permission
+      end
+
+      local guarded = make_guarded_handler(orig)
+
+      -- permission.asked from another worktree's session
+      guarded({ id = "perm-1", sessionID = "session-other", tool = { name = "bash" } })
+      assert.is_false(called, "cross-worktree permission should be blocked")
+      assert.is_nil(received_perm)
+
+      -- permission.asked from the active session
+      guarded({ id = "perm-2", sessionID = "session-main", tool = { name = "bash" } })
+      assert.is_true(called, "same-session permission should pass through")
+      assert.equals("perm-2", received_perm.id)
+    end)
+
+    it("blocks multiple cross-worktree permissions in sequence", function()
+      local call_count = 0
+
+      local orig = function(_) call_count = call_count + 1 end
+      local guarded = make_guarded_handler(orig)
+
+      -- Simulate a burst of permission events from a different worktree
+      for i = 1, 5 do
+        guarded({ id = "perm-" .. i, sessionID = "session-other" })
+      end
+      assert.equals(0, call_count, "no cross-worktree permissions should reach handler")
+    end)
+  end)
+
+  describe("on_question_asked guard", function()
+    it("skips question from non-active session", function()
+      local called = false
+
+      local orig = function(properties)
+        called = true
+      end
+
+      local guarded = make_guarded_handler(orig)
+
+      guarded({ id = "q-1", sessionID = "session-other", questions = {} })
+      assert.is_false(called)
+
+      guarded({ id = "q-2", sessionID = "session-main", questions = {} })
+      assert.is_true(called)
+    end)
+  end)
+
   describe("clear_question_display guard", function()
     it("skips question clear from non-active session", function()
       local called = false
