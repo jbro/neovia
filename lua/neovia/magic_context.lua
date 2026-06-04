@@ -17,6 +17,7 @@ local initialised = false
 
 --- @class neovia.magic_context.State
 --- @field port number?      Discovered RPC server port.
+--- @field token string?     Auth token from per-PID port file.
 --- @field session_id string? Active opencode session ID.
 --- @field last_notification_id number Last acked notification ID for RPC drain.
 --- @field last_drain_at number  Monotonic ms timestamp of last drain call.
@@ -25,6 +26,7 @@ local initialised = false
 --- @type neovia.magic_context.State
 local state = {
   port = nil,
+  token = nil,
   session_id = nil,
   last_notification_id = 0,
   last_drain_at = 0,
@@ -326,6 +328,13 @@ local function handle_notifications(messages)
   end
 end
 
+--- Build auth header arguments for curl when a token is available.
+--- @return string[]  Empty table or {"-H", "Authorization: Bearer <token>"}
+local function auth_headers()
+  if not state.token then return {} end
+  return { "-H", "Authorization: Bearer " .. state.token }
+end
+
 --- Fire one async drain to the pending-notifications RPC endpoint.
 local function drain_notifications()
   local port = state.port
@@ -333,14 +342,19 @@ local function drain_notifications()
 
   local url = string.format("http://127.0.0.1:%d/rpc/pending-notifications", port)
   local body = vim.fn.json_encode({ lastReceivedId = state.last_notification_id })
+  local auth = auth_headers()
 
-  pcall(vim.system, {
+  local cmd = {
     "curl", "-sf", "--max-time", "1",
     "-X", "POST",
     "-H", "Content-Type: application/json",
-    "-d", body,
-    url,
-  }, { text = true }, function(out)
+  }
+  for _, v in ipairs(auth) do table.insert(cmd, v) end
+  table.insert(cmd, "-d")
+  table.insert(cmd, body)
+  table.insert(cmd, url)
+
+  pcall(vim.system, cmd, { text = true }, function(out)
     vim.schedule(function()
       if out.code ~= 0 or not out.stdout or out.stdout == "" then return end
       local ok, data = pcall(vim.fn.json_decode, out.stdout)
@@ -381,18 +395,19 @@ local function read_port(path)
 end
 
 --- Read port from a per-PID JSON port file (port-<pid>.json).
---- Returns (port, pid) or (nil, nil).
+--- Returns (port, pid, token) or (nil, nil, nil).
 --- @param path string
---- @return number?, number?
+--- @return number?, number?, string?
 local function read_pid_port(path)
   local fd = io.open(path, "r")
-  if not fd then return nil, nil end
+  if not fd then return nil, nil, nil end
   local content = fd:read("*a")
   fd:close()
-  if not content then return nil, nil end
+  if not content then return nil, nil, nil end
   local ok, data = pcall(vim.fn.json_decode, content)
-  if not ok or type(data) ~= "table" then return nil, nil end
-  return tonumber(data.port), tonumber(data.pid)
+  if not ok or type(data) ~= "table" then return nil, nil, nil end
+  local token = type(data.token) == "string" and data.token or nil
+  return tonumber(data.port), tonumber(data.pid), token
 end
 
 --- Check if a PID is still running.
@@ -418,18 +433,19 @@ local function discover_port(dir)
   -- Scan for per-PID port files; pick the newest one with a running process.
   local handle = vim.uv.fs_scandir(rpc_dir)
   if handle then
-    local best_port, best_time = nil, 0
+    local best_port, best_token, best_time = nil, nil, 0
     while true do
       local name, ftype = vim.uv.fs_scandir_next(handle)
       if not name then break end
       if (ftype == "file" or ftype == nil) and name:match("^port%-%d+%.json$") then
         local full = rpc_dir .. "/" .. name
-        local port, pid = read_pid_port(full)
+        local port, pid, token = read_pid_port(full)
         if port and pid and pid_alive(pid) then
           local stat = vim.uv.fs_stat(full)
           local mtime = stat and stat.mtime and stat.mtime.sec or 0
           if mtime > best_time then
             best_port = port
+            best_token = token
             best_time = mtime
           end
         end
@@ -437,15 +453,17 @@ local function discover_port(dir)
     end
     if best_port then
       state.port = best_port
+      state.token = best_token
       return best_port
     end
   end
 
-  -- Fallback: legacy plain port file.
+  -- Fallback: legacy plain port file (no token available).
   local path = port_file_path(dir)
   local port = read_port(path)
   if port then
     state.port = port
+    state.token = nil
   end
   return port
 end
@@ -479,14 +497,19 @@ local function fetch_detail(session_id, dir)
 
   local url = string.format("http://127.0.0.1:%d/rpc/status-detail", port)
   local body = vim.fn.json_encode({ sessionId = session_id, directory = dir })
+  local auth = auth_headers()
 
-  local ok, result = pcall(vim.system, {
+  local cmd = {
     "curl", "-sf", "--max-time", "2",
     "-X", "POST",
     "-H", "Content-Type: application/json",
-    "-d", body,
-    url,
-  }, { text = true })
+  }
+  for _, v in ipairs(auth) do table.insert(cmd, v) end
+  table.insert(cmd, "-d")
+  table.insert(cmd, body)
+  table.insert(cmd, url)
+
+  local ok, result = pcall(vim.system, cmd, { text = true })
 
   if not ok or not result then return nil end
   local out = result:wait()
@@ -661,6 +684,10 @@ M._internal = {
 
   get_port = function() return state.port end,
   set_port = function(p) state.port = p end,
+  get_token = function() return state.token end,
+  set_token = function(t) state.token = t end,
+  get_rpc_base = function() return RPC_BASE end,
+  set_rpc_base = function(b) RPC_BASE = b end,
   get_last_notification_id = function() return state.last_notification_id end,
 
   --- Override the drain function for testing (nil = use real drain).
@@ -683,6 +710,7 @@ M._internal = {
     end
     state = {
       port = nil,
+      token = nil,
       session_id = nil,
       last_notification_id = 0,
       last_drain_at = 0,

@@ -442,6 +442,17 @@ describe("state management", function()
     I.reset()
     assert.is_nil(I.get_port())
   end)
+
+  it("stores and retrieves token", function()
+    I.set_token("abc123")
+    assert.equals("abc123", I.get_token())
+  end)
+
+  it("clears token on reset", function()
+    I.set_token("abc123")
+    I.reset()
+    assert.is_nil(I.get_token())
+  end)
 end)
 
 ------------------------------------------------------------------------
@@ -517,6 +528,138 @@ describe("read_port", function()
     fd:close()
     local port = I.read_port(path)
     assert.equals(12345, port)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- read_pid_port (token extraction)
+------------------------------------------------------------------------
+
+describe("read_pid_port", function()
+  local tmpdir
+
+  before_each(function()
+    tmpdir = vim.fn.tempname()
+    vim.fn.mkdir(tmpdir, "p")
+  end)
+
+  after_each(function()
+    vim.fn.delete(tmpdir, "rf")
+  end)
+
+  it("returns token from per-PID JSON port file", function()
+    local path = tmpdir .. "/port-1234.json"
+    local fd = assert(io.open(path, "w"))
+    fd:write(vim.fn.json_encode({ port = 50000, pid = 1234, token = "secret123" }))
+    fd:close()
+    local port, pid, token = I.read_pid_port(path)
+    assert.equals(50000, port)
+    assert.equals(1234, pid)
+    assert.equals("secret123", token)
+  end)
+
+  it("returns nil token when token field is absent", function()
+    local path = tmpdir .. "/port-1234.json"
+    local fd = assert(io.open(path, "w"))
+    fd:write(vim.fn.json_encode({ port = 50000, pid = 1234 }))
+    fd:close()
+    local port, pid, token = I.read_pid_port(path)
+    assert.equals(50000, port)
+    assert.equals(1234, pid)
+    assert.is_nil(token)
+  end)
+
+  it("returns nils for non-existent file", function()
+    local port, pid, token = I.read_pid_port(tmpdir .. "/nonexistent.json")
+    assert.is_nil(port)
+    assert.is_nil(pid)
+    assert.is_nil(token)
+  end)
+
+  it("returns nils for invalid JSON", function()
+    local path = tmpdir .. "/port-1234.json"
+    local fd = assert(io.open(path, "w"))
+    fd:write("not json")
+    fd:close()
+    local port, pid, token = I.read_pid_port(path)
+    assert.is_nil(port)
+    assert.is_nil(pid)
+    assert.is_nil(token)
+  end)
+end)
+
+------------------------------------------------------------------------
+-- discover_port (token propagation)
+------------------------------------------------------------------------
+
+describe("discover_port", function()
+  local tmpdir
+  local original_rpc_base
+
+  before_each(function()
+    I.reset()
+    tmpdir = vim.fn.tempname()
+    vim.fn.mkdir(tmpdir, "p")
+    -- Override RPC_BASE to point to our temp dir for testing
+    original_rpc_base = I.get_rpc_base()
+    I.set_rpc_base(tmpdir .. "/")
+  end)
+
+  after_each(function()
+    I.reset()
+    I.set_rpc_base(original_rpc_base)
+    vim.fn.delete(tmpdir, "rf")
+  end)
+
+  it("stores token in state when per-PID file has token", function()
+    -- Create a project hash directory with a per-PID port file
+    local dir = "/tmp/test-project"
+    local hash = I.project_hash(dir)
+    local rpc_dir = tmpdir .. "/" .. hash
+    vim.fn.mkdir(rpc_dir, "p")
+    local pid = vim.fn.getpid()  -- Use current pid so pid_alive returns true
+    local path = rpc_dir .. "/port-" .. pid .. ".json"
+    local fd = assert(io.open(path, "w"))
+    fd:write(vim.fn.json_encode({ port = 55555, pid = pid, token = "mytoken" }))
+    fd:close()
+
+    local port = I.discover_port(dir)
+    assert.equals(55555, port)
+    assert.equals("mytoken", I.get_token())
+  end)
+
+  it("clears token when per-PID file has no token", function()
+    I.set_token("stale-token")
+    local dir = "/tmp/test-project"
+    local hash = I.project_hash(dir)
+    local rpc_dir = tmpdir .. "/" .. hash
+    vim.fn.mkdir(rpc_dir, "p")
+    local pid = vim.fn.getpid()
+    local path = rpc_dir .. "/port-" .. pid .. ".json"
+    local fd = assert(io.open(path, "w"))
+    fd:write(vim.fn.json_encode({ port = 55555, pid = pid }))
+    fd:close()
+
+    local port = I.discover_port(dir)
+    assert.equals(55555, port)
+    assert.is_nil(I.get_token())
+  end)
+
+  it("clears token when falling back to legacy port file", function()
+    I.set_token("stale-token")
+    local dir = "/tmp/test-project"
+    local hash = I.project_hash(dir)
+    local rpc_dir = tmpdir .. "/" .. hash
+    vim.fn.mkdir(rpc_dir, "p")
+    -- Write legacy port file only (no per-PID files)
+    local path = rpc_dir .. "/port"
+    local fd = assert(io.open(path, "w"))
+    fd:write("44444\n")
+    fd:close()
+
+    local port = I.discover_port(dir)
+    assert.equals(44444, port)
+    assert.is_nil(I.get_token())
   end)
 end)
 
@@ -890,6 +1033,7 @@ end
 
 describe("integration: live RPC", function()
   local port
+  local token
   local server_started = false
 
   before_each(function()
@@ -910,11 +1054,15 @@ describe("integration: live RPC", function()
       server_started = true
 
       -- Wait for the magic-context RPC port to become healthy.
+      -- discover_port (called inside await_rpc_port) now also extracts
+      -- the auth token from per-PID port files.
       port = await_rpc_port(15000)
       if not port then pending("magic-context RPC server did not start within 15s") end
+      token = I.get_token()
     end
     I.reset()
     I.set_port(port)
+    if token then I.set_token(token) end
   end)
 
   after_each(function()
@@ -949,13 +1097,17 @@ describe("integration: live RPC", function()
   it("sidebar-snapshot returns expected fields", function()
     local dir = vim.uv.cwd()
     local body = vim.fn.json_encode({ sessionId = "integration-test", directory = dir })
-    local ok, result = pcall(vim.system, {
+    local cmd = {
       "curl", "-sf", "--max-time", "2",
       "-X", "POST",
       "-H", "Content-Type: application/json",
-      "-d", body,
-      string.format("http://127.0.0.1:%d/rpc/sidebar-snapshot", port),
-    }, { text = true })
+    }
+    if token then
+      table.insert(cmd, "-H")
+      table.insert(cmd, "Authorization: Bearer " .. token)
+    end
+    vim.list_extend(cmd, { "-d", body, string.format("http://127.0.0.1:%d/rpc/sidebar-snapshot", port) })
+    local ok, result = pcall(vim.system, cmd, { text = true })
     assert.is_true(ok)
     local out = result:wait()
     assert.equals(0, out.code, "curl should succeed; got: " .. (out.stderr or ""))
@@ -980,13 +1132,17 @@ describe("integration: live RPC", function()
   it("status-detail returns superset of snapshot fields", function()
     local dir = vim.uv.cwd()
     local body = vim.fn.json_encode({ sessionId = "integration-test", directory = dir })
-    local ok, result = pcall(vim.system, {
+    local cmd = {
       "curl", "-sf", "--max-time", "2",
       "-X", "POST",
       "-H", "Content-Type: application/json",
-      "-d", body,
-      string.format("http://127.0.0.1:%d/rpc/status-detail", port),
-    }, { text = true })
+    }
+    if token then
+      table.insert(cmd, "-H")
+      table.insert(cmd, "Authorization: Bearer " .. token)
+    end
+    vim.list_extend(cmd, { "-d", body, string.format("http://127.0.0.1:%d/rpc/status-detail", port) })
+    local ok, result = pcall(vim.system, cmd, { text = true })
     assert.is_true(ok)
     local out = result:wait()
     assert.equals(0, out.code)
