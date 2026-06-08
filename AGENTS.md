@@ -177,3 +177,15 @@ Worktree deletion closes associated diffview tabs.
 all directories with a `directory` field in each envelope. One connection
 replaces N per-directory subscriptions, eliminating subscription lifecycle
 management.
+
+### 0014 - Session-scoping of renderer events is upstream (2026-06-08)
+
+opencode.nvim now scopes all renderer event subscriptions to the active
+session (`opencode.ui.event_scope.scoped_callback`, commit a3e038b),
+including child/subagent sessions. This replaces neovia's former
+`make_session_guard` workaround in `lua/plugins/opencode.lua`, which
+wrapped/re-subscribed handlers to filter cross-worktree events. The
+workaround was removed: it double-subscribed against the new upstream
+wrappers (it unsubscribed raw handlers that were never directly
+registered, then added a second subscription). Rely on upstream scoping;
+do not re-wrap renderer event handlers.
