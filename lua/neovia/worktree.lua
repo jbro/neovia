@@ -1004,9 +1004,10 @@ function M.create(opts)
   local from_current = opts.from_current or false
 
   -- Resolve start_point: branch from main unless forking or from_current.
+  -- Call through _internal so tests can stub list_worktrees.
   local start_point = nil
   if not do_fork and not from_current then
-    local worktrees = list_worktrees()
+    local worktrees = M._internal.list_worktrees()
     if #worktrees > 0 then
       start_point = worktrees[1].branch
     end
