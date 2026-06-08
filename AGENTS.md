@@ -70,7 +70,7 @@ These rules define what neovia is. They guide design and implementation decision
 - Optimized for an AI-driven coding workflow: OpenCode writes project code, the user reviews, navigates, and orchestrates. Plugin choices follow from this.
 - One opencode server per git repo, running as an independent process that survives Neovim restarts. `neovia.server.ensure_running()` starts the server synchronously in `init.lua` before plugin load; state (port, PID) persists in `stdpath("state")/server/<hash>/`. The plugin connects via `config.server.url` + `port` instead of spawning. Server management keymaps live under `<leader>oE` (status `s`, restart `r`, shutdown `q`).
 - Worktree switching uses `tcd` to scope all plugins to that directory.
-- Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. opencode.nvim detects the directory change and swaps sessions automatically. Background sessions keep running server-side.
+- Single-panel model: one opencode UI always visible, `tcd` switches worktrees in place. neovia selects the per-worktree session deterministically (see decision 0015). Background sessions keep running server-side.
 - Worktree lifecycle: `<leader>wc` (create from main), `<leader>wC` (create from current HEAD), `<leader>wf` (fork: branch from current HEAD + fork opencode session), `<leader>ww` (switch picker), `<leader>wn` (next), `<leader>wp` (previous), `<leader>wa` (next needing attention), `<leader>wd` (delete picker), `<leader>wD` (delete current). Pickers use fzf-lua; current-worktree shortcuts act directly. Session forking bridges context across worktrees.
 - netrw is disabled. Neo-tree is the sole file navigator (always visible, far left). Layout: neo-tree (left) | code (centre top) + session notes (centre bottom, 15 lines) | opencode (right). The code window starts with a noname buffer that goes away when the first real file is opened.
 - Session notes (`neovia.notes`): per-worktree persistent markdown notes in a dedicated bottom split. Storage: `stdpath("cache")/notes/<sha256(dir)>.md`. Listed, exempt from read-only mode, saved on BufLeave. Notes buffers are excluded from `buffer_paths` (managed separately from file buffers). Notes are keyed by worktree directory, not opencode session -- they survive session changes.
@@ -127,8 +127,8 @@ See the reload contract in the rules section above.
 
 ### 0008 - Worktree lifecycle via tcd (2026-04-21)
 
-`tcd` switches worktrees in place; opencode.nvim detects `DirChanged` and
-swaps sessions automatically. Sessions are never deleted -- on worktree
+`tcd` switches worktrees in place. neovia drives session selection per
+worktree (see decision 0015). Sessions are never deleted -- on worktree
 delete a tombstone session is created so reused paths start clean.
 
 ### 0009 - Lualine for worktree display (2026-04-22)
@@ -189,3 +189,16 @@ workaround was removed: it double-subscribed against the new upstream
 wrappers (it unsubscribed raw handlers that were never directly
 registered, then added a second subscription). Rely on upstream scoping;
 do not re-wrap renderer event handlers.
+
+### 0015 - neovia owns session selection via session lock (2026-06-08)
+
+opencode is configured with `lock_session_to_directory = true`
+(`lua/plugins/opencode.lua`), making its `handle_directory_change` a
+no-op. neovia is the sole authority on which session is active per
+worktree, which keeps selection deterministic (no timing or polling
+races). On `switch_to`, after `tcd`, `select_or_create_session(dir)`
+(`lua/neovia/worktree.lua`) selects deterministically: a saved
+`session_id` switches directly; a first visit lists sessions for the
+directory and switches to the newest non-child, or creates one when none
+exist. The fork flow records the forked `session_id` in state before
+`switch_to` so the same saved-session path activates exactly the fork.

@@ -70,6 +70,11 @@ return {
       local layout = require("neovia.layout")
       require("opencode").setup({
         preferred_picker = "fzf",
+        -- Pin opencode to the active session across DirChanged so
+        -- handle_directory_change never auto-selects.  neovia drives all
+        -- session selection per worktree (see worktree.lua
+        -- select_or_create_session, decision 0015).
+        lock_session_to_directory = true,
         default_system_prompt = table_width_prompt(output_text_columns()),
         server = port and {
           url = "http://127.0.0.1",

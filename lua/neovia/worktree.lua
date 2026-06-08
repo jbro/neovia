@@ -32,6 +32,23 @@ local M = {}
 --- @type table<string, neovia.WorktreeState>
 local state = {}
 
+--- Create a fresh WorktreeState entry.
+--- @param overrides? table
+--- @return neovia.WorktreeState
+local function make_entry(overrides)
+  return vim.tbl_extend("force", {
+    status = "unknown",
+    branch = "main",
+    pending_permissions = {},
+    buffer_paths = {},
+    session_id = nil,
+    model_state = nil,
+    neo_tree_expanded = nil,
+    last_buffer_path = nil,
+    last_view = nil,
+  }, overrides or {})
+end
+
 --- Whether setup() has been called.
 local initialised = false
 
@@ -529,79 +546,77 @@ local function save_session_id(dir)
   end
 end
 
---- Restore the saved session ID for a directory after a worktree switch.
---- handle_directory_change() is async (Promise-based) and picks the most
---- recently updated session across ALL worktrees in a git repo, which may
---- not match the session the user was previously working in.  This function
---- polls until active_session settles, then calls switch_session if the
---- loaded session differs from the saved one.
+--- Deterministically select or create the opencode session for `dir` after a
+--- tcd.  With opencode's lock_session_to_directory on, handle_directory_change
+--- never auto-selects, so neovia is the sole authority on session selection
+--- (no current_cwd pre-set hack, no polling race).
 ---
---- On first visit (session_id is nil), queries the API for sessions in the
---- target directory and picks the most recent non-child session, correcting
---- the wrong session that handle_directory_change may have selected.
+--- - Saved session_id  -> switch_session(id).
+--- - First visit        -> list_sessions(dir); switch to newest non-child,
+---                         or create a new session when none exist.
 --- @param dir string
---- @param attempts? number  remaining poll attempts (default 20, ~1 s total)
-local function restore_session_id(dir, attempts)
-  attempts = attempts or 20
+local function select_or_create_session(dir)
   local entry = state[dir]
   if not entry then return end
 
   local ok, oc_state = pcall(require, "opencode.state")
-  if not ok then return end
+  if not ok or not oc_state then return end
+  local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
+  if not ok_rt then return end
 
-  -- active_session is nil while handle_directory_change is in flight.
-  if not oc_state.active_session then
-    if attempts > 0 then
-      vim.defer_fn(function() restore_session_id(dir, attempts - 1) end, 50)
-    end
-    return
-  end
-
-  -- Saved session_id: switch if it differs from active.
+  -- Saved session: deterministic switch, no polling.
   if entry.session_id then
-    if oc_state.active_session.id == entry.session_id then return end
-    local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
-    if ok_rt and session_runtime.switch_session then
-      session_runtime.switch_session(entry.session_id)
-    end
+    local active = oc_state.active_session
+    if active and active.id == entry.session_id then return end
+    session_runtime.switch_session(entry.session_id)
     return
   end
 
-  -- First visit: no saved session_id. handle_directory_change may have
-  -- picked a session from another worktree. Query the API for sessions
-  -- in the target directory and switch to the most recent non-child one.
+  -- First visit: discover-or-create a session scoped to this directory.
   if not oc_state.api_client then return end
   oc_state.api_client
     :list_sessions(dir)
     :and_then(function(sessions)
       vim.schedule(function()
-        if not sessions or type(sessions) ~= "table" or #sessions == 0 then
-          return
-        end
-        table.sort(sessions, function(a, b)
-          return a.time.updated > b.time.updated
-        end)
-        -- Pick the most recent non-child session for this directory.
         local best = nil
-        for _, s in ipairs(sessions) do
-          if s.parentID == nil then
-            best = s
-            break
+        if type(sessions) == "table" then
+          table.sort(sessions, function(a, b)
+            return a.time.updated > b.time.updated
+          end)
+          for _, s in ipairs(sessions) do
+            if s.parentID == nil then
+              best = s
+              break
+            end
           end
         end
-        if not best then return end
-        -- Save for future switches.
-        entry.session_id = best.id
-        -- Switch only if the active session differs.
-        local cur = oc_state.active_session
-        if cur and cur.id == best.id then return end
-        local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
-        if ok_rt and session_runtime.switch_session then
+
+        if best then
+          entry.session_id = best.id
+          local cur = oc_state.active_session
+          if cur and cur.id == best.id then return end
           session_runtime.switch_session(best.id)
+          return
         end
+
+        -- No session exists for this worktree yet: create one.  The
+        -- api_client injects the current directory, so creation is
+        -- correctly scoped after tcd.
+        if not session_runtime.create_new_session then return end
+        session_runtime.create_new_session():and_then(function(new_session)
+          vim.schedule(function()
+            if not new_session or not new_session.id then return end
+            entry.session_id = new_session.id
+            if oc_state.session and oc_state.session.set_active then
+              oc_state.session.set_active(new_session)
+            else
+              session_runtime.switch_session(new_session.id)
+            end
+          end)
+        end)
       end)
     end)
-    :catch(function() end) -- silently ignore API failures
+    :catch(function() end)
 end
 
 --- Save the current opencode model/variant/mode into state for a directory.
@@ -830,40 +845,16 @@ function M.switch_to(dir)
   -- Unlist current file buffers
   unlist_file_buffers()
 
-  -- When we have a saved session_id for the target, pre-set opencode's
-  -- current_cwd so its DirChanged autocmd short-circuits (the guard
-  -- `state.current_cwd == event.file` returns early).  This prevents
-  -- handle_directory_change from firing and picking the wrong session
-  -- (it selects by most-recently-updated across all worktrees).
-  -- We then call switch_session ourselves in the deferred block.
-  --
-  -- On first visit (no session_id), we let handle_directory_change run
-  -- so it can create or discover a session for the new directory.
-  local target_entry = state[dir]
-  local pre_set_cwd = false
-  if target_entry and target_entry.session_id then
-    local ok_oc, oc_state = pcall(require, "opencode.state")
-    if ok_oc and oc_state.context and oc_state.context.set_current_cwd then
-      oc_state.context.set_current_cwd(dir)
-      pre_set_cwd = true
-    end
-  end
+  -- With lock_session_to_directory on, opencode's handle_directory_change is
+  -- a no-op, so neovia owns session selection entirely.  No current_cwd
+  -- pre-set hack, no race.  We select (or create) the correct session in the
+  -- deferred block after tcd.
 
   vim.cmd.tcd(dir)
 
   -- Ensure target has a state entry
   if not state[dir] then
-    state[dir] = {
-      status = "unknown",
-      branch = "",
-      pending_permissions = {},
-      buffer_paths = {},
-      session_id = nil,
-      model_state = nil,
-      neo_tree_expanded = nil,
-      last_buffer_path = nil,
-      last_view = nil,
-    }
+    state[dir] = make_entry({ branch = "" })
   end
 
   -- Restore saved buffers or show a fresh noname buffer on first visit
@@ -983,22 +974,10 @@ function M.switch_to(dir)
     local ok, layout = pcall(require, "neovia.layout")
     if ok then layout.apply() end
 
-    -- Session correction.  When we pre-set current_cwd above,
-    -- handle_directory_change was skipped entirely, so we switch to
-    -- the saved session ourselves.  Otherwise (first visit, no saved
-    -- session_id), restore_session_id queries the API to find or
-    -- correct the session handle_directory_change may have picked.
-    if pre_set_cwd then
-      local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
-      if ok_rt and session_runtime.switch_session then
-        local target_sid = state[dir] and state[dir].session_id
-        if target_sid then
-          session_runtime.switch_session(target_sid)
-        end
-      end
-    else
-      restore_session_id(dir)
-    end
+    -- Deterministically select or create the session for this worktree.
+    -- handle_directory_change never ran (lock), so there is nothing to
+    -- correct -- neovia is the sole authority.
+    select_or_create_session(dir)
 
     -- Restore saved model/variant/mode after the session switch has
     -- settled.  set_model auto-clears variant (via a subscriber), so
@@ -1060,7 +1039,7 @@ function M._create_continue(branch, do_fork, start_point)
 
   -- Step 4: fork session if requested, then switch.
   -- When forking, switch must wait for the fork to complete so the new
-  -- worktree's opencode session exists before DirChanged fires.
+  -- worktree's opencode session exists before we switch to it.
   if do_fork then
     local oc_state = package.loaded["opencode.state"]
     if oc_state and oc_state.api_client and oc_state.active_session then
@@ -1070,18 +1049,17 @@ function M._create_continue(branch, do_fork, start_point)
         :and_then(function(response)
           vim.schedule(function()
             if response and response.id then
-              -- Pre-set opencode's current_cwd so the DirChanged autocmd
-              -- (fired by tcd inside switch_to) short-circuits and does
-              -- not race with switch_session.
-              if oc_state.context and oc_state.context.set_current_cwd then
-                oc_state.context.set_current_cwd(path)
+              -- Record the forked session as the worktree's session BEFORE
+              -- switching.  Under the session-lock model switch_to's
+              -- select_or_create_session then takes the deterministic
+              -- saved-session branch and activates exactly this fork --
+              -- no discover/create race, no double switch.
+              if not state[path] then
+                state[path] = make_entry({ branch = branch })
               end
+              state[path].session_id = response.id
               M.switch_to(path)
               vim.notify("Session forked for " .. branch, vim.log.levels.INFO)
-              local ok_core, core = pcall(require, "opencode.core")
-              if ok_core and core.switch_session then
-                core.switch_session(response.id)
-              end
             else
               M.switch_to(path)
             end
@@ -1562,7 +1540,7 @@ M._internal = {
   prompt_branch = prompt_branch,
   tab_cwd = tab_cwd,
   save_session_id = save_session_id,
-  restore_session_id = restore_session_id,
+  select_or_create_session = select_or_create_session,
   save_neo_tree_expanded = save_neo_tree_expanded,
   restore_neo_tree_expanded = restore_neo_tree_expanded,
 
@@ -1593,22 +1571,7 @@ M._internal = {
     pcall(vim.api.nvim_del_augroup_by_name, "neovia_worktree")
   end,
 
-  --- Create a fresh WorktreeState entry.
-  --- @param overrides? table
-  --- @return neovia.WorktreeState
-  make_entry = function(overrides)
-    return vim.tbl_extend("force", {
-      status = "unknown",
-      branch = "main",
-      pending_permissions = {},
-      buffer_paths = {},
-      session_id = nil,
-      model_state = nil,
-      neo_tree_expanded = nil,
-      last_buffer_path = nil,
-      last_view = nil,
-    }, overrides or {})
-  end,
+  make_entry = make_entry,
 }
 
 return M

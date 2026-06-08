@@ -2011,16 +2011,18 @@ describe("_create_continue", function()
     assert.is_false(fork_called)
   end)
 
-  it("activates the forked session via core.switch_session after switching", function()
+  it("records the forked session_id in state before switching", function()
+    -- Session-lock model: the fork flow saves the forked session as the new
+    -- worktree's session_id BEFORE switch_to, so switch_to's
+    -- select_or_create_session deterministically activates exactly the fork
+    -- (saved-session branch).  No current_cwd pre-set, no core.switch_session.
     vim.system = function()
       return { wait = function() return { code = 0, stdout = "" } end }
     end
 
-    -- Make vim.schedule run callbacks synchronously for this test
     local orig_schedule = vim.schedule
     vim.schedule = function(fn) fn() end
 
-    -- Capture the and_then callback so we can invoke it manually
     local captured_then_cb = nil
     local mock_promise = {}
     mock_promise.and_then = function(self, cb)
@@ -2029,8 +2031,6 @@ describe("_create_continue", function()
     end
     mock_promise.catch = function(self) return self end
 
-    -- Track set_current_cwd calls
-    local cwd_set_to = nil
     package.loaded["opencode.state"] = {
       api_client = {
         fork_session = function()
@@ -2039,55 +2039,33 @@ describe("_create_continue", function()
       },
       active_session = { id = "s1" },
       last_user_message = { info = { id = "m1" } },
-      context = {
-        set_current_cwd = function(path)
-          cwd_set_to = path
-        end,
-      },
-    }
-
-    -- Mock core.switch_session to capture calls
-    local switch_session_id = nil
-    package.loaded["opencode.core"] = {
-      switch_session = function(session_id)
-        switch_session_id = session_id
-      end,
     }
 
     I.set_state({
       [orig_cwd] = I.make_entry({ branch = "main" }),
     })
 
-    -- Track ordering: set_current_cwd must be called before switch_to
-    local call_order = {}
-    local oc_state_ref = package.loaded["opencode.state"]
-    local orig_set_cwd = oc_state_ref.context.set_current_cwd
-    oc_state_ref.context.set_current_cwd = function(path)
-      table.insert(call_order, "set_current_cwd")
-      orig_set_cwd(path)
-    end
-
+    -- Capture the path switch_to is called with, and the session_id recorded
+    -- in state at that moment.
+    local switched_to_path = nil
+    local session_id_at_switch = nil
     local orig_switch = wt.switch_to
-    wt.switch_to = function()
-      table.insert(call_order, "switch_to")
+    wt.switch_to = function(path)
+      switched_to_path = path
+      local entry = I.get_state()[path]
+      session_id_at_switch = entry and entry.session_id
     end
 
     wt._create_continue("fork-activate-branch", true)
 
     assert.is_not_nil(captured_then_cb, "and_then callback should be registered")
 
-    -- Simulate the fork completing with a session ID.
-    -- vim.schedule is mocked to run synchronously above.
     captured_then_cb({ id = "forked-session-42" })
 
-    -- set_current_cwd must be called before switch_to to prevent the
-    -- DirChanged autocmd from triggering handle_directory_change
-    assert.same({ "set_current_cwd", "switch_to" }, call_order,
-      "set_current_cwd must be called before switch_to")
-    assert.is_truthy(cwd_set_to and cwd_set_to:find("fork%-activate%-branch"),
-      "set_current_cwd should receive the new worktree path")
-    assert.equals("forked-session-42", switch_session_id,
-      "core.switch_session should be called with the forked session ID")
+    assert.is_truthy(switched_to_path and switched_to_path:find("fork%-activate%-branch"),
+      "switch_to should be called with the new worktree path")
+    assert.equals("forked-session-42", session_id_at_switch,
+      "the forked session_id must be recorded in state before switch_to runs")
 
     vim.schedule = orig_schedule
     wt.switch_to = orig_switch
@@ -3731,69 +3709,10 @@ describe("switch_to session switching", function()
     package.loaded["opencode.services.session_runtime"] = nil
   end)
 
-  it("pre-sets current_cwd before tcd when session_id is known", function()
-    -- When we know the target session, pre-set current_cwd so opencode.nvim's
-    -- DirChanged autocmd short-circuits (state.current_cwd == event.file).
-    -- This prevents handle_directory_change from picking the wrong MRU session.
-    local cwd_set_calls = {}
-    local tcd_at_call = nil
-    package.loaded["opencode.state"] = {
-      active_session = { id = "s1" },
-      context = {
-        set_current_cwd = function(path)
-          tcd_at_call = vim.fn.getcwd(-1, 0)
-          table.insert(cwd_set_calls, path)
-        end,
-      },
-    }
-    package.loaded["opencode.services.session_runtime"] = {
-      switch_session = function() end,
-    }
-
-    vim.cmd.tcd(dir_a)
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({ branch = "feat", session_id = "s2" }),
-    })
-
-    wt.switch_to(dir_b)
-
-    assert.equals(1, #cwd_set_calls,
-      "set_current_cwd should be called once when session_id is known")
-    assert.equals(dir_b, cwd_set_calls[1],
-      "set_current_cwd should be called with the target directory")
-    assert.equals(dir_a, tcd_at_call,
-      "set_current_cwd must be called BEFORE tcd (cwd should still be dir_a)")
-  end)
-
-  it("does not pre-set current_cwd on first visit (no session_id)", function()
-    -- On first visit, session_id is nil. Let handle_directory_change run
-    -- so it can create or discover a session for the new directory.
-    local cwd_set_calls = {}
-    package.loaded["opencode.state"] = {
-      active_session = { id = "s1" },
-      context = {
-        set_current_cwd = function(path)
-          table.insert(cwd_set_calls, path)
-        end,
-      },
-    }
-
-    vim.cmd.tcd(dir_a)
-    I.set_state({
-      [dir_a] = I.make_entry({ branch = "main" }),
-      [dir_b] = I.make_entry({ branch = "feat" }), -- no session_id
-    })
-
-    wt.switch_to(dir_b)
-
-    assert.equals(0, #cwd_set_calls,
-      "set_current_cwd should NOT be called on first visit (no session_id)")
-  end)
-
-  it("calls switch_session in deferred block when session_id is known", function()
-    -- When current_cwd is pre-set, handle_directory_change is skipped.
-    -- switch_to must call switch_session itself to load the correct session.
+  it("switches to the saved session in deferred block when known", function()
+    -- Session-lock model: opencode's handle_directory_change is a no-op, so
+    -- switch_to drives selection itself via select_or_create_session, which
+    -- calls switch_session with the saved id.
     local switched_to = nil
     package.loaded["opencode.state"] = {
       active_session = { id = "s1" },
@@ -3992,15 +3911,14 @@ describe("switch_to session switching", function()
       "should not call set_model when target has no saved model_state")
   end)
 
-  -- Bug: switching back to a worktree after sending a prompt in a new
-  -- worktree caused handle_directory_change to pick the MRU session
-  -- (from the new worktree) instead of the saved one.  The fix is to
-  -- pre-set current_cwd so handle_directory_change never fires, and
-  -- switch_to calls switch_session directly.
-  it("prevents handle_directory_change from clobbering session on revisit", function()
+  -- Switching back to a worktree must load its saved session, not whatever
+  -- session happens to be active (which, under the lock model, is the one
+  -- from the worktree we are leaving).  select_or_create_session switches
+  -- to the target's saved session_id.
+  it("loads the target's saved session on revisit, not the active one", function()
     local switched_to = nil
     package.loaded["opencode.state"] = {
-      active_session = { id = "session-feat-new" },  -- stale from new worktree
+      active_session = { id = "session-feat-new" }, -- active = the dir we leave
       context = {
         set_current_cwd = function() end,
       },
@@ -4023,16 +3941,12 @@ describe("switch_to session switching", function()
       }),
     })
 
-    -- Switch to main (dir_b). Previously, handle_directory_change would
-    -- fire and pick session-feat-new (MRU). Now current_cwd is pre-set
-    -- so handle_directory_change short-circuits, and switch_to calls
-    -- switch_session directly with the saved session_id.
     wt.switch_to(dir_b)
 
     vim.wait(200, function() return switched_to ~= nil end)
 
     assert.equals("session-main-001", switched_to,
-      "switch_to must load the saved session, not the MRU from another worktree")
+      "switch_to must load the target's saved session, not the active one")
   end)
 end)
 
@@ -4536,11 +4450,46 @@ describe("process_event calls SSE activity callbacks", function()
 end)
 
 ------------------------------------------------------------------------
--- restore_session_id
+-- select_or_create_session
 ------------------------------------------------------------------------
 
-describe("restore_session_id", function()
+-- select_or_create_session: with opencode's lock_session_to_directory on,
+-- handle_directory_change is a no-op, so neovia is the sole authority on
+-- session selection.  This is deterministic: no current_cwd pre-set, no
+-- polling against an async handler.
+describe("select_or_create_session", function()
   local saved_oc_state, saved_oc_runtime
+
+  -- Build a fake api_client whose list_sessions resolves synchronously with
+  -- the given sessions list (via a minimal thenable mirroring opencode's).
+  local function fake_api_client(sessions)
+    return {
+      list_sessions = function(_, _directory)
+        local p = {}
+        function p:and_then(fn)
+          fn(sessions)
+          return p
+        end
+        function p:catch() return p end
+        return p
+      end,
+    }
+  end
+
+  -- A create_new_session stub returning a thenable that resolves with the
+  -- given session, mirroring opencode's Promise.async return.
+  local function fake_create(new_session, captured)
+    return function()
+      if captured then captured.called = true end
+      local p = {}
+      function p:and_then(fn)
+        fn(new_session)
+        return p
+      end
+      function p:catch() return p end
+      return p
+    end
+  end
 
   before_each(function()
     saved_oc_state = package.loaded["opencode.state"]
@@ -4565,45 +4514,29 @@ describe("restore_session_id", function()
     I.reset()
   end)
 
-  it("calls switch_session when active session differs from saved", function()
+  it("switches to the saved session when active differs", function()
     local switched_to = nil
     package.loaded["opencode.state"] = {
-      active_session = { id = "session-feat-001" },  -- wrong session
+      active_session = { id = "session-feat-001" }, -- wrong session
     }
     package.loaded["opencode.services.session_runtime"] = {
       switch_session = function(id) switched_to = id end,
     }
 
-    I.restore_session_id("/proj/main")
+    I.select_or_create_session("/proj/main")
     assert.equals("session-main-001", switched_to)
   end)
 
-  it("does not call switch_session when active session matches saved", function()
+  it("does not switch when active session already matches saved", function()
     local switched_to = nil
     package.loaded["opencode.state"] = {
-      active_session = { id = "session-main-001" },  -- correct session
+      active_session = { id = "session-main-001" }, -- correct session
     }
     package.loaded["opencode.services.session_runtime"] = {
       switch_session = function(id) switched_to = id end,
     }
 
-    I.restore_session_id("/proj/main")
-    assert.is_nil(switched_to)
-  end)
-
-  it("is a no-op when no session_id is saved", function()
-    local switched_to = nil
-    I.set_state({
-      ["/proj/new"] = I.make_entry({ status = "idle", branch = "new" }),
-    })
-    package.loaded["opencode.state"] = {
-      active_session = { id = "session-any" },
-    }
-    package.loaded["opencode.services.session_runtime"] = {
-      switch_session = function(id) switched_to = id end,
-    }
-
-    I.restore_session_id("/proj/new")
+    I.select_or_create_session("/proj/main")
     assert.is_nil(switched_to)
   end)
 
@@ -4616,97 +4549,98 @@ describe("restore_session_id", function()
       switch_session = function(id) switched_to = id end,
     }
 
-    I.restore_session_id("/proj/nonexistent")
+    I.select_or_create_session("/proj/nonexistent")
     assert.is_nil(switched_to)
   end)
 
-  it("is a no-op when opencode.state is not available", function()
+  it("is a no-op when opencode modules are not available", function()
     package.loaded["opencode.state"] = nil
     package.loaded["opencode.services.session_runtime"] = nil
-
     -- Should not error
-    I.restore_session_id("/proj/main")
+    I.select_or_create_session("/proj/main")
   end)
 
-  -- Bug: on first visit to a worktree, session_id is nil so
-  -- restore_session_id returns early. handle_directory_change picks the
-  -- most recently updated session across ALL worktrees (for git projects),
-  -- which may belong to a different worktree. neovia must correct this.
-  it("queries API and switches when no session_id is saved (first visit)", function()
-    -- Set up a first-visit worktree (no session_id)
+  -- First visit (no saved session_id): discover the newest non-child
+  -- session for the target directory and switch to it.
+  it("discovers and switches to the newest non-child session on first visit", function()
     I.set_state({
-      ["/proj/new-wt"] = I.make_entry({
-        status = "idle",
-        branch = "new-feature",
-        -- session_id is nil: first visit
-      }),
+      ["/proj/new-wt"] = I.make_entry({ status = "idle", branch = "new-feature" }),
     })
-
-    -- opencode picked the wrong session (from another worktree)
     package.loaded["opencode.state"] = {
       active_session = { id = "session-other-worktree" },
-      api_client = {
-        -- list_sessions returns sessions for the target directory;
-        -- the server filters by the directory query param.
-        list_sessions = function(_, directory)
-          local Promise = { new = function()
-            local p = {}
-            function p:and_then(fn)
-              fn({
-                { id = "session-new-wt-001", parentID = nil,
-                  time = { updated = 100 } },
-                { id = "session-new-wt-child", parentID = "session-new-wt-001",
-                  time = { updated = 200 } },
-              })
-              return p
-            end
-            function p:catch() return p end
-            return p
-          end }
-          return Promise.new()
-        end,
-      },
+      api_client = fake_api_client({
+        { id = "session-new-wt-old", parentID = nil, time = { updated = 50 } },
+        { id = "session-new-wt-001", parentID = nil, time = { updated = 100 } },
+        { id = "session-new-wt-child", parentID = "session-new-wt-001", time = { updated = 200 } },
+      }),
     }
-
     local switched_to = nil
     package.loaded["opencode.services.session_runtime"] = {
       switch_session = function(id) switched_to = id end,
     }
 
-    I.restore_session_id("/proj/new-wt")
-
-    -- The and_then callback uses vim.schedule, so flush the event loop.
+    I.select_or_create_session("/proj/new-wt")
     vim.wait(100, function() return switched_to ~= nil end)
 
-    -- Should have queried API for sessions in the target directory
-    -- and switched to the most recent non-child session.
     assert.equals("session-new-wt-001", switched_to,
-      "on first visit, should query API and switch to a session for the target directory")
-    -- Should also save the discovered session_id for future switches.
+      "should switch to the most recent non-child session for the directory")
     assert.equals("session-new-wt-001", I.get_state()["/proj/new-wt"].session_id,
-      "discovered session_id should be saved in state")
+      "discovered session_id should be saved")
   end)
 
-  -- Bug: even when session_id is saved, if the active session belongs to
-  -- a different directory, neovia should verify and correct immediately
-  -- rather than trusting the saved ID blindly.
-  it("verifies active session directory matches target after switch", function()
-    -- Session ID is saved, but handle_directory_change loaded a session
-    -- from a different worktree before restore_session_id could correct.
-    -- The wrong session is briefly visible. This tests that restore_session_id
-    -- acts immediately when active_session.id differs from saved.
-    local switched_to = nil
+  -- First visit with no existing sessions: create one (scoped to the dir
+  -- via the api_client's directory injection) and set it active.
+  it("creates a new session on first visit when none exist", function()
+    I.set_state({
+      ["/proj/empty-wt"] = I.make_entry({ status = "idle", branch = "empty" }),
+    })
+    local set_active_to = nil
+    local create_marker = {}
     package.loaded["opencode.state"] = {
-      -- Wrong session loaded by handle_directory_change
-      active_session = { id = "session-feat-001" },
+      active_session = { id = "session-prev-worktree" },
+      api_client = fake_api_client({}), -- no sessions for this dir
+      session = {
+        set_active = function(s) set_active_to = s end,
+      },
     }
     package.loaded["opencode.services.session_runtime"] = {
-      switch_session = function(id) switched_to = id end,
+      switch_session = function() end,
+      create_new_session = fake_create({ id = "session-created-001" }, create_marker),
     }
 
-    -- Saved session_id exists and differs from active
-    I.restore_session_id("/proj/main")
-    assert.equals("session-main-001", switched_to,
-      "should switch to saved session immediately")
+    I.select_or_create_session("/proj/empty-wt")
+    vim.wait(100, function() return set_active_to ~= nil end)
+
+    assert.is_true(create_marker.called, "should create a new session when none exist")
+    assert.equals("session-created-001", set_active_to and set_active_to.id,
+      "the created session should be set active")
+    assert.equals("session-created-001", I.get_state()["/proj/empty-wt"].session_id,
+      "created session_id should be saved")
+  end)
+
+  -- First visit, sessions exist but only child sessions: treat as none and
+  -- create (a worktree should land on a top-level session).
+  it("creates a new session when only child sessions exist", function()
+    I.set_state({
+      ["/proj/child-only"] = I.make_entry({ status = "idle", branch = "child" }),
+    })
+    local create_marker = {}
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-prev" },
+      api_client = fake_api_client({
+        { id = "child-a", parentID = "parent-x", time = { updated = 100 } },
+      }),
+      session = { set_active = function() end },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function() end,
+      create_new_session = fake_create({ id = "session-created-002" }, create_marker),
+    }
+
+    I.select_or_create_session("/proj/child-only")
+    vim.wait(100, function() return create_marker.called end)
+
+    assert.is_true(create_marker.called,
+      "should create a session when only child sessions exist for the dir")
   end)
 end)
