@@ -3572,6 +3572,7 @@ describe("save_session_id", function()
       ["/proj/a"] = I.make_entry({ branch = "main" }),
     })
     package.loaded["opencode.state"] = {
+      current_cwd = "/proj/a",
       active_session = { id = "session-42" },
     }
 
@@ -3617,6 +3618,7 @@ describe("save_session_id", function()
       ["/proj/a"] = I.make_entry({ branch = "main", session_id = "old-id" }),
     })
     package.loaded["opencode.state"] = {
+      current_cwd = "/proj/a",
       active_session = {},
     }
 
@@ -3652,6 +3654,48 @@ describe("save_session_id", function()
     -- Should preserve the known-good session_id, not overwrite with stale active_session
     assert.equals("session-b-correct", I.get_state()["/proj/b"].session_id,
       "save_session_id should not overwrite a known-good session_id with a stale active_session")
+  end)
+
+  -- Bug: when the user creates a NEW session for the current worktree
+  -- (e.g. <leader>on), active_session legitimately changes to the new
+  -- session, but entry.session_id still points to the old one. On switch
+  -- away, the new session must be captured so it can be restored later.
+  -- The active session is authoritative when it belongs to this directory
+  -- (oc_state.current_cwd == dir).
+  it("updates saved session_id when a new session is active for this dir", function()
+    I.set_state({
+      ["/proj/a"] = I.make_entry({ branch = "main", session_id = "old-session" }),
+    })
+    package.loaded["opencode.state"] = {
+      current_cwd = "/proj/a",
+      active_session = { id = "new-session-from-leader-on" },
+    }
+
+    I.save_session_id("/proj/a")
+
+    assert.equals("new-session-from-leader-on", I.get_state()["/proj/a"].session_id,
+      "save_session_id should capture the newly created session for the current worktree")
+  end)
+
+  -- The stale-active-session race must still be respected even with the
+  -- new "update on current dir" behaviour: when active_session belongs to
+  -- a DIFFERENT directory (current_cwd ~= dir), do not overwrite.
+  it("does not overwrite when active_session belongs to another dir", function()
+    I.set_state({
+      ["/proj/b"] = I.make_entry({
+        branch = "feature-b",
+        session_id = "session-b-correct",
+      }),
+    })
+    package.loaded["opencode.state"] = {
+      current_cwd = "/proj/a", -- active session belongs to a different worktree
+      active_session = { id = "session-a-wrong" },
+    }
+
+    I.save_session_id("/proj/b")
+
+    assert.equals("session-b-correct", I.get_state()["/proj/b"].session_id,
+      "save_session_id should not overwrite when the active session belongs to another dir")
   end)
 end)
 
@@ -3776,8 +3820,13 @@ describe("switch_to session switching", function()
 
   it("saves current session_id before switching away", function()
     package.loaded["opencode.state"] = {
+      current_cwd = dir_a,
       active_session = { id = "current-session-77" },
-      context = { set_current_cwd = function() end },
+      context = {
+        set_current_cwd = function(p)
+          package.loaded["opencode.state"].current_cwd = p
+        end,
+      },
     }
     package.loaded["opencode.services.session_runtime"] = {
       switch_session = function() end,

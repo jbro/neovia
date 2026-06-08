@@ -495,20 +495,37 @@ end
 ------------------------------------------------------------------------
 
 --- Save the active opencode session ID into state for the given directory.
---- Only writes when the entry has no session_id yet (first save).  Once
---- set, session_id is updated exclusively by restore_session_id (which
---- queries the API for the correct directory-scoped session) and resync().
---- This prevents overwriting a known-good session_id with a stale
---- active_session that handle_directory_change selected from the wrong
---- worktree before switch_session (async) has completed.
+--- Writes when the active session genuinely belongs to `dir`, i.e. opencode's
+--- current_cwd matches.  This captures a session created mid-session (e.g. a
+--- new session via <leader>on) so it is restored on a later switch back.
+---
+--- The current_cwd guard prevents overwriting a known-good session_id with a
+--- stale active_session that handle_directory_change selected from the wrong
+--- worktree before switch_session (async) has completed: in that race the
+--- active session belongs to a different directory, so current_cwd ~= dir.
+---
+--- On first save (no current_cwd available yet) we still fall back to writing
+--- the active session when the entry has none, preserving first-visit capture.
 --- @param dir string
 local function save_session_id(dir)
   local entry = state[dir]
   if not entry then return end
-  if entry.session_id then return end -- already tracked; don't overwrite
   local ok, oc_state = pcall(require, "opencode.state")
-  if ok and oc_state.active_session and oc_state.active_session.id then
-    entry.session_id = oc_state.active_session.id
+  if not ok or not oc_state then return end
+  local active = oc_state.active_session
+  if not active or not active.id then return end
+
+  -- The active session is authoritative for `dir` only when opencode's
+  -- current_cwd matches.  Then capture it (covers newly created sessions).
+  if oc_state.current_cwd == dir then
+    entry.session_id = active.id
+    return
+  end
+
+  -- current_cwd unknown/mismatched: only fill in a first-time session_id,
+  -- never overwrite a known-good one with a possibly-stale active session.
+  if not entry.session_id then
+    entry.session_id = active.id
   end
 end
 
