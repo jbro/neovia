@@ -112,6 +112,13 @@ return {
           },
           output_window = {
             ["<esc>"] = false,
+            -- Open file under cursor in the code window (left pane) instead
+            -- of upstream's jump_to_file, which targets the wrong window
+            -- under neovia's fixed layout.
+            ["gf"] = {
+              function() require("neovia.navigate").open() end,
+              desc = "Open file in code window",
+            },
           },
         },
         hooks = {
@@ -157,18 +164,6 @@ return {
           navigate.open_in_code_win(file_path, ref.line)
         end
       end
-
-      -- gf in opencode output: open file in the code window (left pane)
-      local gf_group = vim.api.nvim_create_augroup("neovia_opencode_gf", { clear = true })
-      vim.api.nvim_create_autocmd("FileType", {
-        group = gf_group,
-        pattern = "opencode_output",
-        callback = function(ev)
-          vim.keymap.set("n", "gf", function()
-            require("neovia.navigate").open()
-          end, { buffer = ev.buf, desc = "Open file in code window" })
-        end,
-      })
 
       -- Keep table-width system prompt in sync with window size.
       local resize_group = vim.api.nvim_create_augroup("neovia_opencode_table_width", { clear = true })
