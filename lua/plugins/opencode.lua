@@ -49,6 +49,88 @@ local function refresh_table_width_prompt()
   end
 end
 
+-- Guard so the child-permission recovery is subscribed at most once even if
+-- the plugin config runs again (defensive; lazy.nvim runs config once).
+local child_permission_recovery_installed = false
+
+--- Recover child/subagent-session permission dialogs that upstream's
+--- session-scoped event gate drops.
+---
+--- opencode.nvim scopes permission.asked/updated to the active session via
+--- event_scope.scoped_callback -> session_scope.belongs_to_active_session.
+--- A child-session permission only passes that gate once the parent's `task`
+--- tool part (carrying state.metadata.sessionId) has been indexed in
+--- render_state. When the permission event arrives before that part is
+--- indexed, the gate returns false, on_permission_updated is never called,
+--- and the dialog is silently dropped (it stays pending server-side, which
+--- is why <leader>oS recovers it manually).
+---
+--- This installs an extra, *unscoped* subscription that detects the dropped
+--- case and re-drives upstream's own recovery (restore_pending_permissions)
+--- on a short defer, by which point the task part is usually indexed. The
+--- restore queries the server and re-filters via belongs_to_session, so
+--- foreign-worktree permissions are correctly ignored and already-shown
+--- permissions are deduped by id.
+local function install_child_permission_recovery()
+  if child_permission_recovery_installed then
+    return
+  end
+
+  local ok_state, oc_state = pcall(require, "opencode.state")
+  if not ok_state or not oc_state.event_manager then
+    return
+  end
+
+  local ok_scope, event_scope = pcall(require, "opencode.ui.event_scope")
+  if not ok_scope then
+    return
+  end
+
+  local function on_permission(event_name, properties)
+    if not properties or not properties.id then
+      return
+    end
+
+    -- Upstream's scoped callback already handles this one; do nothing.
+    if event_scope.should_handle(event_name, properties) then
+      return
+    end
+
+    local active = oc_state.active_session
+    if not active or not active.id then
+      return
+    end
+
+    -- A permission with no sessionID is handled by upstream's fallback;
+    -- only act on cross-session (potential child) permissions.
+    local sid = properties.sessionID
+    if not sid or sid == "" or sid == active.id then
+      return
+    end
+
+    -- Defer so the parent's task-tool part (which links child -> parent
+    -- session) has a chance to be indexed before we re-query the server.
+    vim.defer_fn(function()
+      local cur = oc_state.active_session
+      if not cur or not cur.id then
+        return
+      end
+      local ok_pw, permission_window = pcall(require, "opencode.ui.permission_window")
+      if ok_pw then
+        pcall(permission_window.restore_pending_permissions, cur.id)
+      end
+    end, 200)
+  end
+
+  for _, name in ipairs({ "permission.asked", "permission.updated" }) do
+    oc_state.event_manager:subscribe(name, function(properties)
+      on_permission(name, properties)
+    end)
+  end
+
+  child_permission_recovery_installed = true
+end
+
 return {
   {
     "sudo-tee/opencode.nvim",
@@ -169,6 +251,11 @@ return {
           navigate.open_in_code_win(file_path, ref.line)
         end
       end
+
+      -- Recover child-session permission dialogs the upstream session-scoped
+      -- event gate drops when the permission arrives before the parent task
+      -- part is indexed.  event_manager is created during setup() above.
+      install_child_permission_recovery()
 
       -- Keep table-width system prompt in sync with window size.
       local resize_group = vim.api.nvim_create_augroup("neovia_opencode_table_width", { clear = true })

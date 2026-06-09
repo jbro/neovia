@@ -202,3 +202,31 @@ races). On `switch_to`, after `tcd`, `select_or_create_session(dir)`
 directory and switches to the newest non-child, or creates one when none
 exist. The fork flow records the forked `session_id` in state before
 `switch_to` so the same saved-session path activates exactly the fork.
+
+### 0016 - Recover dropped child-session permission dialogs (2026-06-08)
+
+opencode.nvim scopes `permission.asked`/`permission.updated` to the active
+session (`event_scope.scoped_callback` → `session_scope.belongs_to_active_session`).
+A child/subagent-session permission only passes that gate once the parent's
+`task` tool part (carrying `state.metadata.sessionId`) has been indexed in
+`render_state`. When the permission event arrives before that part is indexed,
+the gate drops it and the dialog never surfaces (it stays pending server-side,
+recoverable only via `<leader>oS`). neovia installs an extra *unscoped*
+subscription in `lua/plugins/opencode.lua`
+(`install_child_permission_recovery`): when a cross-session permission would be
+dropped (`event_scope.should_handle` is false and `sessionID` is a non-active
+session), it defers ~200ms then calls upstream
+`permission_window.restore_pending_permissions(active_session.id)`. The restore
+re-queries the server and re-filters via `belongs_to_session`, so
+foreign-worktree permissions are ignored and already-shown ones are deduped by
+id. Subscription is guarded to install once.
+
+### 0017 - neovia SSE and opencode.nvim event_manager coexist (2026-06-09)
+
+The two event streams have different scopes and both are required. neovia's
+SSE subscribes to `/global/event` unfiltered (all worktrees, routed by the
+envelope `directory` field) to drive background-worktree status
+(tabline/statusline). opencode.nvim's event_manager subscribes
+`/global/event?directory=<current_cwd>` (active worktree only, re-subscribed
+on `tcd`) to render the active session's UI. The event_manager is blind to
+background worktrees, so neovia's stream cannot be folded into it.
