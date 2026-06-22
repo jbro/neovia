@@ -39,6 +39,13 @@
  4. Deferred UI updates run: neo-tree root set via `:Neotree dir=` (configured in `lua/plugins/neo-tree.lua`), layout repair via `lua/neovia/layout.lua`, and notes buffer swap via `lua/neovia/notes.lua`.
  5. A single global SSE connection to `/global/event` (`lua/neovia/sse.lua`) delivers multiplexed envelopes; events include a `directory` field and are routed to per-worktree runtime state in `lua/neovia/worktree.lua`. Tabline/status components (`lua/neovia/tabline.lua`) consume the updated per-worktree state.
 
+**Opencode session selection:**
+
+- Opencode is configured with `lock_session_to_directory = true` in `lua/plugins/opencode.lua` so directory-driven automatic session selection is disabled.
+- Neovia deterministically selects or creates the opencode session for a worktree after `tcd` via `lua/neovia/worktree.lua::select_or_create_session`. Selection uses a saved `session_id` when present, otherwise it lists sessions scoped to the directory and switches to the newest non-child or creates a new session when none exist.
+- When creating a forked session, neovia records the forked session ID into the target worktree's state before switching so the subsequent deterministic selection activates the intended session without races.
+ - Neovia clears opencode's active session synchronously whenever it differs from the target worktree before any asynchronous session switch/create. This prevents typed input from routing to a stale session while the selection resolves (`lua/neovia/worktree.lua::select_or_create_session`).
+
 **Server lifecycle flow (opencode):**
 
 1. Startup code calls `lua/neovia/server.lua::ensure_running()` from `init.lua` to make `opencode serve` available to plugins.
@@ -92,3 +99,8 @@
 **Caching:** Persistent server info uses `stdpath('state')`; notes and transient per-worktree data use `stdpath('cache')`.
 
 **Storage:** Notes persist to files under `stdpath('cache')/notes/` named by SHA256 of the worktree path; server persists `port` and `pid` under `stdpath('state')/server/<hash>/`.
+
+**Renderer event scoping:**
+
+- Opencode's renderer subscriptions are scoped to the active session; neovia registers renderer and session handlers directly (see `lua/plugins/opencode.lua`) and does not wrap handlers for additional session-guarding.
+ - Neovia installs an additional unscoped subscription in `lua/plugins/opencode.lua` that detects child/subagent-session permission events dropped by the session-scoped gate and re-drives upstream's recovery flow. The subscription defers briefly then calls `opencode.ui.permission_window.restore_pending_permissions` for the active session to surface pending child-session permission dialogs.
