@@ -234,6 +234,19 @@ return {
         api.add_visual_selection(on_diffview_tab() and { open_input = false } or nil, range)
       end, { desc = "Add visual selection to context" })
 
+      -- Skills picker (browse/select opencode skills). Upstream exposes this
+      -- only via :Opencode skills / "/skills"; api.lua omits it, so call the
+      -- surface action handler directly (same code path the slash command uses).
+      -- <leader>os is the plugin's "select session", so use <leader>ok (sKill).
+      vim.keymap.set("n", "<leader>ok", function()
+        local ok, surface = pcall(require, "opencode.commands.handlers.surface")
+        if not (ok and surface.actions and surface.actions.skills) then
+          vim.notify("opencode: skills picker unavailable", vim.log.levels.WARN)
+          return
+        end
+        surface.actions.skills()
+      end, { desc = "Skills picker" })
+
       -- Override reference picker to open files in the code window
       -- instead of tabedit (which creates a new tab, breaking layout).
       local ok_rp, rp = pcall(require, "opencode.ui.reference_picker")
