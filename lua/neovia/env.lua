@@ -11,11 +11,31 @@
 -- string, or `exec` to run a command and use its stdout. A string `exec`
 -- runs via shell; a table `exec` runs directly. File-based caching for
 -- `exec` entries is opt-in via `cache` (path) + `ttl` (seconds).
+--
+-- Profiles: setup() also accepts a profiles config to support multiple
+-- swappable sets of API keys / base URLs:
+--   require("neovia.env").setup({
+--     shared   = { { name = "FOO", value = "bar" } },  -- loaded for all profiles
+--     default  = "staging",
+--     profiles = {
+--       staging = { { name = "API_KEY", exec = {...} }, { name = "BASE_URL", value = "..." } },
+--       prod    = { { name = "API_KEY", exec = {...} }, { name = "BASE_URL", value = "..." } },
+--     },
+--   })
+-- The active profile persists across restarts (stdpath("state")). Switching
+-- profiles updates vim.env; the opencode server must be restarted (<leader>oE)
+-- to inherit the new environment.
 
 local M = {}
 
 --- Whether setup() has been called.
 local initialised = false
+
+--- @type table?  The profiles config passed to setup() (nil in legacy mode).
+local profiles_config = nil
+
+--- @type string?  The name of the active profile (nil in legacy mode).
+local active = nil
 
 --- @class neovia.env.Var
 --- @field name string        Environment variable name.
@@ -89,13 +109,61 @@ local function load_var(spec)
   return true
 end
 
---- Configure and load environment variables.
---- @param specs neovia.env.Var[]
-function M.setup(specs)
-  if initialised then return end
-  initialised = true
+------------------------------------------------------------------------
+-- Profiles
+------------------------------------------------------------------------
 
-  for _, spec in ipairs(specs) do
+--- Path to the file that persists the active profile name.
+--- @return string
+local function profile_state_file()
+  return vim.fn.stdpath("state") .. "/neovia/env-profile"
+end
+
+--- Persist the active profile name to disk.
+--- @param name string
+local function save_profile(name)
+  local path = profile_state_file()
+  vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+  write_file(path, name)
+end
+
+--- Load the persisted active profile name, or nil.
+--- @return string?
+local function load_profile()
+  local name = read_file(profile_state_file())
+  if not name or name == "" then return nil end
+  return vim.trim(name)
+end
+
+--- Detect whether a config is a profiles config (vs a flat spec list).
+--- @param config table
+--- @return boolean
+local function is_profiles_config(config)
+  return type(config) == "table" and type(config.profiles) == "table"
+end
+
+--- Sorted list of profile names from the active config.
+--- @return string[]
+function M.profiles()
+  if not profiles_config then return {} end
+  local names = {}
+  for name in pairs(profiles_config.profiles) do
+    table.insert(names, name)
+  end
+  table.sort(names)
+  return names
+end
+
+--- Name of the active profile, or nil in legacy mode.
+--- @return string?
+function M.active_profile()
+  return active
+end
+
+--- Load a list of env specs, notifying on each failure.
+--- @param specs neovia.env.Var[]
+local function load_specs(specs)
+  for _, spec in ipairs(specs or {}) do
     local ok, err = load_var(spec)
     if not ok then
       vim.notify(err, vim.log.levels.WARN)
@@ -103,13 +171,101 @@ function M.setup(specs)
   end
 end
 
+--- Select and load a profile, persisting the choice. The opencode server
+--- must be restarted to inherit the new environment.
+--- @param name string
+--- @return boolean ok
+--- @return string? err
+function M.select_profile(name)
+  if not profiles_config then
+    return false, "env: no profiles configured"
+  end
+  local specs = profiles_config.profiles[name]
+  if not specs then
+    return false, ("env: unknown profile %q"):format(name)
+  end
+
+  load_specs(specs)
+  active = name
+  save_profile(name)
+  return true
+end
+
+--- Resolve which profile should be active at startup: a valid persisted
+--- selection wins, else the configured default, else the first sorted name.
+--- @param config table
+--- @return string?
+local function resolve_active(config)
+  local persisted = load_profile()
+  if persisted and config.profiles[persisted] then
+    return persisted
+  end
+  if config.default and config.profiles[config.default] then
+    return config.default
+  end
+  local names = {}
+  for name in pairs(config.profiles) do
+    table.insert(names, name)
+  end
+  table.sort(names)
+  return names[1]
+end
+
+--- Re-read the persisted selection and re-apply `shared` + the active
+--- profile's specs to `vim.env`. Lets an instance adopt a profile chosen
+--- by another instance (the selection is global) before restarting its
+--- opencode server. No-op outside profiles mode.
+--- @return boolean ok  True when a profile was applied.
+function M.apply_active()
+  if not profiles_config then return false end
+  load_specs(profiles_config.shared)
+  active = resolve_active(profiles_config)
+  if active then
+    load_specs(profiles_config.profiles[active])
+    return true
+  end
+  return false
+end
+
+------------------------------------------------------------------------
+-- Setup
+------------------------------------------------------------------------
+
+--- Configure and load environment variables.
+--- Accepts either a flat list of specs (legacy) or a profiles config.
+--- @param config neovia.env.Var[]|table
+function M.setup(config)
+  if initialised then return end
+  initialised = true
+
+  if is_profiles_config(config) then
+    profiles_config = config
+    load_specs(config.shared)
+    active = resolve_active(config)
+    if active then
+      load_specs(config.profiles[active])
+    end
+    return
+  end
+
+  -- Legacy: flat list of specs.
+  load_specs(config)
+end
+
 M._internal = {
   cache_fresh = cache_fresh,
   load_var = load_var,
+  is_profiles_config = is_profiles_config,
+  profile_state_file = profile_state_file,
+  save_profile = save_profile,
+  load_profile = load_profile,
+  resolve_active = resolve_active,
 
   --- Reset module state (for test isolation / reload contract).
   reset = function()
     initialised = false
+    profiles_config = nil
+    active = nil
   end,
 }
 

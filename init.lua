@@ -156,15 +156,69 @@ require("neovia.theme").apply()
 ------------------------------------------------------------------------
 vim.keymap.set("n", "<leader>oEs", function()
   local s = require("neovia.server").status()
+  local lines
   if s.state == "running" then
-    vim.notify(("opencode server: running (port %d, pid %d)"):format(s.port, s.pid), vim.log.levels.INFO)
+    lines = {
+      "opencode server: running",
+      ("  port: %d"):format(s.port),
+      ("  pid:  %d"):format(s.pid),
+    }
   else
-    vim.notify("opencode server: stopped", vim.log.levels.WARN)
+    lines = { "opencode server: stopped" }
   end
+
+  local profile = require("neovia.env").active_profile()
+  if profile then
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = ("env profile: %s"):format(profile)
+  end
+
+  -- Pad each line and add blank top/bottom rows for breathing room.
+  local padded = { "" }
+  for _, l in ipairs(lines) do
+    padded[#padded + 1] = "  " .. l
+  end
+  padded[#padded + 1] = ""
+  lines = padded
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].bufhidden = "wipe"
+
+  local width = 0
+  for _, l in ipairs(lines) do
+    width = math.max(width, #l)
+  end
+  width = math.max(width + 4, 32)
+  local height = #lines
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " opencode server (q to close) ",
+    title_pos = "center",
+  })
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+  vim.keymap.set("n", "q", close, { buffer = buf, nowait = true })
+  vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true })
 end, { desc = "Server status" })
 
 vim.keymap.set("n", "<leader>oEr", function()
   vim.notify("opencode server: restarting...", vim.log.levels.INFO)
+  -- Adopt the latest global env-profile selection (possibly chosen in
+  -- another neovia instance) before the new server inherits the env.
+  require("neovia.env").apply_active()
   local srv = require("neovia.server")
   srv.restart(function(err, port)
     vim.schedule(function()
@@ -189,6 +243,63 @@ vim.keymap.set("n", "<leader>oEq", function()
     vim.notify("opencode server: was not running", vim.log.levels.WARN)
   end
 end, { desc = "Shutdown server" })
+
+-- Switch the active env profile (API key / base URL set), then restart the
+-- opencode server so it inherits the new environment.
+vim.keymap.set("n", "<leader>oEp", function()
+  local env = require("neovia.env")
+  local profiles = env.profiles()
+  if #profiles == 0 then
+    vim.notify("env: no profiles configured (see .env.lua)", vim.log.levels.WARN)
+    return
+  end
+
+  local active = env.active_profile()
+  local function restart_with(name)
+    local ok, err = env.select_profile(name)
+    if not ok then
+      vim.notify("env: " .. (err or "failed to select profile"), vim.log.levels.ERROR)
+      return
+    end
+    vim.notify(("env: profile '%s' selected, restarting server..."):format(name), vim.log.levels.INFO)
+    local srv = require("neovia.server")
+    srv.restart(function(rerr, port)
+      vim.schedule(function()
+        if rerr then
+          vim.notify("opencode server: restart failed: " .. rerr, vim.log.levels.ERROR)
+        else
+          srv.reconnect_plugin(port)
+          vim.notify(("env: profile '%s' active (server port %d)"):format(name, port), vim.log.levels.INFO)
+          require("neovia.layout").apply()
+        end
+      end)
+    end)
+  end
+
+  local labels = {}
+  for _, name in ipairs(profiles) do
+    labels[#labels + 1] = name == active and (name .. " (active)") or name
+  end
+
+  local ok_fzf, fzf = pcall(require, "fzf-lua")
+  if ok_fzf then
+    fzf.fzf_exec(labels, {
+      prompt = "Env profile> ",
+      winopts = { height = 0.3, width = 0.4 },
+      previewer = false,
+      actions = {
+        ["default"] = function(selected)
+          if not selected or #selected == 0 then return end
+          restart_with((selected[1]:gsub(" %(active%)$", "")))
+        end,
+      },
+    })
+  else
+    vim.ui.select(profiles, { prompt = "Env profile" }, function(choice)
+      if choice then restart_with(choice) end
+    end)
+  end
+end, { desc = "Switch env profile" })
 
 ------------------------------------------------------------------------
 -- Magic Context integration (context/memory status from RPC)

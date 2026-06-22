@@ -120,6 +120,29 @@ Worktree (w), Plugins (p).
 File-based caching is opt-in per entry via explicit `cache` path + `ttl`.
 No password-manager-specific assumptions.
 
+### 0019 - Env profiles for swappable API key / base URL sets (2026-06-22)
+
+`neovia.env.setup()` accepts either a flat spec list (legacy) or a profiles
+config `{ shared = {specs}, default = "name", profiles = { name = {specs} } }`.
+On startup it loads `shared` then the active profile; the active profile is the
+persisted selection (`stdpath("state")/neovia/env-profile`), else `default`,
+else the first sorted name. `<leader>oEp` (in `init.lua`) picks a profile via
+fzf-lua, calls `env.select_profile(name)` (sets `vim.env`, persists), then
+restarts the opencode server so it inherits the new env. The selection is
+global (one state file, not per-project), so other running instances are
+unaffected until their server restarts; `<leader>oEr` calls
+`env.apply_active()` first, which re-reads the persisted selection and
+re-applies `shared` + the active profile's specs to `vim.env`, so a plain
+restart adopts the latest global choice without re-picking. Profiles set the
+provider base URL through an env var (`HAIP_BASE_URL`); the opencode provider
+config (`~/.config/opencode/opencode.jsonc`) reads it via `{env:HAIP_BASE_URL}`
+rather than a hardcoded literal. Because the base URL is no longer literal in
+that config, the shell wrapper that launches opencode from the CLI
+(`~/.config/zsh/local/functions/opencode`) must also export `HAIP_BASE_URL`
+(defaulting to the dev URL, overridable from the shell). `env.setup()` runs before
+`server.ensure_running()` in `init.lua`, so first launch already has the active
+profile's env. `M.profiles()`/`M.active_profile()` expose state for the picker.
+
 ### 0007 - Config reload from leader menu (2026-04-21)
 
 `<leader>pr` reloads all `neovia.*` modules and re-sources `init.lua`.
