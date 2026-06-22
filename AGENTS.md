@@ -230,3 +230,17 @@ envelope `directory` field) to drive background-worktree status
 `/global/event?directory=<current_cwd>` (active worktree only, re-subscribed
 on `tcd`) to render the active session's UI. The event_manager is blind to
 background worktrees, so neovia's stream cannot be folded into it.
+
+### 0018 - Clear stale active session on worktree switch (2026-06-22)
+
+`select_or_create_session` (`lua/neovia/worktree.lua`) runs synchronously
+immediately after `tcd` in `switch_to`, not deferred behind the neo-tree
+rescan. Before any async session switch/create, it clears opencode's active
+session (`oc_state.session.clear_active`, guarded for older versions) whenever
+the active session differs from the target. Until the switch resolves,
+`state.active_session` still points at the worktree just left, so the opencode
+panel would show that session and `send_message` would route typed input into
+it (it sends to `state.active_session.id`). Clearing closes that window:
+`send_message` returns early when `active_session` is nil. Running selection
+first (rather than after the rescan) also minimises the latency before the
+correct session appears.

@@ -546,6 +546,16 @@ local function save_session_id(dir)
   end
 end
 
+--- Clear opencode's active session, blanking the panel and preventing
+--- send_message from routing input to a stale session.  Guarded for older
+--- opencode versions / test mocks that lack session.clear_active.
+--- @param oc_state table  opencode.state module
+local function clear_active_session(oc_state)
+  if oc_state.session and oc_state.session.clear_active then
+    pcall(oc_state.session.clear_active)
+  end
+end
+
 --- Deterministically select or create the opencode session for `dir` after a
 --- tcd.  With opencode's lock_session_to_directory on, handle_directory_change
 --- never auto-selects, so neovia is the sole authority on session selection
@@ -554,6 +564,13 @@ end
 --- - Saved session_id  -> switch_session(id).
 --- - First visit        -> list_sessions(dir); switch to newest non-child,
 ---                         or create a new session when none exist.
+---
+--- Before any async work, the stale active session (still pointing at the
+--- worktree we just left) is cleared synchronously whenever it differs from
+--- the target.  This closes the window in which the opencode panel shows the
+--- previous worktree's session and routes typed input into it: send_message
+--- returns early when active_session is nil, so input cannot leak to the wrong
+--- session while the switch resolves.
 --- @param dir string
 local function select_or_create_session(dir)
   local entry = state[dir]
@@ -564,15 +581,21 @@ local function select_or_create_session(dir)
   local ok_rt, session_runtime = pcall(require, "opencode.services.session_runtime")
   if not ok_rt then return end
 
+  local active = oc_state.active_session
+
   -- Saved session: deterministic switch, no polling.
   if entry.session_id then
-    local active = oc_state.active_session
     if active and active.id == entry.session_id then return end
+    -- Clear the stale active session before the async switch so input can't
+    -- reach the previous worktree's session in the gap.
+    clear_active_session(oc_state)
     session_runtime.switch_session(entry.session_id)
     return
   end
 
-  -- First visit: discover-or-create a session scoped to this directory.
+  -- First visit: clear the stale active session up front (input-leak guard),
+  -- then discover-or-create a session scoped to this directory.
+  if active then clear_active_session(oc_state) end
   if not oc_state.api_client then return end
   oc_state.api_client
     :list_sessions(dir)
@@ -847,8 +870,7 @@ function M.switch_to(dir)
 
   -- With lock_session_to_directory on, opencode's handle_directory_change is
   -- a no-op, so neovia owns session selection entirely.  No current_cwd
-  -- pre-set hack, no race.  We select (or create) the correct session in the
-  -- deferred block after tcd.
+  -- pre-set hack, no race.
 
   vim.cmd.tcd(dir)
 
@@ -856,6 +878,13 @@ function M.switch_to(dir)
   if not state[dir] then
     state[dir] = make_entry({ branch = "" })
   end
+
+  -- Select (or create) the target worktree's session immediately after tcd,
+  -- before the expensive neo-tree rescan.  This clears the stale active
+  -- session synchronously (so typed input can't reach the previous worktree's
+  -- session) and starts the switch/create as early as possible to minimise the
+  -- latency before the correct session is shown.
+  select_or_create_session(dir)
 
   -- Restore saved buffers or show a fresh noname buffer on first visit
   local target = state[dir]
@@ -974,11 +1003,7 @@ function M.switch_to(dir)
     local ok, layout = pcall(require, "neovia.layout")
     if ok then layout.apply() end
 
-    -- Deterministically select or create the session for this worktree.
-    -- handle_directory_change never ran (lock), so there is nothing to
-    -- correct -- neovia is the sole authority.
-    select_or_create_session(dir)
-
+    -- Session selection already happened synchronously after tcd (above).
     -- Restore saved model/variant/mode after the session switch has
     -- settled.  set_model auto-clears variant (via a subscriber), so
     -- restore_model_state calls set_variant last.

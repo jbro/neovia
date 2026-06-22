@@ -4540,6 +4540,62 @@ describe("select_or_create_session", function()
     assert.is_nil(switched_to)
   end)
 
+  -- The stale active session (the worktree we just left) must be cleared
+  -- synchronously before the async switch resolves, so the opencode panel
+  -- stops showing it and send_message can't route typed input into it.
+  it("clears the stale active session before switching to a saved session", function()
+    local cleared = false
+    local switched_to = nil
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-feat-001" }, -- previous worktree
+      session = { clear_active = function() cleared = true end },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function(id) switched_to = id end,
+    }
+
+    I.select_or_create_session("/proj/main")
+    assert.is_true(cleared, "stale active session should be cleared before switching")
+    assert.equals("session-main-001", switched_to)
+  end)
+
+  it("does not clear active when it already matches the saved session", function()
+    local cleared = false
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-main-001" }, -- already correct
+      session = { clear_active = function() cleared = true end },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function() end,
+    }
+
+    I.select_or_create_session("/proj/main")
+    assert.is_false(cleared, "no clear needed when active already matches")
+  end)
+
+  it("clears the stale active session up front on a first visit", function()
+    I.set_state({
+      ["/proj/first"] = I.make_entry({ status = "idle", branch = "first" }),
+    })
+    local cleared = false
+    package.loaded["opencode.state"] = {
+      active_session = { id = "session-prev-worktree" },
+      api_client = fake_api_client({}),
+      session = {
+        clear_active = function() cleared = true end,
+        set_active = function() end,
+      },
+    }
+    package.loaded["opencode.services.session_runtime"] = {
+      switch_session = function() end,
+      create_new_session = fake_create({ id = "session-first-001" }),
+    }
+
+    I.select_or_create_session("/proj/first")
+    assert.is_true(cleared,
+      "stale active session should be cleared synchronously before async discovery")
+  end)
+
   it("is a no-op when state entry does not exist", function()
     local switched_to = nil
     package.loaded["opencode.state"] = {
